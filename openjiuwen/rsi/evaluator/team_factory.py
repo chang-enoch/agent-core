@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import contextmanager
+import weakref
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +50,15 @@ _COORDINATOR_ROLE_KEYS = {
     "team_coordinator",
     "team_leader",
 }
-_TEAM_SPEC_CUSTOMIZERS: dict[int, Callable[..., None]] = {}
+# Keyed by id(spec) with a weakref guard: a plain id->customizer map leaks a
+# stale binding whenever a case spec dies without clear_team_spec_customizer
+# (crash / timeout between register and cleanup), and CPython id() reuse can
+# then marry that customizer to an unrelated NEW spec allocated at the same
+# address — the flaky test_create_team_spec_does_not_mutate_build_base_spec
+# failure. The weakref callback removes the entry the moment the spec is
+# GC'd; get() additionally verifies identity so even a missed callback
+# (interpreter shutdown races) can never hand a customizer to the wrong spec.
+_TEAM_SPEC_CUSTOMIZERS: dict[int, tuple["weakref.ReferenceType", Callable[..., None]]] = {}
 
 
 class _DeferredExpertHarnessLoadRail(DeepAgentRail):
@@ -97,7 +106,16 @@ class _DeferredExpertHarnessLoadRail(DeepAgentRail):
 
 def get_team_spec_customizer(spec: TeamAgentSpec) -> Callable[..., None] | None:
     """Return the ACH runtime customizer registered for this case spec."""
-    return _TEAM_SPEC_CUSTOMIZERS.get(id(spec))
+    entry = _TEAM_SPEC_CUSTOMIZERS.get(id(spec))
+    if entry is None:
+        return None
+    spec_ref, customizer = entry
+    if spec_ref() is not spec:
+        # id() reuse: the registered spec is dead and this is a different
+        # object at the same address — the binding is not theirs.
+        _TEAM_SPEC_CUSTOMIZERS.pop(id(spec), None)
+        return None
+    return customizer
 
 
 def clear_team_spec_customizer(spec: TeamAgentSpec) -> None:
@@ -110,7 +128,12 @@ def register_team_spec_customizer(
     customizer: Callable[..., None],
 ) -> TeamAgentSpec:
     """Attach a case-scoped ACH customizer without mutating TeamAgentSpec schema."""
-    _TEAM_SPEC_CUSTOMIZERS[id(spec)] = customizer
+    spec_id = id(spec)
+
+    def _on_spec_gc(_ref: "weakref.ReferenceType", _spec_id: int = spec_id) -> None:
+        _TEAM_SPEC_CUSTOMIZERS.pop(_spec_id, None)
+
+    _TEAM_SPEC_CUSTOMIZERS[spec_id] = (weakref.ref(spec, _on_spec_gc), customizer)
     return spec
 
 

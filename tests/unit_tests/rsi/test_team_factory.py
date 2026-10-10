@@ -520,6 +520,44 @@ class TestTeamSkillTeamFactorySpecAssembly:
         assert get_team_spec_customizer(case) is not None
         assert case is not base
 
+    def test_customizer_registry_entry_removed_on_spec_gc(self, tmp_path: Path) -> None:
+        """注册条目必须随 spec GC 自动消失（弱引用回调），不留 id 复用窗口。
+
+        原实现是纯 id(spec) 键的强引用表：case spec 未走 clear（崩溃/超时）时
+        残留条目可被 id 复用绑定到无关新 spec，正是不稳定失败
+        test_create_team_spec_does_not_mutate_build_base_spec 的根因。
+        """
+        import gc
+
+        factory = _factory()
+        case = factory.create_team_spec(output_dir=tmp_path / "case_gc")
+        case_id = id(case)
+        assert case_id in tf._TEAM_SPEC_CUSTOMIZERS
+        del case
+        gc.collect()
+        assert case_id not in tf._TEAM_SPEC_CUSTOMIZERS
+
+    def test_customizer_registry_id_reuse_guard(self, tmp_path: Path) -> None:
+        """id 复用守卫：同地址残留死引用不得被新 spec 命中，且惰性清除。"""
+        import gc
+        import weakref
+
+        factory = _factory()
+        base = factory.build_base_spec()
+
+        dead_holder = TeamAgentSpec(team_name="dead", agents={})
+        dead_ref = weakref.ref(dead_holder)
+        del dead_holder
+        gc.collect()
+        assert dead_ref() is None
+
+        tf._TEAM_SPEC_CUSTOMIZERS[id(base)] = (dead_ref, lambda *a, **k: None)
+        try:
+            assert get_team_spec_customizer(base) is None  # 不得命中死引用
+            assert id(base) not in tf._TEAM_SPEC_CUSTOMIZERS  # 惰性清除
+        finally:
+            tf._TEAM_SPEC_CUSTOMIZERS.pop(id(base), None)
+
     def test_create_team_spec_customizer_excluded_from_model_dump(self, tmp_path: Path) -> None:
         spec = _factory().create_team_spec(output_dir=tmp_path / "case_001")
         assert "agent_customizer" not in spec.model_dump()

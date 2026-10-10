@@ -4,11 +4,12 @@
 """Database engine initialization, session management, and table lifecycle."""
 
 import asyncio
+import functools
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import NamedTuple, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from sqlalchemy import event, inspect
 from sqlalchemy.schema import CreateTable
@@ -195,6 +196,47 @@ async def retry_on_locked(
             )
             await asyncio.sleep(delay)
     return on_locked_result
+
+
+def with_db_retry(on_locked_result: Any) -> Callable[..., Callable[..., Awaitable[Any]]]:
+    """Decorate a DAO write method with transient-lock retry.
+
+    Thin wrapper over :func:`retry_on_locked` for whole-method retry: the
+    decorated coroutine is re-invoked from scratch on each attempt, so it
+    must be safe to re-run after a *lock-acquisition* failure — which is the
+    only failure mode retried (``OperationalError`` "database is locked" /
+    pool ``TimeoutError``): the lock error fires before the failed attempt's
+    DML executes (or rolls its transaction back at commit), so no partial
+    write survives into the retry. DAO write methods are single-statement
+    CAS / INSERT shells over one ``write()`` block and satisfy this.
+
+    The label is derived from the method's ``__qualname__`` (e.g.
+    ``MemberDao.update_member_status``) so retry/exhaustion logs name the
+    failing operation directly.
+
+    ``on_locked_result`` is returned after the retry budget is exhausted
+    (e.g. ``False`` for bool-returning CAS methods, ``None`` for optional
+    fetches); the final failure is always logged at ERROR by
+    :func:`retry_on_locked`, so a persistently locked DB (foreign process
+    holding the file) stays diagnosable even though the caller sees the
+    benign fallback value. A *callable* fallback is treated as a factory and
+    invoked per call (``list`` / ``dict`` / ``lambda``), so mutable results
+    are never shared between callers.
+    """
+
+    def decorator(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            fallback = on_locked_result() if callable(on_locked_result) else on_locked_result
+            return await retry_on_locked(
+                lambda: fn(*args, **kwargs),
+                on_locked_result=fallback,
+                label=fn.__qualname__,
+            )
+
+        return wrapper
+
+    return decorator
 
 
 def _get_table_names(sync_conn) -> list[str]:

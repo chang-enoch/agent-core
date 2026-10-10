@@ -8,7 +8,11 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from openjiuwen.agent_teams.tools.database.engine import DbSessions, get_current_time
+from openjiuwen.agent_teams.tools.database.engine import (
+    DbSessions,
+    get_current_time,
+    with_db_retry,
+)
 from openjiuwen.agent_teams.tools.models import Team
 from openjiuwen.core.common.logging import team_logger
 
@@ -20,6 +24,7 @@ class TeamDao:
         """Initialize team DAO with the shared read/write session provider."""
         self._sessions = sessions
 
+    @with_db_retry(False)
     async def create_team(
         self,
         team_name: str,
@@ -80,6 +85,7 @@ class TeamDao:
             )
             return result.scalar_one_or_none() is not None
 
+    @with_db_retry(False)
     async def delete_team(self, team_name: str) -> bool:
         """Delete a team (cascade delete will remove related records).
 
