@@ -57,8 +57,8 @@ def _normalize_level(value: Any) -> str | None:
 def _base_tool_level(base: dict[str, Any], tool_name: str) -> str | None:
     """原档位：显式 ``tools.<name>`` 优先，未显式配置时继承 ``defaults``。
 
-    ``defaults`` 兼容两种形态：0708 标量（``"guard"``）与 dev-stable 的
-    tiered 字典（``{"*": "ask"}``，对齐 tiered_policy 的首选查找取通配键）。
+    ``defaults`` 兼容标量与 tiered 字典（``{"*": "ask"}``）两种形态，
+    字典取通配键，与 tiered_policy 的首选查找一致。
     """
     tools = base.get("tools")
     if isinstance(tools, dict) and tool_name in tools:
@@ -170,7 +170,7 @@ def _compose_rules(merged: dict[str, Any], overlay_rules: list[Any]) -> None:
         # allow / deny 均只追加；deny 不改变既有 deny、只能新增。
         # skill 命令规则按 schema 锁定形态不带 ``tools`` 字段，而裁决端
         # （tiered_policy）按 ``tools`` 过滤规则：追加时补上原生裁决器认可的
-        # shell 工具，复刻 0708 “对任意 shell 工具按命令文本匹配”的语义。
+        # shell 工具，使命令文本匹配对所有 shell 工具生效。
         # （schema 拒绝规则自带 tools，故覆盖赋值不会吞掉真实声明。）
         native_rule = copy.deepcopy(rule)
         native_rule["tools"] = [
