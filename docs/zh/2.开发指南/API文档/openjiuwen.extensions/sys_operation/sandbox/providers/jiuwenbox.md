@@ -507,6 +507,7 @@ async def delete_jiuwenbox_sandbox(
     delete_all: bool = False,
     reason: str = "teardown",
     timeout_seconds: float = 30.0,
+    raise_on_error: bool = False,
 ) -> list[str]
 ```
 
@@ -514,11 +515,14 @@ async def delete_jiuwenbox_sandbox(
 
 **参数**：
 
-* **sandbox_id**(Optional[str], 可选)：`shared_key` 缓存未命中时按此 ID 删除的远端沙箱 ID。默认值 `None`。
+* **sandbox_id**(Optional[str], 可选)：显式指定要删除的远端沙箱 ID；未指定时从缓存解析。默认值 `None`。
 * **shared_key**(Optional[str], 可选)：作用域缓存键（`base_url|isolation_key`）。默认值 `None`。
-* **delete_all**(bool, 可选)：为 `True` 时清空进程内全部缓存沙箱（用于显式批量清理，非单 agent 网关释放）。默认值 `False`。
+* **delete_all**(bool, 可选)：为 `True` 时批量删除进程内全部缓存和待清理沙箱，成功后移除对应缓存（非单 agent 网关释放）。默认值 `False`。
 * **reason**(str, 可选)：传入删除钩子上下文的原因，默认值 `"teardown"`。
 * **timeout_seconds**(float, 可选)：HTTP 客户端超时（秒），默认值 `30.0`。
+* **raise_on_error**(bool, 可选)：为 `True` 时抛出包含原始远端删除原因的 `RuntimeError`；默认记录失败并继续。
+
+远端删除失败时保留缓存与钩子，标记为待清理；显式重试删除成功前，不允许复用或自动重建该作用域沙箱。重试不重复执行已成功的 `before_delete`，删除成功后执行一次 `after_delete`；后置钩子失败不恢复已删除条目。
 
 **返回**：
 
