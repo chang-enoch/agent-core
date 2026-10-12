@@ -470,3 +470,153 @@ async def test_mark_messages_read_batch(file_db: TeamDatabase) -> None:
     marked = await db.message.mark_messages_read(["d1", "b1", "missing"], "dev")
     assert marked == 2
     assert await db.message.has_unread_messages("t1") is False
+
+
+@pytest_asyncio.fixture
+async def quick_timeout_db(tmp_path, monkeypatch):
+    """File-backed db with a 1s busy timeout + shrunken retry back-off.
+
+    Keeps lock-contention tests fast: a foreign write lock held for ~2s
+    fails the first attempt at ~1s and clears before the second attempt's
+    busy window ends.
+    """
+    monkeypatch.setattr(
+        "openjiuwen.agent_teams.tools.database.engine._DB_RETRY_BASE_DELAY", 0.05
+    )
+    # 不绑 session context：被测的成员表写路径只碰静态表，且避开本机
+    # pytest-asyncio strict 模式下 set/reset_session_id 跨 Context 的存量
+    # teardown 噪音（与文件内 file_db fixture 相同的环境问题）。
+    config = DatabaseConfig(
+        db_type=DatabaseType.SQLITE,
+        connection_string=str(tmp_path / "team.db"),
+        db_timeout=1,
+    )
+    database = TeamDatabase(config)
+    try:
+        await database.initialize()
+        await database.team.create_team(
+            team_name="t1", display_name="T1", leader_member_name="leader"
+        )
+        await database.member.create_member(
+            member_name="quality-editor",
+            team_name="t1",
+            display_name="quality-editor",
+            agent_card=AgentCard().model_dump_json(),
+            status=MemberStatus.PAUSED.value,
+        )
+        yield database
+    finally:
+        await database.close()
+
+
+class _ForeignWriteLock:
+    """Hold the SQLite write lock from a separate (sync) connection.
+
+    Simulates a foreign process (orphan backend, DB tool) sitting on the
+    same team.db file — the exact condition behind the recover_team
+    ``database is locked`` incident.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        import sqlite3
+
+        # check_same_thread=False: rollback/close 经 asyncio.to_thread 在别的线程跑
+        self._conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+        # BEGIN IMMEDIATE takes the database write lock right away (WAL:
+        # readers stay unblocked, other writers queue behind busy_timeout).
+        self._conn.execute("BEGIN IMMEDIATE")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS _lock_probe (id INTEGER)")
+
+    async def release(self) -> None:
+        await asyncio.to_thread(self._conn.rollback)
+        await asyncio.to_thread(self._conn.close)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_update_member_status_retries_past_foreign_lock(quick_timeout_db: TeamDatabase) -> None:
+    """recover_team 场景：外部连接持写锁超出一个 busy_timeout 窗口后释放，
+    update_member_status 经重试最终成功，成员进入 RESTARTING。"""
+    db = quick_timeout_db
+    lock = _ForeignWriteLock(db.config.connection_string)
+    try:
+        async def _release_soon() -> None:
+            await asyncio.sleep(1.8)
+            await lock.release()
+
+        releaser = asyncio.create_task(_release_soon())
+        updated = await db.member.update_member_status(
+            "quality-editor", "t1", MemberStatus.RESTARTING.value
+        )
+        await releaser
+        assert updated is True
+        assert await db.member.get_member_status("t1", "quality-editor") == (
+            MemberStatus.RESTARTING.value
+        )
+    finally:
+        if lock._conn is not None:
+            try:
+                await lock.release()
+            except Exception:
+                pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_update_member_status_returns_false_when_lock_outlasts_budget(
+        quick_timeout_db: TeamDatabase,
+) -> None:
+    """锁持续到重试预算耗尽：返回 False（不抛出、不炸调用方流），状态保持原值。"""
+    db = quick_timeout_db
+    lock = _ForeignWriteLock(db.config.connection_string)
+    try:
+        updated = await db.member.update_member_status(
+            "quality-editor", "t1", MemberStatus.RESTARTING.value
+        )
+        assert updated is False
+        assert await db.member.get_member_status("t1", "quality-editor") == (
+            MemberStatus.PAUSED.value
+        )
+    finally:
+        await lock.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_with_db_retry_callable_fallback_is_fresh_per_call() -> None:
+    """可变回退值（list/dict 工厂）每次调用各自独立，互不污染。"""
+    from openjiuwen.agent_teams.tools.database.engine import with_db_retry
+
+    @with_db_retry(list)
+    async def _always_locked() -> list:
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    first = await _always_locked()
+    first.append("x")
+    second = await _always_locked()
+    assert second == []
+    assert first is not second
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_with_db_retry_retries_wrapped_method(monkeypatch) -> None:
+    """装饰器整方法重试：首次撞锁、二次成功，label 取方法 qualname。"""
+    from openjiuwen.agent_teams.tools.database.engine import with_db_retry
+
+    monkeypatch.setattr(
+        "openjiuwen.agent_teams.tools.database.engine._DB_RETRY_BASE_DELAY", 0.01
+    )
+    calls = 0
+
+    class _Dao:
+        @with_db_retry(False)
+        async def write_thing(self) -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OperationalError("UPDATE t", {}, Exception("database is locked"))
+            return True
+
+    assert await _Dao().write_thing() is True
+    assert calls == 2

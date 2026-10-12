@@ -17,7 +17,11 @@ from openjiuwen.agent_teams.schema.status import (
     MemberMode,
     MemberStatus,
 )
-from openjiuwen.agent_teams.tools.database.engine import DbSessions, get_current_time
+from openjiuwen.agent_teams.tools.database.engine import (
+    DbSessions,
+    get_current_time,
+    with_db_retry,
+)
 from openjiuwen.agent_teams.tools.member_options import (
     MemberWorktreeOptions,
     set_member_worktree_options,
@@ -47,6 +51,7 @@ class MemberDao:
         """Initialize member DAO with the shared read/write session provider."""
         self._sessions = sessions
 
+    @with_db_retry(False)
     async def create_member(
         self,
         member_name: str,
@@ -312,6 +317,7 @@ class MemberDao:
             value = result.scalar_one_or_none()
             return int(value) if value is not None else 0
 
+    @with_db_retry(False)
     async def update_member_status(
         self,
         member_name: str,
@@ -376,6 +382,7 @@ class MemberDao:
                 target,
             )
 
+    @with_db_retry(False)
     async def try_transition_member_status(
         self,
         member_name: str,
@@ -421,6 +428,7 @@ class MemberDao:
                 )
             return transitioned
 
+    @with_db_retry(False)
     async def update_member_execution_status(
         self,
         member_name: str,
@@ -455,6 +463,7 @@ class MemberDao:
             )
             return False
 
+    @with_db_retry(False)
     async def update_member_worktree(
         self,
         member_name: str,

@@ -29,7 +29,11 @@ from openjiuwen.agent_teams.schema.task import (
     GraphMutationResult,
     NewTaskSpec,
 )
-from openjiuwen.agent_teams.tools.database.engine import DbSessions, get_current_time
+from openjiuwen.agent_teams.tools.database.engine import (
+    DbSessions,
+    get_current_time,
+    with_db_retry,
+)
 from openjiuwen.agent_teams.tools.database.graph import (
     TASK_DEPENDENCY_REJECT_STATUSES,
     TASK_TERMINAL_STATUSES,
@@ -350,6 +354,7 @@ class TaskDao:
         """Initialize task DAO with the shared read/write session provider."""
         self._sessions = sessions
 
+    @with_db_retry(False)
     async def create_task(
         self,
         task_id: str,
@@ -472,6 +477,7 @@ class TaskDao:
             )
             return (await session.execute(query)).scalar_one_or_none()
 
+    @with_db_retry(False)
     async def start_task(
         self,
         task_id: str,
@@ -522,6 +528,7 @@ class TaskDao:
                 )
             return started
 
+    @with_db_retry(False)
     async def claim_task(
         self,
         task_id: str,
@@ -584,6 +591,7 @@ class TaskDao:
                 )
             return claimed
 
+    @with_db_retry(False)
     async def reassign_task(self, task_id: str, from_assignee: str, to_assignee: str) -> bool:
         """Atomically hand an IN_PROGRESS task from one member to another.
 
@@ -624,6 +632,7 @@ class TaskDao:
                 )
             return swapped
 
+    @with_db_retry(None)
     async def reset_task(self, task_id: str) -> Optional[TeamTaskBase]:
         """Reset an in-flight task back to pending status and clear assignee.
 
@@ -669,6 +678,7 @@ class TaskDao:
 
             return task
 
+    @with_db_retry(False)
     async def submit_for_review(self, task_id: str) -> bool:
         """Atomically move an IN_PROGRESS task to IN_REVIEW via a CAS UPDATE.
 
@@ -712,6 +722,7 @@ class TaskDao:
                 )
             return submitted
 
+    @with_db_retry(False)
     async def revise_task(self, task_id: str) -> bool:
         """Atomically move an IN_REVIEW task back to IN_PROGRESS (verify fail).
 
@@ -746,6 +757,7 @@ class TaskDao:
                 )
             return revised
 
+    @with_db_retry(False)
     async def set_reviewer(self, task_id: str, reviewer: Optional[str]) -> bool:
         """Set the ``reviewer`` column (JSON member-name list or NULL).
 
@@ -766,6 +778,7 @@ class TaskDao:
             await session.commit()
             return result.rowcount == 1
 
+    @with_db_retry(False)
     async def set_max_review_rounds(self, task_id: str, max_review_rounds: Optional[int]) -> bool:
         """Set the per-task review-round ceiling (F_62; NULL means team default).
 
@@ -785,6 +798,7 @@ class TaskDao:
             await session.commit()
             return result.rowcount == 1
 
+    @with_db_retry(None)
     async def insert_review_vote(
         self,
         *,
@@ -848,6 +862,7 @@ class TaskDao:
             )
             return list(result.scalars().all())
 
+    @with_db_retry(None)
     async def approve_plan_task(self, task_id: str) -> Optional[TeamTaskBase]:
         """Approve a task plan for PLAN_MODE members (PLANNING -> IN_PROGRESS).
 
@@ -882,6 +897,7 @@ class TaskDao:
 
             return task
 
+    @with_db_retry(False)
     async def update_task_status(self, task_id: str, status: str) -> bool:
         """Update task status."""
         team_task_model = _get_task_model()
@@ -929,6 +945,7 @@ class TaskDao:
             team_logger.info("Task %s status updated to %s", task_id, status)
             return True
 
+    @with_db_retry(False)
     async def update_task(
         self,
         task_id: str,
@@ -972,6 +989,7 @@ class TaskDao:
 
             return True
 
+    @with_db_retry(lambda: GraphMutationResult.fail("database locked; retries exhausted"))
     async def mutate_dependency_graph(
         self,
         team_name: str,
@@ -1086,6 +1104,7 @@ class TaskDao:
             )
             return [row[0] for row in result.all()]
 
+    @with_db_retry(False)
     async def delete_task(self, task_id: str) -> bool:
         """Delete a task."""
         team_task_model = _get_task_model()
@@ -1101,6 +1120,7 @@ class TaskDao:
             team_logger.info("Task %s deleted", task_id)
             return True
 
+    @with_db_retry(None)
     async def cancel_task(self, task_id: str) -> Optional[Dict]:
         """Cancel a task atomically and unblock dependent tasks."""
         async with self._sessions.write() as session:
@@ -1117,6 +1137,7 @@ class TaskDao:
             await session.commit()
             return {"task": task, "unblocked_tasks": unblocked}
 
+    @with_db_retry(dict)
     async def cancel_all_tasks(
         self,
         team_name: str,
@@ -1179,6 +1200,7 @@ class TaskDao:
                 "unblocked_tasks": unblocked_tasks,
             }
 
+    @with_db_retry(None)
     async def complete_task(self, task_id: str) -> Optional[Dict]:
         """Complete a task atomically and unblock dependent tasks."""
         async with self._sessions.write() as session:
@@ -1214,6 +1236,7 @@ class TaskDao:
             await session.commit()
             return refreshed
 
+    @with_db_retry(list)
     async def verify_and_fix_task_consistency(self, team_name: str) -> List[TeamTaskBase]:
         """Verify and fix task consistency for a team."""
         return await self._verify_and_fix_blocked_tasks(team_name)
