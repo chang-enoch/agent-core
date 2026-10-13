@@ -14,6 +14,7 @@ class CompressionErrorKind(str, Enum):
     AUTHENTICATION = "authentication"
     TIMEOUT = "timeout"
     SERVER_UNSTABLE = "server_unstable"
+    EMPTY_RESPONSE = "empty_response"
     API_REQUEST_ERROR = "api_request_error"
     UNKNOWN = "unknown"
 

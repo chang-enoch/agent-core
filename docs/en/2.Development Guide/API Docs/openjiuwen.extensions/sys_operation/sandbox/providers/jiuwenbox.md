@@ -128,12 +128,15 @@ async delete_jiuwenbox_sandbox(
     delete_all: bool = False,
     reason: str = "teardown",
     timeout_seconds: float = 30.0,
+    raise_on_error: bool = False,
 ) -> list[str]
 ```
 
-Deletes remote sandboxes associated with the in-process cache. By default, it handles only the entry selected by `shared_key` or a cached `sandbox_id`. With `delete_all=True`, it drains the process-wide JiuwenBox cache and deletes each associated remote sandbox.
+Deletes remote sandboxes associated with the in-process cache. An explicit `sandbox_id` selects that ID within the supplied `shared_key`; otherwise the ID is resolved from the cache. With `delete_all=True`, it selects all process-wide cached and pending entries, removing each only after remote deletion succeeds.
 
-Cached lifecycle callbacks receive `before_delete` and `after_delete`. A remote deletion failure is logged and processing continues; the return value contains only successfully deleted sandbox IDs.
+Cached lifecycle callbacks receive `before_delete` and `after_delete`. A remote deletion failure is logged and processing continues; the return value contains only successfully deleted sandbox IDs. With `raise_on_error=True`, a `RuntimeError` preserves the original deletion failure as its cause.
+
+Failed deletions retain the cache and callback as pending cleanup. Reuse and automatic recreation are blocked until explicit deletion retry succeeds. A successful `before_delete` is not repeated on retry; `after_delete` runs once after successful deletion. A failing after-hook does not restore a deleted entry.
 
 ## class JiuwenBoxFSProvider
 
