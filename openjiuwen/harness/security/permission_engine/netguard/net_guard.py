@@ -87,7 +87,7 @@ def match_net_pattern(pattern: str, url: str) -> bool:
 class NetGuardChecker:
     """Network allow/ask/deny for fetch tools. ALLOW does not lift Pipeline A."""
 
-    def __init__(self, section: Mapping[str, Any]):
+    def __init__(self, section: Mapping[str, Any], composition: Mapping[str, Any] | None = None):
         self._enabled = bool(section.get("enabled"))
         defaults = _parse_action(section.get("defaults"))
         self._defaults = defaults or "allow"
@@ -102,6 +102,9 @@ class NetGuardChecker:
                     continue
                 compiled[pattern.strip()] = action
         self._urls = compiled
+        self._source_order = tuple(composition.get("source_order", ())) if composition else ()
+        self._url_layers = composition.get("net_url_layers", {}) if composition else {}
+        self._composed = composition is not None
         raw_enforce = section.get("enforce_host_exit")
         self._enforce_host_exit = True if raw_enforce is None else bool(raw_enforce)
 
@@ -117,14 +120,16 @@ class NetGuardChecker:
         self,
         tool_name: str,
         tool_args: Mapping[str, Any],
+        *,
+        include_explicit_allow: bool = False,
     ) -> PermissionResult | None:
         if not self._enabled:
             return None
         if str(tool_name or "").strip() not in _FETCH_TOOLS:
             return None
-        return self.check_url(extract_fetch_url(tool_args))
+        return self.check_url(extract_fetch_url(tool_args), include_explicit_allow=include_explicit_allow)
 
-    def check_url(self, url: str | None) -> PermissionResult | None:
+    def check_url(self, url: str | None, *, include_explicit_allow: bool = False) -> PermissionResult | None:
         """Return ASK/DENY or ``None`` (allowed); callers handle ASK before tools."""
         if not self._enabled:
             return None
@@ -136,11 +141,29 @@ class NetGuardChecker:
         if hits:
             if any(action == "deny" for _pattern, action in hits):
                 pattern = next(p for p, action in hits if action == "deny")
+                source = self._url_layers.get(pattern) if self._composed else None
                 return PermissionResult(
                     permission=PermissionLevel.DENY,
-                    matched_rule=f"net_guard:url:{pattern}",
+                    matched_rule=f"net_guard:source:{source}:url:{pattern}" if source else f"net_guard:url:{pattern}",
                     reason=f"net_guard denied: {pattern}",
                 )
+            if self._composed:
+                for source in self._source_order:
+                    selected = [(pattern, action) for pattern, action in hits if self._url_layers.get(pattern) == source]
+                    if not selected:
+                        continue
+                    if any(action == "ask" for _pattern, action in selected):
+                        pattern = next(pattern for pattern, action in selected if action == "ask")
+                        return PermissionResult(
+                            PermissionLevel.ASK, f"net_guard:source:{source}:url:{pattern}",
+                            f"net_guard requires approval: {pattern}",
+                        )
+                    if include_explicit_allow:
+                        pattern = selected[0][0]
+                        return PermissionResult(
+                            PermissionLevel.ALLOW, f"net_guard:source:{source}:url:{pattern}",
+                        )
+                    return None
             if any(action == "ask" for _pattern, action in hits):
                 pattern = next(p for p, action in hits if action == "ask")
                 return PermissionResult(PermissionLevel.ASK, f"net_guard:url:{pattern}",
@@ -162,7 +185,8 @@ def build_net_guard_checker(
     section = perms.get("net_guard")
     if not isinstance(section, Mapping) or not section.get("enabled"):
         return None
-    return NetGuardChecker(section)
+    composition = perms.get("composition")
+    return NetGuardChecker(section, composition if isinstance(composition, Mapping) else None)
 
 
 __all__ = [

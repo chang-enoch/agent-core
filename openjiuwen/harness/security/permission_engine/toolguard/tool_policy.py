@@ -81,6 +81,8 @@ class _TieredInvocationContext:
     baseline_rule: str | None
     defaults_cfg: dict[str, Any]
     permission_config: Mapping[str, Any]
+    source_order: tuple[str, ...]
+    source_rules: dict[str, list[dict[str, Any]]]
 
 
 def _parse_level(value: str) -> PermissionLevel:
@@ -457,11 +459,60 @@ def _with_shell_command(tool_args: dict[str, Any], command: str) -> dict[str, An
     return sub_args
 
 
+def _composed_param_hits(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        ctx: _TieredInvocationContext,
+) -> tuple[tuple[PermissionLevel, str] | None, str | None]:
+    grouped = {
+        source: _collect_param_rule_hits(
+            ctx.source_rules[source], tool_name, tool_args, source, ctx.permission_config,
+        )
+        for source in ctx.source_order
+    }
+    for source in ctx.source_order:
+        denied = [hit for hit in grouped[source] if hit[0] == PermissionLevel.DENY]
+        if denied:
+            return _finalize_hits(denied, f"source:{source}"), source
+    for source in ctx.source_order:
+        if grouped[source]:
+            return _finalize_hits(grouped[source], f"source:{source}"), source
+    return None, None
+
+
+def _user_approval_can_override(source: str | None, order: tuple[str, ...]) -> bool:
+    return "user" in order and (source is None or order.index("user") <= order.index(source))
+
+
 def _evaluate_single_invocation(
         tool_name: str,
         tool_args: dict[str, Any],
         ctx: _TieredInvocationContext,
 ) -> tuple[PermissionLevel, str]:
+    if isinstance(ctx.permission_config.get("composition"), dict):
+        selected, source = _composed_param_hits(tool_name, tool_args, ctx)
+        if selected is not None and selected[0] == PermissionLevel.DENY:
+            return selected
+        override_hits = _collect_approval_override_hits(
+            ctx.approval_overrides, tool_name, tool_args, ctx.permission_config,
+        )
+        if override_hits and _user_approval_can_override(source, ctx.source_order):
+            contributing = sorted(set(override_hits))
+            return PermissionLevel.ALLOW, _APPROVAL_OVERRIDES_PREFIX + ":" + "+".join(contributing)
+        if selected is not None:
+            return selected
+        if ctx.baseline_level is not None:
+            return ctx.baseline_level, ctx.baseline_rule or f"{_MR}:tools"
+        if ctx.permission_config.get("defer_unmatched", False):
+            return PermissionLevel.UNDETERMINED, f"{_MR}:unmatched"
+        default = ctx.defaults_cfg.get("*")
+        if isinstance(default, str):
+            try:
+                return _parse_level(default), f"{_MR}:defaults.*"
+            except ValueError:
+                pass
+        return PermissionLevel.ASK, f"{_MR}:fallback(no_config)"
+
     builtin_hits = _collect_param_rule_hits(
         ctx.builtin_rules,
         tool_name,
@@ -519,6 +570,10 @@ def _evaluate_param_rules_only(
         tool_args: dict[str, Any],
         ctx: _TieredInvocationContext,
 ) -> tuple[PermissionLevel, str] | None:
+    if isinstance(ctx.permission_config.get("composition"), dict):
+        selected, _source = _composed_param_hits(tool_name, tool_args, ctx)
+        return selected
+
     builtin_hits = _collect_param_rule_hits(
         ctx.builtin_rules,
         tool_name,
@@ -622,6 +677,15 @@ def evaluate_tiered_policy(
     if not isinstance(rules, list):
         rules = []
     dict_rules = [r for r in rules if isinstance(r, dict)]
+    composition = permission_config.get("composition")
+    source_order = tuple(composition.get("source_order", ())) if isinstance(composition, dict) else ()
+    composed = isinstance(composition, dict)
+    source_rules = {
+        source: [rule for rule in dict_rules if rule.get("layer") == source]
+        for source in source_order
+    } if composed else {}
+    if composed and not shell_builtin_rules_enabled(permission_config):
+        source_rules["builtin"] = []
     builtin_rules = [r for r in dict_rules if r.get("layer") == "builtin"]
     if not shell_builtin_rules_enabled(permission_config):
         builtin_rules = []
@@ -658,6 +722,8 @@ def evaluate_tiered_policy(
         baseline_rule=bl_rule,
         defaults_cfg=defaults_cfg,
         permission_config=permission_config,
+        source_order=source_order,
+        source_rules=source_rules,
     )
 
     override_hits = _collect_approval_override_hits(
@@ -667,15 +733,21 @@ def evaluate_tiered_policy(
         override_hits = _collect_approval_override_hits(
             approval_overrides, tool_name, canon_args, permission_config,
         )
-    if override_hits:
+    override_candidates = [tool_args, canon_args]
+    if shell_parse is not None and shell_parse.kind == "simple":
+        override_candidates.extend(
+            _with_shell_command(tool_args, sub.text)
+            for sub in shell_parse.subcommands if sub.text
+        )
+    priority_blocks_override = composed and any(
+        not _user_approval_can_override(
+            _composed_param_hits(tool_name, candidate, invocation_ctx)[1], source_order,
+        )
+        for candidate in override_candidates
+    )
+    if override_hits and not priority_blocks_override:
         # Remembered approval may bypass ASK, never a command blacklist.
-        candidates = [tool_args, canon_args]
-        if shell_parse is not None and shell_parse.kind == "simple":
-            candidates.extend(
-                _with_shell_command(tool_args, sub.text)
-                for sub in shell_parse.subcommands if sub.text
-            )
-        for candidate in candidates:
+        for candidate in override_candidates:
             denied = _evaluate_param_rules_only(tool_name, candidate, invocation_ctx)
             if denied is not None and denied[0] == PermissionLevel.DENY:
                 return denied

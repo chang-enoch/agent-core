@@ -63,12 +63,23 @@ if TYPE_CHECKING:
     from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
 logger = logging.getLogger(__name__)
+COMPOSITION_SCHEMA_VERSION = 1
 
 
 def _has_builtin_layer(items: Any) -> bool:
     if not isinstance(items, list):
         return False
     return any(isinstance(item, dict) and item.get("layer") == "builtin" for item in items)
+
+
+def _user_grant_can_resolve(config: dict[str, Any], matched_rule: str | None) -> bool:
+    composition = config.get("composition")
+    if not isinstance(composition, dict):
+        return True
+    order = composition.get("source_order", [])
+    if "user" not in order:
+        return False
+    return not any(f":source:{source}:" in (matched_rule or "") for source in order[:order.index("user")])
 
 
 # Old swarm product YAML often has severity without action. Map like
@@ -116,6 +127,21 @@ def prepare_permissions_for_engine(
     cfg: dict[str, Any] = cast(dict[str, Any], config or {})
     if not isinstance(cfg, dict):
         cfg = {}
+
+    composition = cfg.get("composition")
+    if composition is not None:
+        if not isinstance(composition, dict) or composition.get("schema_version") != COMPOSITION_SCHEMA_VERSION:
+            raise ValueError("unsupported permissions.composition schema_version")
+        order = composition.get("source_order")
+        if not isinstance(order, list) or any(
+            not isinstance(source, str) or source not in {"user", "cloud", "builtin"} for source in order
+        ) or len(order) != len(set(order)):
+            raise ValueError("invalid permissions.composition source_order")
+        # The composed snapshot already contains selected package rules.
+        prepared = _fill_legacy_host_rule_actions(deepcopy(cfg))
+        if "user" not in order:
+            prepared["approval_overrides"] = []
+        return prepared
 
     if not shell_builtin_rules_enabled(cfg):
         cfg = inline_package_command_rules(cfg)
@@ -248,25 +274,33 @@ class PermissionEngine:
             permission = maybe_escalate_shell_operators(tool_name, tool_args, permission)
 
         if include_external_directory and self._file_guard is not None:
-            path_result = self._file_guard.evaluate(tool_name, tool_args)
+            path_result = self._file_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
             if path_result is not None:
                 path_rule = path_result.matched_rule or "file_guard"
                 if permission is None:
                     permission = path_result.permission
                     matched_rule = path_rule
                 else:
-                    permission = tiered_policy_strictest(permission, path_result.permission)
+                    permission = (
+                        PermissionLevel.ALLOW
+                        if permission == PermissionLevel.UNDETERMINED and path_result.permission == PermissionLevel.ALLOW
+                        else tiered_policy_strictest(permission, path_result.permission)
+                    )
                     matched_rule = f"{matched_rule}|{path_rule}"
 
         if self._net_guard is not None:
-            net_result = self._net_guard.evaluate(tool_name, tool_args)
+            net_result = self._net_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
             if net_result is not None:
                 net_rule = net_result.matched_rule or "net_guard"
                 if permission is None:
                     permission = net_result.permission
                     matched_rule = net_rule
                 else:
-                    permission = tiered_policy_strictest(permission, net_result.permission)
+                    permission = (
+                        PermissionLevel.ALLOW
+                        if permission == PermissionLevel.UNDETERMINED and net_result.permission == PermissionLevel.ALLOW
+                        else tiered_policy_strictest(permission, net_result.permission)
+                    )
                     matched_rule = f"{matched_rule}|{net_rule}"
 
         return permission, matched_rule
@@ -331,7 +365,7 @@ class PermissionEngine:
 
         # 2. Pipeline B：file_guard（可独立关闭；含 ExternalDirectory Legacy 投影）
         if self._file_guard is not None:
-            path_result = self._file_guard.evaluate(tool_name, tool_args)
+            path_result = self._file_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
             if path_result is not None:
                 path_rule = path_result.matched_rule or "file_guard"
                 logger.info(
@@ -343,7 +377,11 @@ class PermissionEngine:
                     path_result.external_paths,
                     permission.value,
                 )
-                permission = tiered_policy_strictest(permission, path_result.permission)
+                permission = (
+                    PermissionLevel.ALLOW
+                    if permission == PermissionLevel.UNDETERMINED and path_result.permission == PermissionLevel.ALLOW
+                    else tiered_policy_strictest(permission, path_result.permission)
+                )
                 matched_rule = f"{matched_rule}|{path_rule}"
                 external_paths = path_result.external_paths
             else:
@@ -360,7 +398,7 @@ class PermissionEngine:
 
         # 3. Pipeline C：net_guard（可独立关闭；仅 fetch 工具）
         if self._net_guard is not None:
-            net_result = self._net_guard.evaluate(tool_name, tool_args)
+            net_result = self._net_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
             if net_result is not None:
                 net_rule = net_result.matched_rule or "net_guard"
                 logger.info(
@@ -371,7 +409,11 @@ class PermissionEngine:
                     net_rule,
                     permission.value,
                 )
-                permission = tiered_policy_strictest(permission, net_result.permission)
+                permission = (
+                    PermissionLevel.ALLOW
+                    if permission == PermissionLevel.UNDETERMINED and net_result.permission == PermissionLevel.ALLOW
+                    else tiered_policy_strictest(permission, net_result.permission)
+                )
                 matched_rule = f"{matched_rule}|{net_rule}"
             else:
                 logger.info(
@@ -388,7 +430,9 @@ class PermissionEngine:
         if permission == PermissionLevel.ASK:
             from openjiuwen.harness.security.permission_engine.approve.operation_grants import has_operation_grant
 
-            if has_operation_grant(self.config, tool_name, tool_args, self._workspace_root):
+            if _user_grant_can_resolve(self.config, matched_rule) and has_operation_grant(
+                self.config, tool_name, tool_args, self._workspace_root,
+            ):
                 permission = PermissionLevel.ALLOW
                 matched_rule = "operation_grant"
 
@@ -457,6 +501,7 @@ def build_permission_interrupt_rail(
 
 
 __all__ = [
+    "COMPOSITION_SCHEMA_VERSION",
     "PermissionEngine",
     "build_permission_interrupt_rail",
 ]
