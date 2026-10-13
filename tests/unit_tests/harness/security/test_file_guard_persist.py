@@ -43,6 +43,19 @@ def test_merge_file_guard_path_rule_writes_paths(tmp_path: Path) -> None:
     assert effective.enabled is True
 
 
+def test_merge_file_guard_paths_preserves_explicit_disable(tmp_path: Path) -> None:
+    perms = {"enabled": True, "file_guard": {"enabled": False, "paths": []}}
+    target = (tmp_path / "remembered").as_posix()
+    merged, wrote = merge_file_guard_path_rule(perms, target, read="allow")
+    merged, _ = merge_file_guard_access_allows(merged, [(target, "write")])
+
+    assert wrote is True
+    assert merged["file_guard"]["enabled"] is False
+    assert merged["file_guard"]["paths"][0]["write"] == "allow"
+    assert normalize_path_guard_config(merged, workspace_root=tmp_path).enabled is False
+    assert perms["file_guard"] == {"enabled": False, "paths": []}
+
+
 def test_merge_external_directory_allow_forwards_to_file_guard(tmp_path: Path) -> None:
     perms = {"enabled": True, "external_directory": {"*": "ask"}}
     file_path = str(tmp_path / "outside" / "a.txt")

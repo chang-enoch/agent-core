@@ -275,7 +275,7 @@ def merge_file_guard_path_rule(
     if not isinstance(fg, dict):
         fg = {}
         perms["file_guard"] = fg  # type: ignore[typeddict-unknown-key]
-    fg["enabled"] = True
+    fg.setdefault("enabled", True)
     paths = fg.get("paths")
     if not isinstance(paths, list):
         paths = []
