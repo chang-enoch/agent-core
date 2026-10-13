@@ -46,6 +46,7 @@ _TRANSIENT_COMPRESSION_ERROR_KINDS = {
     CompressionErrorKind.RATE_LIMIT,
     CompressionErrorKind.TIMEOUT,
     CompressionErrorKind.SERVER_UNSTABLE,
+    CompressionErrorKind.EMPTY_RESPONSE,
     CompressionErrorKind.UNKNOWN,
 }
 _TRANSIENT_COMPRESSION_MAX_RETRIES = 2
@@ -55,6 +56,7 @@ _AUTO_COMPRESSION_FALLBACK_ERROR_KINDS = {
     CompressionErrorKind.RATE_LIMIT,
     CompressionErrorKind.TIMEOUT,
     CompressionErrorKind.SERVER_UNSTABLE,
+    CompressionErrorKind.EMPTY_RESPONSE,
 }
 
 
@@ -496,6 +498,13 @@ class PrefixCompactProcessor(ContextProcessor):
             )
             try:
                 response = await active_executor.invoke(request)
+                if not self._extract_state_snapshot_or_raw(response.content or ""):
+                    error = ValueError("Compression model returned empty content")
+                    raise CompressionError(
+                        kind=CompressionErrorKind.EMPTY_RESPONSE,
+                        message=str(error),
+                        original_error=error,
+                    )
                 return response, span, request
             except CompressionError as exc:
                 if exc.is_context_overflow:

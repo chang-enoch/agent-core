@@ -3,9 +3,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openjiuwen.core.context_engine.base import ContextWindow
+from openjiuwen.core.context_engine.processor.forked.compressor.current_round_compressor import (
+    CurrentRoundCompressor,
+    CurrentRoundCompressorConfig,
+)
 from openjiuwen.core.context_engine.processor.forked.compressor.dialogue_compressor import (
     DialogueCompressor,
     DialogueCompressorConfig,
+)
+from openjiuwen.core.context_engine.processor.forked.compressor.round_level_compressor import (
+    RoundLevelCompressor,
+    RoundLevelCompressorConfig,
 )
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
@@ -211,3 +219,150 @@ def test_react_context_window_carries_the_selected_turn_model_to_passive_process
 
     assert kwargs["model_config"] is selected
     assert kwargs["model_client_config"] is client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_content", ["", None, " \t\n"])
+@pytest.mark.parametrize(
+    ("compressor_type", "config_type"),
+    [
+        (DialogueCompressor, DialogueCompressorConfig),
+        (CurrentRoundCompressor, CurrentRoundCompressorConfig),
+        (RoundLevelCompressor, RoundLevelCompressorConfig),
+    ],
+)
+async def test_auto_compression_retries_empty_response(empty_content, compressor_type, config_type):
+    model = MagicMock()
+    model.invoke = AsyncMock(
+        side_effect=[
+            AssistantMessage.model_construct(content=empty_content),
+            AssistantMessage(content="Retried compact state"),
+        ]
+    )
+    window = _window()
+    window.context_messages.extend(
+        [
+            AssistantMessage(content="current padding " * 600),
+            AssistantMessage(content="protected tail"),
+        ]
+    )
+    with patch("openjiuwen.core.context_engine.processor.forked.compressor.base.Model", return_value=model):
+        compressor = compressor_type(
+            config_type(
+                model=ModelRequestConfig(model_name="startup-model"),
+                model_client=_client(),
+                keep_recent_messages=1,
+                auto_compression={"model_name": "compact-primary"},
+            )
+        )
+        event, updated = await compressor.on_get_context_window(_context(), window)
+
+    assert event is not None
+    assert any("Retried compact state" in message.content for message in updated.context_messages)
+    assert model.invoke.await_count == 2
+    assert model.invoke.await_args_list[0] == model.invoke.await_args_list[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backup_first_empty", [False, True])
+async def test_auto_compression_falls_back_after_empty_response_retries(backup_first_empty):
+    calls = []
+
+    def model_factory(client, request):
+        model = MagicMock()
+
+        async def invoke(**kwargs):
+            calls.append(request.model_name)
+            if request.model_name != "compact-backup":
+                return AssistantMessage(content="")
+            if backup_first_empty and calls.count("compact-backup") == 1:
+                return AssistantMessage(content=" \n")
+            return AssistantMessage(content="Backup compact state")
+
+        model.invoke = invoke
+        return model
+
+    with patch("openjiuwen.core.context_engine.processor.forked.compressor.base.Model", side_effect=model_factory):
+        compressor = DialogueCompressor(
+            DialogueCompressorConfig(
+                model=ModelRequestConfig(model_name="startup-model"),
+                model_client=_client(),
+                auto_compression={"model_name": "compact-primary", "fallback_model_name": "compact-backup"},
+            )
+        )
+        event, updated = await compressor.on_get_context_window(_context(), _window())
+
+    assert event is not None
+    assert "Backup compact state" in updated.context_messages[0].content
+    assert calls == ["compact-primary"] * 3 + ["compact-backup"] * (2 if backup_first_empty else 1)
+
+
+@pytest.mark.asyncio
+async def test_auto_compression_preserves_context_when_both_models_return_empty():
+    calls = []
+
+    def model_factory(client, request):
+        model = MagicMock()
+
+        async def invoke(**kwargs):
+            calls.append(request.model_name)
+            return AssistantMessage(content="")
+
+        model.invoke = invoke
+        return model
+
+    context = _context()
+    window = _window()
+    original = list(window.context_messages)
+    with patch("openjiuwen.core.context_engine.processor.forked.compressor.base.Model", side_effect=model_factory):
+        compressor = DialogueCompressor(
+            DialogueCompressorConfig(
+                model=ModelRequestConfig(model_name="startup-model"),
+                model_client=_client(),
+                auto_compression={"model_name": "compact-primary", "fallback_model_name": "compact-backup"},
+            )
+        )
+        event, updated = await compressor.on_get_context_window(context, window)
+
+    assert event is None
+    assert updated is window
+    assert updated.context_messages == original
+    context.set_messages.assert_not_called()
+    assert calls == ["compact-primary"] * 3 + ["compact-backup"] * 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force", [False, True])
+async def test_empty_response_preserves_context_without_applicable_backup(force):
+    calls = []
+
+    def model_factory(client, request):
+        model = MagicMock()
+
+        async def invoke(**kwargs):
+            calls.append(request.model_name)
+            return AssistantMessage(content="")
+
+        model.invoke = invoke
+        return model
+
+    context = _context()
+    window = _window()
+    original = list(window.context_messages)
+    with patch("openjiuwen.core.context_engine.processor.forked.compressor.base.Model", side_effect=model_factory):
+        compressor = DialogueCompressor(
+            DialogueCompressorConfig(
+                model=ModelRequestConfig(model_name="startup-model"),
+                model_client=_client(),
+                auto_compression={
+                    "model_name": "compact-primary",
+                    "fallback_model_name": "compact-backup" if force else "",
+                },
+            )
+        )
+        event, updated = await compressor.on_get_context_window(context, window, force=force)
+
+    assert event is None
+    assert updated.context_messages == original
+    context.set_messages.assert_not_called()
+    assert calls == ["startup-model" if force else "compact-primary"] * 3
