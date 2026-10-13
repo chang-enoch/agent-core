@@ -556,6 +556,10 @@ def _resolve_recreate_retries() -> int:
 _T = TypeVar("_T")
 
 
+class _DeleteTransportError(Exception):
+    """Distinguish remote cleanup failures from strict lifecycle hook failures."""
+
+
 class _JiuwenBoxProviderMixin:
     _shared_lock = threading.Lock()
     _shared_sandbox_ids: Dict[str, str] = {}
@@ -565,6 +569,10 @@ class _JiuwenBoxProviderMixin:
     # Cache shared_scope_key -> lifecycle_hook captured at create time, so teardown
     # (delete_jiuwenbox_sandbox) can fire delete hooks without being passed them.
     _lifecycle_hooks: ClassVar[Dict[str, Callable[[str, dict], None]]] = {}
+    # Keep unresolved deletes traceable: (before hook fired, hook of that sandbox),
+    # so retries never pick up a hook registered later under the same key.
+    _pending_deletions: ClassVar[Dict[tuple[str, str], tuple[bool, Optional[Callable[[str, dict], None]]]]] = {}
+    _delete_tasks: ClassVar[Dict[tuple[str, str], asyncio.Task[None]]] = {}
     # Lazy class-level asyncio.Lock serializes sandbox recreate under concurrent ops.
     _recreate_lock: ClassVar[Optional[asyncio.Lock]] = None
     _recreate_lock_init: ClassVar[threading.Lock] = threading.Lock()
@@ -810,6 +818,7 @@ class _JiuwenBoxProviderMixin:
         return entries
 
     def _get_sandbox_id(self) -> str:
+        self._assert_not_deleting(self._shared_scope_key())
         env_sandbox_id = os.environ.get("JIUWENBOX_SANDBOX_ID")
         if env_sandbox_id and self._sandbox_id != env_sandbox_id:
             self._sandbox_id = env_sandbox_id
@@ -828,6 +837,7 @@ class _JiuwenBoxProviderMixin:
             with self._shared_lock:
                 create_lock = self._creation_locks.setdefault(shared_key, threading.Lock())
             with create_lock:
+                self._assert_not_deleting(shared_key)
                 with self._shared_lock:
                     self._sandbox_id = self._shared_sandbox_ids.get(shared_key)
                     failure = self._creation_failures.get(shared_key)
@@ -882,6 +892,124 @@ class _JiuwenBoxProviderMixin:
                 self._shared_sandbox_ids[shared_key] = self._sandbox_id
                 self._launcher_extra_params(create=True)["sandbox_id"] = self._sandbox_id
         return self._sandbox_id
+
+    @classmethod
+    def _assert_not_deleting(cls, shared_key: str) -> None:
+        with cls._shared_lock:
+            pending = [sid for key, sid in cls._pending_deletions if key == shared_key]
+        if pending:
+            raise RuntimeError(f"jiuwenbox sandbox deletion is pending: {', '.join(pending)}")
+
+    @classmethod
+    def ensure_not_deleting(cls, shared_key: str) -> None:
+        """Raise when a delete for this shared key has not finished."""
+        cls._assert_not_deleting(shared_key)
+
+    @classmethod
+    def deletion_pending_for_base_url(cls, base_url: str) -> bool:
+        """Return whether any sandbox under base_url still has a pending delete."""
+        prefix = base_url.rstrip("/")
+        with cls._shared_lock:
+            return any(key.split("|", 1)[0] == prefix for key, _ in cls._pending_deletions)
+
+    @classmethod
+    async def delete_cached_sandboxes(
+        cls,
+        *,
+        sandbox_id: Optional[str] = None,
+        shared_key: Optional[str] = None,
+        delete_all: bool = False,
+        reason: str = "teardown",
+        timeout_seconds: float = 30.0,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        """Delete cached sandboxes. See ``delete_jiuwenbox_sandbox`` for the public contract."""
+        with cls._shared_lock:
+            candidates = dict.fromkeys(cls._shared_sandbox_ids.items())
+            candidates.update(dict.fromkeys(cls._pending_deletions))
+            if shared_key and sandbox_id:
+                candidates[(shared_key, sandbox_id)] = None
+            entries = []
+            for key, sid in candidates:
+                matches = delete_all or (
+                    shared_key and key == shared_key and (not sandbox_id or sid == sandbox_id)
+                ) or (not shared_key and sandbox_id and sid == sandbox_id)
+                if not matches:
+                    continue
+                if (key, sid) in cls._pending_deletions:
+                    hook = cls._pending_deletions[(key, sid)][1]
+                elif cls._shared_sandbox_ids.get(key) == sid:
+                    hook = cls._lifecycle_hooks.get(key)
+                else:
+                    hook = None
+                entries.append((key, sid, hook))
+
+        deleted: list[str] = []
+        for entry_key, entry_id, hook in entries:
+            identity = (entry_key, entry_id)
+            with cls._shared_lock:
+                task = cls._delete_tasks.get(identity)
+                if task is None:
+                    cls._pending_deletions.setdefault(identity, (False, hook))
+                    task = asyncio.create_task(cls._finish_cached_delete(
+                        entry_key, entry_id, hook, reason, timeout_seconds,
+                    ))
+                    cls._delete_tasks[identity] = task
+                    task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            try:
+                await asyncio.shield(task)
+            except _DeleteTransportError as exc:
+                logger.warning("[jiuwenbox] sandbox %s cleanup failed: %s", entry_id, exc)
+                if raise_on_error:
+                    raise RuntimeError(
+                        f"could not delete sandbox {entry_id}: {exc}"
+                    ) from exc.__cause__
+                continue
+            deleted.append(entry_id)
+        return deleted
+
+    @classmethod
+    async def _finish_cached_delete(
+        cls,
+        shared_key: str,
+        sandbox_id: str,
+        hook: Optional[Callable[[str, dict], None]],
+        reason: str,
+        timeout_seconds: float,
+    ) -> None:
+        identity = (shared_key, sandbox_id)
+        try:
+            with cls._shared_lock:
+                before_called, _ = cls._pending_deletions[identity]
+            if not before_called:
+                try:
+                    _invoke_lifecycle_hook(hook, "before_delete", {"reason": reason, "sandbox_id": sandbox_id})
+                except Exception:
+                    # No DELETE was sent; the existing sandbox is still usable.
+                    with cls._shared_lock:
+                        cls._pending_deletions.pop(identity, None)
+                    raise
+                with cls._shared_lock:
+                    cls._pending_deletions[identity] = (True, hook)
+            try:
+                with _JiuwenBoxClient(
+                    base_url=shared_key.split("|", 1)[0], timeout_seconds=timeout_seconds,
+                ) as client:
+                    await asyncio.to_thread(client.delete_sandbox, sandbox_id)
+            except Exception as exc:
+                raise _DeleteTransportError(f"{type(exc).__name__}: {exc}") from exc
+            with cls._shared_lock:
+                cls._pending_deletions.pop(identity, None)
+                if cls._shared_sandbox_ids.get(shared_key) == sandbox_id:
+                    cls._shared_sandbox_ids.pop(shared_key, None)
+                    cls._lifecycle_hooks.pop(shared_key, None)
+                    cls._creation_failures.pop(shared_key, None)
+                    cls._creation_locks.pop(shared_key, None)
+            logger.info("[jiuwenbox] delete_jiuwenbox_sandbox: deleted sandbox %s", sandbox_id)
+            _invoke_lifecycle_hook(hook, "after_delete", {"reason": reason, "sandbox_id": sandbox_id})
+        finally:
+            with cls._shared_lock:
+                cls._delete_tasks.pop(identity, None)
 
     @classmethod
     def _get_recreate_lock(cls) -> asyncio.Lock:
@@ -1251,10 +1379,13 @@ async def force_recreate_jiuwenbox_sandbox(
         create_options["policy_mode"] = policy_mode
 
     if shared_key is None:
+        if _JiuwenBoxProviderMixin.deletion_pending_for_base_url(base_url):
+            raise RuntimeError("jiuwenbox sandbox deletion is pending; retry deletion before recreation")
         # Legacy single-tenant path: clear every cached sandbox under base_url.
         stale_sandbox_ids = clear_jiuwenbox_shared_sandbox(base_url)
         shared_key = base_url.rstrip("/")
     else:
+        _JiuwenBoxProviderMixin.ensure_not_deleting(shared_key)
         stale_id = _JiuwenBoxProviderMixin.clear_shared_sandbox_for_key(shared_key)
         stale_sandbox_ids = [stale_id] if stale_id else []
 
@@ -1320,71 +1451,33 @@ async def delete_jiuwenbox_sandbox(
     delete_all: bool = False,
     reason: str = "teardown",
     timeout_seconds: float = 30.0,
+    raise_on_error: bool = False,
 ) -> list[str]:
     """Delete cached remote jiuwenbox sandbox(es) on sysoperation teardown.
 
     By default only the sandbox matching ``shared_key`` or ``sandbox_id`` is
-    removed. Pass ``delete_all=True`` to drain the entire process-wide cache
+    removed. Pass ``delete_all=True`` to delete all cached and pending entries
     (intended for explicit bulk cleanup, not per-agent gateway release).
 
     Args:
-        sandbox_id: Remote sandbox id to delete when ``shared_key`` cache miss.
+        sandbox_id: Explicit remote id to delete; otherwise resolve from the cache.
         shared_key: Scoped cache key (``base_url|isolation_key``).
         delete_all: When True, delete every cached sandbox in this process.
         reason: Passed to delete hook context; default "teardown".
         timeout_seconds: HTTP client timeout.
+        raise_on_error: Propagate remote deletion failures for explicit restart.
 
     Returns:
         sandbox_ids successfully deleted, in order.
     """
-    entries: list[tuple[str, str, Optional[Callable[[str, dict], None]]]] = []
-    if delete_all:
-        entries = _JiuwenBoxProviderMixin.drain_all_cached_sandboxes()
-    elif shared_key:
-        popped = _JiuwenBoxProviderMixin.pop_cached_sandbox_for_shared_key(shared_key)
-        if popped is not None:
-            resolved_id, hook = popped
-            entries = [(shared_key, resolved_id, hook)]
-        elif isinstance(sandbox_id, str) and sandbox_id:
-            hook = _JiuwenBoxProviderMixin.pop_lifecycle_hook(shared_key)
-            entries = [(shared_key, sandbox_id, hook)]
-    elif isinstance(sandbox_id, str) and sandbox_id:
-        popped = _JiuwenBoxProviderMixin.pop_cached_sandbox_by_sandbox_id(sandbox_id)
-        if popped is not None:
-            entries = [popped]
-
-    deleted: list[str] = []
-    by_base_url: Dict[str, list[tuple[str, Optional[Callable[[str, dict], None]]]]] = {}
-    for entry_shared_key, entry_sandbox_id, lifecycle_hook in entries:
-        base_url = entry_shared_key.split("|", 1)[0]
-        by_base_url.setdefault(base_url, []).append((entry_sandbox_id, lifecycle_hook))
-
-    for base_url, items in by_base_url.items():
-        with _JiuwenBoxClient(base_url=base_url, timeout_seconds=timeout_seconds) as client:
-            for sandbox_id, lifecycle_hook in items:
-                _invoke_lifecycle_hook(
-                    lifecycle_hook,
-                    "before_delete",
-                    {"reason": reason, "sandbox_id": sandbox_id},
-                )
-                try:
-                    await asyncio.to_thread(client.delete_sandbox, sandbox_id)
-                except Exception as exc:
-                    logger.warning(
-                        "[jiuwenbox] delete_jiuwenbox_sandbox: "
-                        "sandbox %s cleanup failed: %s", sandbox_id, exc,
-                    )
-                    continue
-                deleted.append(sandbox_id)
-                logger.info(
-                    "[jiuwenbox] delete_jiuwenbox_sandbox: deleted sandbox %s", sandbox_id,
-                )
-                _invoke_lifecycle_hook(
-                    lifecycle_hook,
-                    "after_delete",
-                    {"reason": reason, "sandbox_id": sandbox_id},
-                )
-    return deleted
+    return await _JiuwenBoxProviderMixin.delete_cached_sandboxes(
+        sandbox_id=sandbox_id,
+        shared_key=shared_key,
+        delete_all=delete_all,
+        reason=reason,
+        timeout_seconds=timeout_seconds,
+        raise_on_error=raise_on_error,
+    )
 
 
 def _decode_subprocess_stream(value: Any) -> str:
