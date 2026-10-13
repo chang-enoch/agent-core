@@ -149,7 +149,10 @@ class NetGuardChecker:
                 )
             if self._composed:
                 for source in self._source_order:
-                    selected = [(pattern, action) for pattern, action in hits if self._url_layers.get(pattern) == source]
+                    selected = [
+                        (pattern, action) for pattern, action in hits
+                        if self._url_layers.get(pattern) == source
+                    ]
                     if not selected:
                         continue
                     if any(action == "ask" for _pattern, action in selected):

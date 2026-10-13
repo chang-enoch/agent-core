@@ -283,7 +283,10 @@ class PermissionEngine:
                 else:
                     permission = (
                         PermissionLevel.ALLOW
-                        if permission == PermissionLevel.UNDETERMINED and path_result.permission == PermissionLevel.ALLOW
+                        if (
+                            permission == PermissionLevel.UNDETERMINED
+                            and path_result.permission == PermissionLevel.ALLOW
+                        )
                         else tiered_policy_strictest(permission, path_result.permission)
                     )
                     matched_rule = f"{matched_rule}|{path_rule}"
