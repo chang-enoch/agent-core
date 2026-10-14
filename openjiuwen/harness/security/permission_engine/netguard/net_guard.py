@@ -120,16 +120,14 @@ class NetGuardChecker:
         self,
         tool_name: str,
         tool_args: Mapping[str, Any],
-        *,
-        include_explicit_allow: bool = False,
     ) -> PermissionResult | None:
         if not self._enabled:
             return None
         if str(tool_name or "").strip() not in _FETCH_TOOLS:
             return None
-        return self.check_url(extract_fetch_url(tool_args), include_explicit_allow=include_explicit_allow)
+        return self.check_url(extract_fetch_url(tool_args))
 
-    def check_url(self, url: str | None, *, include_explicit_allow: bool = False) -> PermissionResult | None:
+    def check_url(self, url: str | None) -> PermissionResult | None:
         """Return ASK/DENY or ``None`` (allowed); callers handle ASK before tools."""
         if not self._enabled:
             return None
@@ -160,11 +158,6 @@ class NetGuardChecker:
                         return PermissionResult(
                             PermissionLevel.ASK, f"net_guard:source:{source}:url:{pattern}",
                             f"net_guard requires approval: {pattern}",
-                        )
-                    if include_explicit_allow:
-                        pattern = selected[0][0]
-                        return PermissionResult(
-                            PermissionLevel.ALLOW, f"net_guard:source:{source}:url:{pattern}",
                         )
                     return None
             if any(action == "ask" for _pattern, action in hits):

@@ -640,8 +640,6 @@ class FileGuardChecker:
         self,
         tool_name: str,
         tool_args: Mapping[str, Any],
-        *,
-        include_explicit_allow: bool = False,
     ) -> PermissionResult | None:
         """评估路径层；无意见或全部 ALLOW 时返回 ``None``（不抬升 Pipeline A）。"""
         if not self._effective.enabled:
@@ -682,24 +680,15 @@ class FileGuardChecker:
         overall = PermissionLevel.ALLOW
         hit_external: list[str] = []
         matched_bits: list[str] = []
-        explicit_allows: list[str] = []
-
         for p, action in accesses:
             level, rule_id = self._resolve_one(p, action)
             overall = tiered_strictest(overall, level)
-            if level == PermissionLevel.ALLOW and rule_id and rule_id.startswith("file_guard:source:"):
-                explicit_allows.append(rule_id)
             if level != PermissionLevel.ALLOW:
                 hit_external.append(p.as_posix())
                 if rule_id:
                     matched_bits.append(rule_id)
 
         if overall == PermissionLevel.ALLOW:
-            if include_explicit_allow and self._effective.composed and len(explicit_allows) == len(accesses):
-                return PermissionResult(
-                    permission=PermissionLevel.ALLOW,
-                    matched_rule="|".join(explicit_allows),
-                )
             return None
 
         if self._effective.mode == "legacy":

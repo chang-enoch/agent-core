@@ -72,16 +72,6 @@ def _has_builtin_layer(items: Any) -> bool:
     return any(isinstance(item, dict) and item.get("layer") == "builtin" for item in items)
 
 
-def _user_grant_can_resolve(config: dict[str, Any], matched_rule: str | None) -> bool:
-    composition = config.get("composition")
-    if not isinstance(composition, dict):
-        return True
-    order = composition.get("source_order", [])
-    if "user" not in order:
-        return False
-    return not any(f":source:{source}:" in (matched_rule or "") for source in order[:order.index("user")])
-
-
 # Old swarm product YAML often has severity without action. Map like
 # permission_mode=normal: LOW/MEDIUM→allow, HIGH/CRITICAL→ask.
 _LEGACY_SEVERITY_TO_ACTION = {
@@ -274,36 +264,25 @@ class PermissionEngine:
             permission = maybe_escalate_shell_operators(tool_name, tool_args, permission)
 
         if include_external_directory and self._file_guard is not None:
-            path_result = self._file_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
+            path_result = self._file_guard.evaluate(tool_name, tool_args)
             if path_result is not None:
                 path_rule = path_result.matched_rule or "file_guard"
                 if permission is None:
                     permission = path_result.permission
                     matched_rule = path_rule
                 else:
-                    permission = (
-                        PermissionLevel.ALLOW
-                        if (
-                            permission == PermissionLevel.UNDETERMINED
-                            and path_result.permission == PermissionLevel.ALLOW
-                        )
-                        else tiered_policy_strictest(permission, path_result.permission)
-                    )
+                    permission = tiered_policy_strictest(permission, path_result.permission)
                     matched_rule = f"{matched_rule}|{path_rule}"
 
         if self._net_guard is not None:
-            net_result = self._net_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
+            net_result = self._net_guard.evaluate(tool_name, tool_args)
             if net_result is not None:
                 net_rule = net_result.matched_rule or "net_guard"
                 if permission is None:
                     permission = net_result.permission
                     matched_rule = net_rule
                 else:
-                    permission = (
-                        PermissionLevel.ALLOW
-                        if permission == PermissionLevel.UNDETERMINED and net_result.permission == PermissionLevel.ALLOW
-                        else tiered_policy_strictest(permission, net_result.permission)
-                    )
+                    permission = tiered_policy_strictest(permission, net_result.permission)
                     matched_rule = f"{matched_rule}|{net_rule}"
 
         return permission, matched_rule
@@ -368,7 +347,7 @@ class PermissionEngine:
 
         # 2. Pipeline B：file_guard（可独立关闭；含 ExternalDirectory Legacy 投影）
         if self._file_guard is not None:
-            path_result = self._file_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
+            path_result = self._file_guard.evaluate(tool_name, tool_args)
             if path_result is not None:
                 path_rule = path_result.matched_rule or "file_guard"
                 logger.info(
@@ -380,11 +359,7 @@ class PermissionEngine:
                     path_result.external_paths,
                     permission.value,
                 )
-                permission = (
-                    PermissionLevel.ALLOW
-                    if permission == PermissionLevel.UNDETERMINED and path_result.permission == PermissionLevel.ALLOW
-                    else tiered_policy_strictest(permission, path_result.permission)
-                )
+                permission = tiered_policy_strictest(permission, path_result.permission)
                 matched_rule = f"{matched_rule}|{path_rule}"
                 external_paths = path_result.external_paths
             else:
@@ -401,7 +376,7 @@ class PermissionEngine:
 
         # 3. Pipeline C：net_guard（可独立关闭；仅 fetch 工具）
         if self._net_guard is not None:
-            net_result = self._net_guard.evaluate(tool_name, tool_args, include_explicit_allow=True)
+            net_result = self._net_guard.evaluate(tool_name, tool_args)
             if net_result is not None:
                 net_rule = net_result.matched_rule or "net_guard"
                 logger.info(
@@ -412,11 +387,7 @@ class PermissionEngine:
                     net_rule,
                     permission.value,
                 )
-                permission = (
-                    PermissionLevel.ALLOW
-                    if permission == PermissionLevel.UNDETERMINED and net_result.permission == PermissionLevel.ALLOW
-                    else tiered_policy_strictest(permission, net_result.permission)
-                )
+                permission = tiered_policy_strictest(permission, net_result.permission)
                 matched_rule = f"{matched_rule}|{net_rule}"
             else:
                 logger.info(
@@ -433,9 +404,7 @@ class PermissionEngine:
         if permission == PermissionLevel.ASK:
             from openjiuwen.harness.security.permission_engine.approve.operation_grants import has_operation_grant
 
-            if _user_grant_can_resolve(self.config, matched_rule) and has_operation_grant(
-                self.config, tool_name, tool_args, self._workspace_root,
-            ):
+            if has_operation_grant(self.config, tool_name, tool_args, self._workspace_root):
                 permission = PermissionLevel.ALLOW
                 matched_rule = "operation_grant"
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from openjiuwen.harness.security.permission_engine.approve.operation_grants import build_operation_grant
 from openjiuwen.harness.security.permission_engine.core import (
     COMPOSITION_SCHEMA_VERSION,
     PermissionEngine,
@@ -110,7 +111,7 @@ def test_network_overlapping_patterns_follow_source_order():
 
 
 @pytest.mark.asyncio
-async def test_operation_grant_cannot_bypass_higher_source_ask():
+async def test_tool_approval_override_cannot_bypass_higher_source_ask():
     cfg = {
         "enabled": True,
         "tools": {"bash": "allow"},
@@ -124,7 +125,7 @@ async def test_operation_grant_cannot_bypass_higher_source_ask():
 
 
 @pytest.mark.asyncio
-async def test_explicit_network_allow_resolves_deferred_unmatched_without_lifting_deny():
+async def test_network_allow_does_not_lift_unmatched_tool_policy():
     cfg = {
         "enabled": True, "defer_unmatched": True,
         "net_guard": {"enabled": True, "urls": {"example.org": "allow"}},
@@ -132,8 +133,9 @@ async def test_explicit_network_allow_resolves_deferred_unmatched_without_liftin
     }
     engine = PermissionEngine(cfg)
     matched = await engine.check_permission("mcp_fetch_webpage", {"url": "https://example.org/"})
-    assert matched.permission == PermissionLevel.ALLOW
-    assert "net_guard:source:user" in matched.matched_rule
+    assert matched.permission == PermissionLevel.UNDETERMINED
+    direct, _ = engine.evaluate_global_policy_directly("mcp_fetch_webpage", {"url": "https://example.org/"})
+    assert direct == PermissionLevel.UNDETERMINED
     unmatched = await engine.check_permission("mcp_fetch_webpage", {"url": "https://other.org/"})
     assert unmatched.permission == PermissionLevel.UNDETERMINED
     cfg["tools"] = {"mcp_fetch_webpage": "deny"}
@@ -143,7 +145,7 @@ async def test_explicit_network_allow_resolves_deferred_unmatched_without_liftin
 
 
 @pytest.mark.asyncio
-async def test_explicit_file_allow_resolves_deferred_unmatched(tmp_path: Path):
+async def test_file_allow_does_not_lift_unmatched_tool_policy(tmp_path: Path):
     target = tmp_path / "data.txt"
     cfg = {
         "enabled": True, "defer_unmatched": True,
@@ -153,6 +155,26 @@ async def test_explicit_file_allow_resolves_deferred_unmatched(tmp_path: Path):
     }
     engine = PermissionEngine(cfg, workspace_root=tmp_path)
     result = await engine.check_permission("read_file", {"file_path": str(target)})
-    assert result.permission == PermissionLevel.ALLOW
+    assert result.permission == PermissionLevel.UNDETERMINED
+    direct, _ = engine.evaluate_global_policy_directly("read_file", {"file_path": str(target)})
+    assert direct == PermissionLevel.UNDETERMINED
     unmatched = await engine.check_permission("read_file", {"file_path": str(tmp_path / "other.txt")})
     assert unmatched.permission == PermissionLevel.ASK
+
+
+@pytest.mark.asyncio
+async def test_composed_file_ask_keeps_existing_operation_grant_behavior(tmp_path: Path):
+    target = tmp_path / "data.txt"
+    args = {"file_path": str(target)}
+    cfg = {
+        "enabled": True,
+        "tools": {"read_file": "allow"},
+        "file_guard": {
+            "enabled": True,
+            "paths": [{"path": str(target), "read": "ask", "layer": "cloud"}],
+        },
+        "composition": composition(["cloud", "user"]),
+    }
+    cfg["approval_overrides"] = [build_operation_grant("read_file", args, cfg, tmp_path)]
+    engine = PermissionEngine(cfg, workspace_root=tmp_path)
+    assert (await engine.check_permission("read_file", args)).permission == PermissionLevel.ALLOW
