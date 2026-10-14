@@ -22,6 +22,7 @@ from pydantic import Field, BaseModel
 
 from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.common.logging import logger
+
 try:
     from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_logging import (
         browser_agent_log_info,
@@ -190,6 +191,47 @@ def log_llm_response(log: Any, ai_message: Any) -> None:
                     f"[LLM]   tool_call: "
                     f"{tc.name}({tc.arguments})"
                 )
+
+
+def _is_dead_model_response(ai_message: Any) -> bool:
+    """检测"假成功"死响应：内容/工具调用/思考三通道全空，且 provider 上报零用量。
+
+    零输入用量（input_tokens==0）说明请求根本没被真实模型计量——网关/代理
+    合成的空 200，或渠道死在到达模型之前（团队成员 LLM 通道死亡时
+    每轮秒回空应答，任务永久 pending、催促循环无熔断、前端永无终态）。
+    usage 缺失（None）时保守放过：无法区分"不上报用量的合法空答"与故障，
+    宁漏不误。
+    """
+    if getattr(ai_message, "content", None):
+        return False
+    if getattr(ai_message, "tool_calls", None):
+        return False
+    if getattr(ai_message, "reasoning_content", None):
+        return False
+    usage = getattr(ai_message, "usage_metadata", None)
+    if usage is None:
+        return False
+    return not (getattr(usage, "input_tokens", 0) or 0) and not (
+            getattr(usage, "output_tokens", 0) or 0
+    )
+
+
+def _raise_dead_model_response(path: str, reason: str) -> None:
+    """把死响应当模型调用失败抛出。
+
+    错误文本带 ``async invoke/stream error`` marker，命中 LLMRetryRail 既有
+    model_call_failed 分类：重试（退避）→ 耗尽后穿透 → 轮次 task_failed
+    [181001] → 团队侧 StreamController 重驱/透传 chat.error。异常路径是
+    @rail 重试循环唯一够得着的通道（成功 return 不重试），所以必须 raise。
+    """
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import build_error
+
+    logger.warning(f"[LLM] dead model response on {path}: {reason}")
+    raise build_error(
+        StatusCode.MODEL_CALL_FAILED,
+        error_msg=f"async {path} error: empty model response ({reason})",
+    )
 
 
 class ReActAgentConfig(BaseModel):
@@ -1001,6 +1043,10 @@ class ReActAgent(BaseAgent):
                     ai_message = self._build_image_input_unsupported_message()
                 else:
                     raise
+            if _is_dead_model_response(ai_message):
+                _raise_dead_model_response(
+                    "invoke", "no content/tool_calls/reasoning, zero token usage"
+                )
             ctx.inputs.response = ai_message
             return ai_message
 
@@ -1065,7 +1111,8 @@ class ReActAgent(BaseAgent):
             raise
 
         if accumulated_chunk is None:
-            ai_message = AssistantMessage(content="", tool_calls=[])
+            # 流式零帧：连接正常结束但一帧未发，绝不可能是合法应答。
+            _raise_dead_model_response("stream", "connection closed with zero chunks")
         else:
             ai_message = AssistantMessage(
                 content=accumulated_chunk.content or "",
@@ -1076,6 +1123,10 @@ class ReActAgent(BaseAgent):
                 prompt_token_ids=accumulated_chunk.prompt_token_ids,
                 completion_token_ids=accumulated_chunk.completion_token_ids,
                 logprobs=accumulated_chunk.logprobs,
+            )
+        if _is_dead_model_response(ai_message):
+            _raise_dead_model_response(
+                "stream", "no content/tool_calls/reasoning, zero token usage"
             )
         ctx.inputs.response = ai_message
         if ai_message.usage_metadata:
@@ -1248,14 +1299,13 @@ class ReActAgent(BaseAgent):
             except BaseError as e:
                 logger.warning("Failed to render system message placeholder: %s", e)
 
-
     @staticmethod
     def _is_browser_tool_name(tool_name: str) -> bool:
         lowered_name = str(tool_name or "").lower()
         return (
-            lowered_name.startswith("browser_")
-            or "browser_" in lowered_name
-            or lowered_name.startswith("mcp_playwright")
+                lowered_name.startswith("browser_")
+                or "browser_" in lowered_name
+                or lowered_name.startswith("mcp_playwright")
         )
 
     @staticmethod
@@ -1927,7 +1977,7 @@ class ReActAgent(BaseAgent):
                 start_iteration = 0
                 if interruption_state is not None:
                     is_tool_interruption = isinstance(interruption_state, ToolInterruptionState)
-                    
+
                     if is_tool_interruption:
                         # Tool Interrupt: not write UserMessage, recovery input is passed to Rail via ctx.extra
                         await self._handle_resume(
@@ -2126,7 +2176,7 @@ class ReActAgent(BaseAgent):
                 schemas = (
                     workflow_state.result
                     if workflow_state is not None
-                    and isinstance(getattr(workflow_state, "result", None), list)
+                       and isinstance(getattr(workflow_state, "result", None), list)
                     else []
                 )
                 for schema in schemas:
@@ -2183,9 +2233,9 @@ class ReActAgent(BaseAgent):
 
         # Only manage agent-session stream lifecycle, not workflow sessions.
         self.is_agent_session = (
-            hasattr(session, "pre_run")
-            and hasattr(session, "close_stream")
-            and hasattr(session, "commit")
+                hasattr(session, "pre_run")
+                and hasattr(session, "close_stream")
+                and hasattr(session, "commit")
         )
         # self.is_agent_session = isinstance(session, AgentSession)
         if self.is_agent_session:
