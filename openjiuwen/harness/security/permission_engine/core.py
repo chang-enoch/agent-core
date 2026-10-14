@@ -47,6 +47,11 @@ from openjiuwen.harness.security.permission_engine.netguard.net_urls import (
     _has_package_net_urls,
     merge_package_net_urls,
 )
+from openjiuwen.harness.security.permission_engine.policy_sources import (
+    SOURCE_BUILTIN,
+    SOURCE_USER,
+    validate_source_order,
+)
 from openjiuwen.harness.security.permission_engine.toolguard.builtin_rules import (
     inline_package_command_rules,
     package_builtin_rules_enabled,
@@ -69,7 +74,7 @@ COMPOSITION_SCHEMA_VERSION = 1
 def _has_builtin_layer(items: Any) -> bool:
     if not isinstance(items, list):
         return False
-    return any(isinstance(item, dict) and item.get("layer") == "builtin" for item in items)
+    return any(isinstance(item, dict) and item.get("layer") == SOURCE_BUILTIN for item in items)
 
 
 # Old swarm product YAML often has severity without action. Map like
@@ -122,14 +127,10 @@ def prepare_permissions_for_engine(
     if composition is not None:
         if not isinstance(composition, dict) or composition.get("schema_version") != COMPOSITION_SCHEMA_VERSION:
             raise ValueError("unsupported permissions.composition schema_version")
-        order = composition.get("source_order")
-        if not isinstance(order, list) or any(
-            not isinstance(source, str) or source not in {"user", "cloud", "builtin"} for source in order
-        ) or len(order) != len(set(order)):
-            raise ValueError("invalid permissions.composition source_order")
+        order = validate_source_order(composition.get("source_order"))
         # The composed snapshot already contains selected package rules.
         prepared = _fill_legacy_host_rule_actions(deepcopy(cfg))
-        if "user" not in order:
+        if SOURCE_USER not in order:
             prepared["approval_overrides"] = []
         return prepared
 

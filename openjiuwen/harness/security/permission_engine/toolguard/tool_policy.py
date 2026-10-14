@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from openjiuwen.harness.security.permission_engine.models import PermissionLevel
+from openjiuwen.harness.security.permission_engine.policy_sources import SOURCE_BUILTIN, SOURCE_USER
 from openjiuwen.harness.security.permission_engine.toolguard.builtin_rules import shell_builtin_rules_enabled
 from openjiuwen.harness.security.permission_engine.toolguard.command_canonicalize import (
     canonicalize_shell_command_for_permission,
@@ -481,7 +482,7 @@ def _composed_param_hits(
 
 
 def _user_approval_can_override(source: str | None, order: tuple[str, ...]) -> bool:
-    return "user" in order and (source is None or order.index("user") <= order.index(source))
+    return SOURCE_USER in order and (source is None or order.index(SOURCE_USER) <= order.index(source))
 
 
 def _evaluate_single_invocation(
@@ -685,11 +686,11 @@ def evaluate_tiered_policy(
         for source in source_order
     } if composed else {}
     if composed and not shell_builtin_rules_enabled(permission_config):
-        source_rules["builtin"] = []
-    builtin_rules = [r for r in dict_rules if r.get("layer") == "builtin"]
+        source_rules[SOURCE_BUILTIN] = []
+    builtin_rules = [r for r in dict_rules if r.get("layer") == SOURCE_BUILTIN]
     if not shell_builtin_rules_enabled(permission_config):
         builtin_rules = []
-    user_rules = [r for r in dict_rules if r.get("layer") != "builtin"]
+    user_rules = [r for r in dict_rules if r.get("layer") != SOURCE_BUILTIN]
     approval_overrides = permission_config.get("approval_overrides") or []
     if not isinstance(approval_overrides, list):
         approval_overrides = []

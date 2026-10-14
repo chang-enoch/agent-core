@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from openjiuwen.harness.security.permission_engine.fileguard.glob_patterns import validated_glob_patterns
 from openjiuwen.harness.security.permission_engine.models import PermissionLevel, PermissionResult
+from openjiuwen.harness.security.permission_engine.policy_sources import SOURCE_USER
 from openjiuwen.harness.security.permission_engine.toolguard.pattern_matchers import contains_path
 from openjiuwen.harness.security.permission_engine.toolguard.tool_categories import (
     is_shell_tool,
@@ -241,7 +242,7 @@ def normalize_path_guard_config(
     composition = perms.get("composition")
     composed = isinstance(composition, dict)
     source_order = tuple(composition.get("source_order", ())) if composed else ()
-    if composed and "user" not in source_order:
+    if composed and SOURCE_USER not in source_order:
         trusted = []
         ext = None
     has_ext = isinstance(ext, (dict, str)) and bool(ext)
@@ -427,7 +428,7 @@ def _normalize_native(
     ws_rule = _compile_workspace_axis_rule(fg.get("workspace"), workspace_root=workspace_root)
     if ws_rule is not None:
         if composed:
-            ws_rule = replace(ws_rule, source="user", explicit_axes=frozenset({"read", "write", "exec"}))
+            ws_rule = replace(ws_rule, source=SOURCE_USER, explicit_axes=frozenset({"read", "write", "exec"}))
         rules.append(ws_rule)
 
     # 运行时 trusted_dirs → allow 前缀（与 workspace 独立；项目 cwd / /add-dir 热更新）
@@ -437,7 +438,7 @@ def _normalize_native(
         )
         if rule is not None:
             if composed:
-                rule = replace(rule, source="user", explicit_axes=frozenset({"read", "write", "exec"}))
+                rule = replace(rule, source=SOURCE_USER, explicit_axes=frozenset({"read", "write", "exec"}))
             rules.append(rule)
 
     # 旧 external_directory 具名键作迁移源（不覆盖已有 paths）
@@ -462,7 +463,7 @@ def _normalize_native(
                 )
             if rule is not None:
                 if composed:
-                    rule = replace(rule, source="user", explicit_axes=frozenset({"read", "write", "exec"}))
+                    rule = replace(rule, source=SOURCE_USER, explicit_axes=frozenset({"read", "write", "exec"}))
                 rules.append(rule)
                 logger.warning(
                     "[file_guard] migrate.external_directory key=%s action=%s → file_guard.paths",
