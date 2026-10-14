@@ -28,6 +28,7 @@ _OPENROUTER_PREFETCH_THREAD: Optional[threading.Thread] = None
 
 MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS: Dict[str, int] = {
     # GLM
+    "glm-5.3": 1048576,  # official 1,048,576 context; glm-5.2 and earlier stay at 198Ki
     "glm-5.2": 202752,
     "glm-5.1": 202752,
     "glm-5": 202752,
