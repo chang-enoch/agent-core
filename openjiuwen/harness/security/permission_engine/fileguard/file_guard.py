@@ -16,12 +16,13 @@ import os
 import re
 import shlex
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from openjiuwen.harness.security.permission_engine.fileguard.glob_patterns import validated_glob_patterns
 from openjiuwen.harness.security.permission_engine.models import PermissionLevel, PermissionResult
+from openjiuwen.harness.security.permission_engine.policy_sources import SOURCE_USER
 from openjiuwen.harness.security.permission_engine.toolguard.pattern_matchers import contains_path
 from openjiuwen.harness.security.permission_engine.toolguard.tool_categories import (
     is_shell_tool,
@@ -70,6 +71,8 @@ class FileGuardPathRule:
     write: PermissionLevel
     exec: PermissionLevel
     match: FileGuardMatch = "prefix"
+    source: str = ""
+    explicit_axes: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,8 @@ class EffectiveFileGuardConfig:
     defaults: FileGuardAxisDefaults
     paths: tuple[FileGuardPathRule, ...]
     workspace_root: Path | None
+    source_order: tuple[str, ...] = ()
+    composed: bool = False
 
 
 def _parse_level(raw: Any, default: PermissionLevel = PermissionLevel.ASK) -> PermissionLevel:
@@ -132,6 +137,8 @@ def _compile_path_entry(
     exec_: Any = None,
     match: FileGuardMatch = "prefix",
     default_level: PermissionLevel = PermissionLevel.ASK,
+    source: str = "",
+    explicit_axes: frozenset[str] = frozenset(),
 ) -> FileGuardPathRule | None:
     path_s = str(path_raw).strip()
     if not path_s or path_s == "*":
@@ -151,7 +158,10 @@ def _compile_path_entry(
             path_s = norm
         if "/" not in path_s.rstrip("/"):
             return None
-    return FileGuardPathRule(path=path_s, read=r, write=w, exec=e, match=match)
+    return FileGuardPathRule(
+        path=path_s, read=r, write=w, exec=e, match=match,
+        source=source, explicit_axes=explicit_axes,
+    )
 
 
 def _has_axis_dict(raw: Any) -> bool:
@@ -229,6 +239,12 @@ def normalize_path_guard_config(
     fg: dict[str, Any] = dict(fg_raw) if isinstance(fg_raw, dict) else {}
     trusted = list(trusted_dirs or [])
     ext = perms.get("external_directory")
+    composition = perms.get("composition")
+    composed = isinstance(composition, dict)
+    source_order = tuple(composition.get("source_order", ())) if composed else ()
+    if composed and SOURCE_USER not in source_order:
+        trusted = []
+        ext = None
     has_ext = isinstance(ext, (dict, str)) and bool(ext)
     has_trusted = bool(trusted)
 
@@ -241,7 +257,7 @@ def normalize_path_guard_config(
         enabled = False
 
     ws = Path(workspace_root).resolve() if workspace_root is not None else None
-    native = _has_native_file_guard(fg, perms)
+    native = composed or _has_native_file_guard(fg, perms)
 
     if not enabled:
         return EffectiveFileGuardConfig(
@@ -254,10 +270,15 @@ def normalize_path_guard_config(
             ),
             paths=(),
             workspace_root=ws,
+            source_order=source_order,
+            composed=composed,
         )
 
     if native:
-        return _normalize_native(fg, ext=ext, workspace_root=ws, trusted_dirs=trusted)
+        return _normalize_native(
+            fg, ext=ext, workspace_root=ws, trusted_dirs=trusted,
+            source_order=source_order, composed=composed,
+        )
 
     return _normalize_legacy(
         ext=ext,
@@ -360,6 +381,8 @@ def _normalize_native(
     ext: Any,
     workspace_root: Path | None,
     trusted_dirs: Sequence[Path],
+    source_order: tuple[str, ...] = (),
+    composed: bool = False,
 ) -> EffectiveFileGuardConfig:
     raw_defaults = fg.get("defaults") if isinstance(fg.get("defaults"), dict) else {}
     # 若未写 defaults，可从 external_directory["*"] 迁移
@@ -385,13 +408,18 @@ def _normalize_native(
                 continue
             match_v = item.get("match", "prefix")
             match: FileGuardMatch = "glob" if match_v == "glob" else "prefix"
+            explicit_axes = frozenset(axis for axis in ("read", "write", "exec") if axis in item)
+            if item.get("read") == "deny":
+                explicit_axes |= {"write", "exec"}
             rule = _compile_path_entry(
                 path_v,
-                read=item.get("read", defaults.read.value),
-                write=item.get("write", defaults.write.value),
-                exec_=item.get("exec", defaults.exec.value),
+                read=item.get("read") if composed else item.get("read", defaults.read.value),
+                write=item.get("write") if composed else item.get("write", defaults.write.value),
+                exec_=item.get("exec") if composed else item.get("exec", defaults.exec.value),
                 match=match,
                 default_level=PermissionLevel.ASK,
+                source=str(item.get("layer") or "") if composed else "",
+                explicit_axes=explicit_axes,
             )
             if rule is not None:
                 rules.append(rule)
@@ -399,6 +427,8 @@ def _normalize_native(
     # file_guard.workspace → 绑定运行时 workspace_root 的前缀规则
     ws_rule = _compile_workspace_axis_rule(fg.get("workspace"), workspace_root=workspace_root)
     if ws_rule is not None:
+        if composed:
+            ws_rule = replace(ws_rule, source=SOURCE_USER, explicit_axes=frozenset({"read", "write", "exec"}))
         rules.append(ws_rule)
 
     # 运行时 trusted_dirs → allow 前缀（与 workspace 独立；项目 cwd / /add-dir 热更新）
@@ -407,6 +437,8 @@ def _normalize_native(
             str(td), read="allow", write="allow", exec_="ask", match="prefix",
         )
         if rule is not None:
+            if composed:
+                rule = replace(rule, source=SOURCE_USER, explicit_axes=frozenset({"read", "write", "exec"}))
             rules.append(rule)
 
     # 旧 external_directory 具名键作迁移源（不覆盖已有 paths）
@@ -430,6 +462,8 @@ def _normalize_native(
                     key, read=action, write=action, exec_=action, match="prefix",
                 )
             if rule is not None:
+                if composed:
+                    rule = replace(rule, source=SOURCE_USER, explicit_axes=frozenset({"read", "write", "exec"}))
                 rules.append(rule)
                 logger.warning(
                     "[file_guard] migrate.external_directory key=%s action=%s → file_guard.paths",
@@ -443,6 +477,8 @@ def _normalize_native(
         defaults=defaults,
         paths=tuple(rules),
         workspace_root=workspace_root,
+        source_order=source_order,
+        composed=composed,
     )
 
 
@@ -645,7 +681,6 @@ class FileGuardChecker:
         overall = PermissionLevel.ALLOW
         hit_external: list[str] = []
         matched_bits: list[str] = []
-
         for p, action in accesses:
             level, rule_id = self._resolve_one(p, action)
             overall = tiered_strictest(overall, level)
@@ -727,6 +762,8 @@ class FileGuardChecker:
         path: Path,
         action: FileGuardAction,
     ) -> tuple[PermissionLevel, str | None]:
+        if self._effective.composed:
+            return self._resolve_composed(path, action)
         path_posix = path.as_posix()
         best_prefix: tuple[int, FileGuardPathRule] | None = None
         glob_hits: list[PermissionLevel] = []
@@ -766,6 +803,39 @@ class FileGuardChecker:
         if action == "exec":
             return defaults.exec, "file_guard:defaults"
         return defaults.read, "file_guard:defaults"
+
+    def _resolve_composed(
+        self, path: Path, action: FileGuardAction,
+    ) -> tuple[PermissionLevel, str | None]:
+        path_posix = path.as_posix()
+        hits: dict[str, list[tuple[int, PermissionLevel, FileGuardPathRule]]] = {
+            source: [] for source in self._effective.source_order
+        }
+        for rule in self._effective.paths:
+            if rule.source not in hits or action not in rule.explicit_axes:
+                continue
+            if rule.match == "glob":
+                if _match_glob(rule.path.replace("\\", "/"), path_posix):
+                    hits[rule.source].append((0, _level_for_action(rule, action), rule))
+                continue
+            prefix = rule.path.rstrip("/")
+            if path_posix == prefix or path_posix.startswith(prefix + "/"):
+                hits[rule.source].append((len(prefix), _level_for_action(rule, action), rule))
+
+        for source in self._effective.source_order:
+            for _length, level, rule in hits[source]:
+                if level == PermissionLevel.DENY:
+                    return level, f"file_guard:source:{source}:{rule.match}:{rule.path}"
+        for source in self._effective.source_order:
+            if not hits[source]:
+                continue
+            prefixes = [hit for hit in hits[source] if hit[2].match == "prefix"]
+            globs = [hit for hit in hits[source] if hit[2].match == "glob"]
+            candidates = ([max(prefixes, key=lambda hit: hit[0])] if prefixes else []) + globs
+            chosen = min(candidates, key=lambda hit: _LEVEL_ORDER[hit[1]])
+            return chosen[1], f"file_guard:source:{source}:{chosen[2].match}:{chosen[2].path}"
+        defaults = self._effective.defaults
+        return getattr(defaults, action), "file_guard:defaults"
 
 
 def build_file_guard_checker(
