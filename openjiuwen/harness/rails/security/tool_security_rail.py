@@ -952,6 +952,7 @@ class PermissionInterruptRail(ConfirmInterruptRail):
         tool_args = self.parse_tool_args(tool_call)
         presentation = build_permission_ask_presentation(
             tool_name, tool_args, result, permission_config=self._engine.config,
+            workspace=self._approval_workspace(),
         )
         hint = self._build_always_allow_hint(tool_call)
         return render_ask_presentation_message(presentation, always_allow_hint=hint)
@@ -969,11 +970,17 @@ class PermissionInterruptRail(ConfirmInterruptRail):
         tool_args = self.parse_tool_args(tool_call)
         presentation = build_permission_ask_presentation(
             tool_name, tool_args, result, permission_config=self._engine.config,
+            workspace=self._approval_workspace(),
         )
         return {
             "ask_category": presentation.category,
             "ask_title": presentation.title,
             "ask_summary": presentation.summary,
+            "ask_risk_level": presentation.risk_level,
+            "file_operations": [
+                {"path": path, "action": action, "source": source}
+                for path, action, source in presentation.file_operations
+            ],
             "matched_rule": result.matched_rule or "",
             "authorization_scopes": scope_options(operation_subject(
                 self._normalize_tool_name(tool_name), tool_args, self._engine.config, self._approval_workspace())),
