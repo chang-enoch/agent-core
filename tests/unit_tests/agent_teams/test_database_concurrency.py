@@ -41,7 +41,10 @@ async def file_db(tmp_path):
         yield database
     finally:
         await database.close()
-        reset_session_id(token)
+        try:
+            reset_session_id(token)
+        except (ValueError, LookupError):
+            pass  # teardown Context 与 setup 不同（pytest-asyncio），值随 setup Context 消亡
 
 
 @pytest.mark.asyncio
@@ -96,7 +99,10 @@ async def test_memory_db_shares_single_engine(tmp_path) -> None:
         assert database.read_session_local is database.session_local
     finally:
         await database.close()
-        reset_session_id(token)
+        try:
+            reset_session_id(token)
+        except (ValueError, LookupError):
+            pass  # teardown Context 与 setup 不同（pytest-asyncio），值随 setup Context 消亡
 
 
 @pytest.mark.asyncio
@@ -123,7 +129,10 @@ async def test_pool_and_cache_knobs_are_honored(tmp_path) -> None:
         assert write_cache == -32768
     finally:
         await database.close()
-        reset_session_id(token)
+        try:
+            reset_session_id(token)
+        except (ValueError, LookupError):
+            pass  # teardown Context 与 setup 不同（pytest-asyncio），值随 setup Context 消亡
 
 
 @pytest.mark.asyncio
@@ -169,7 +178,10 @@ async def test_background_checkpointer_moves_checkpoint_off_write_path(tmp_path)
         assert not database._checkpoint_task.done()
     finally:
         await database.close()
-        reset_session_id(token)
+        try:
+            reset_session_id(token)
+        except (ValueError, LookupError):
+            pass  # teardown Context 与 setup 不同（pytest-asyncio），值随 setup Context 消亡
     assert database._checkpoint_task is None
 
 
@@ -177,6 +189,7 @@ async def test_background_checkpointer_moves_checkpoint_off_write_path(tmp_path)
 @pytest.mark.level0
 async def test_concurrent_claims_do_not_exhaust_pool(file_db: TeamDatabase) -> None:
     """More concurrent writers than pool_size must all succeed, not time out."""
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     count = 12  # > pool_size (5)
@@ -198,6 +211,7 @@ async def test_concurrent_claim_same_task_single_winner(file_db: TeamDatabase) -
     pending): only the first caller matches the row, later callers see it no
     longer pending and get rowcount 0, so exactly one True comes back.
     """
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     await file_db.task.create_task("t1", team, "T1", "content", TaskStatus.PENDING.value)
@@ -216,6 +230,7 @@ async def test_concurrent_claim_same_task_single_winner(file_db: TeamDatabase) -
 @pytest.mark.level0
 async def test_concurrent_create_messages_succeed(file_db: TeamDatabase) -> None:
     """High-frequency concurrent message writes do not exhaust the pool."""
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     await file_db.member.create_member("m1", team, "M1", "{}", MemberStatus.UNSTARTED.value)
@@ -276,6 +291,7 @@ async def test_reads_run_concurrently(file_db: TeamDatabase) -> None:
 @pytest.mark.level0
 async def test_mark_messages_read_batch_direct_and_broadcast(file_db: TeamDatabase) -> None:
     """Batch mark covers direct (is_read) and broadcast (watermark) in one call."""
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     await file_db.member.create_member("m1", team, "M1", "{}", MemberStatus.UNSTARTED.value)
@@ -305,6 +321,7 @@ async def test_mark_messages_read_batch_multiple_broadcasts(file_db: TeamDatabas
     collapses broadcasts before the DAO, but the DAO must stay safe on its
     own for direct callers — hence this test drives the DAO directly.
     """
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     await file_db.member.create_member("m1", team, "M1", "{}", MemberStatus.UNSTARTED.value)
@@ -320,6 +337,7 @@ async def test_mark_messages_read_batch_multiple_broadcasts(file_db: TeamDatabas
 @pytest.mark.level1
 async def test_mark_messages_read_skips_missing(file_db: TeamDatabase) -> None:
     """Missing ids are skipped; the count reflects only applied marks."""
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     await file_db.member.create_member("m1", team, "M1", "{}", MemberStatus.UNSTARTED.value)
@@ -334,6 +352,7 @@ async def test_mark_messages_read_skips_missing(file_db: TeamDatabase) -> None:
 @pytest.mark.level1
 async def test_mark_messages_read_empty_is_noop(file_db: TeamDatabase) -> None:
     """An empty id list returns zero without opening a transaction."""
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     assert await file_db.message.mark_messages_read([], "m1") == 0
 
 
@@ -347,6 +366,7 @@ async def test_nested_write_no_deadlock(file_db: TeamDatabase) -> None:
     session, so the non-reentrant lock is acquired once. A regression
     (double acquire) would hang, which ``wait_for`` surfaces as a timeout.
     """
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     team = "team1"
     await file_db.team.create_team(team, "Team 1", "leader")
     await file_db.task.create_task("base", team, "Base", "content", TaskStatus.BLOCKED.value)
@@ -452,6 +472,7 @@ async def test_retry_on_locked_recovers_after_transient_pool_timeout(monkeypatch
 async def test_mark_messages_read_batch(file_db: TeamDatabase) -> None:
     """The batch mark-read API marks a whole mailbox drain in one call."""
     db = file_db
+    set_session_id("pool_session")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="t1", display_name="T1", leader_member_name="leader")
     await db.member.create_member(
         member_name="dev",

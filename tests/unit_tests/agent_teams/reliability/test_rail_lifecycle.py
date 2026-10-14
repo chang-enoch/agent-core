@@ -161,10 +161,10 @@ async def test_reliability_rail_observes_model_failure_finally_lifecycle(agent_f
     assert [signal.kind for signal in monitor.signals] == [
         SignalKind.BEFORE_MODEL_CALL,
         SignalKind.MODEL_EXCEPTION,
-        SignalKind.AFTER_MODEL_CALL,
+        # 副修：失败轮不再发 AFTER_MODEL_CALL（伪成功信号会清零
+        # ErrorBurstDetector 连续失败计数）。失败轮无 response 可测，不损失信息。
     ]
     assert monitor.signals[1].error == "mock model failure"
-    assert monitor.signals[2].text_len is None
 
 
 @pytest.mark.asyncio
@@ -214,10 +214,12 @@ async def test_reliability_rail_model_retry_emits_after_for_each_attempt(agent_f
         await agent.invoke({"query": "retry model"})
 
     assert attempts == 2
+    # 副修：失败的 attempt 不发 AFTER_MODEL_CALL（伪成功会清连续失败
+    # 计数）；成功的 attempt 照发。模型调用 after 帧仍由 @rail finally 触发，
+    # 只是 ReliabilityRail 在 ctx.exception 非 None 时短路。
     assert [signal.kind for signal in monitor.signals] == [
         SignalKind.BEFORE_MODEL_CALL,
         SignalKind.MODEL_EXCEPTION,
-        SignalKind.AFTER_MODEL_CALL,
         SignalKind.BEFORE_MODEL_CALL,
         SignalKind.AFTER_MODEL_CALL,
     ]
@@ -282,10 +284,6 @@ async def test_real_tool_lifecycle_preserves_args_for_repeat_detection(agent_fac
     assert tool_before.tool_args == {"a": 1, "b": 2}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AFTER_MODEL_CALL fires after an exception and currently resets the model-error streak",
-)
 @pytest.mark.asyncio
 async def test_real_model_failures_reach_consecutive_threshold(agent_factory):
     agent = agent_factory("reliability_unused_model_streak_tool", lambda a, b: a + b)

@@ -70,7 +70,15 @@ async def db(db_config):
     finally:
         # Close and cleanup database
         await database.close()
-        reset_session_id(token)
+        # pytest-asyncio runs fixture teardown in a different Context than
+        # setup; Token.reset raises ValueError there ("created in a different
+        # Context"). The contextvar value dies with the setup Context anyway,
+        # so skipping the reset is safe (same contract as
+        # SessionManager._reset_session_id_token).
+        try:
+            reset_session_id(token)
+        except (ValueError, LookupError):
+            pass
 
 
 class TestDatabaseConfig:
@@ -187,7 +195,7 @@ class TestTeamDatabaseInit:
                         (task_id, "team", "t", "c", status),
                     )
 
-                _ensure_dynamic_table_indexes(conn)
+                _ensure_dynamic_table_indexes(conn, ["team_task_legacy"], {"team_task_legacy"})
 
                 columns = {col["name"] for col in inspect(conn).get_columns("team_task_legacy")}
                 statuses = {
@@ -232,7 +240,7 @@ class TestTeamDatabaseInit:
                     "VALUES ('t1', 'team', 't', 'c', 'pending')"
                 )
 
-                _ensure_dynamic_table_indexes(conn)
+                _ensure_dynamic_table_indexes(conn, ["team_task_prevote"], {"team_task_prevote"})
 
                 columns = {col["name"] for col in inspect(conn).get_columns("team_task_prevote")}
                 row = conn.exec_driver_sql(
@@ -791,64 +799,79 @@ class TestTaskOperations:
     @pytest.mark.level0
     async def test_create_task_success(self, db):
         """Test successful task creation"""
-        await db.team.create_team(
-            team_name="team10",
-            display_name="Team 10",
-            leader_member_name="leader10"
-        )
+        # pytest-asyncio 下夹具的 set_session_id 对用例体不可见（不同
+        # Context），动态表写入须在用例体内自行绑定会话。
+        token = set_session_id("session_id")
+        try:
+            await db.team.create_team(
+                team_name="team10",
+                display_name="Team 10",
+                leader_member_name="leader10"
+            )
 
-        success = await db.task.create_task(
-            task_id="task1",
-            team_name="team10",
-            title="Test Task",
-            content="Complete test",
-            status="pending"
-        )
-        assert success is True
+            success = await db.task.create_task(
+                task_id="task1",
+                team_name="team10",
+                title="Test Task",
+                content="Complete test",
+                status="pending"
+            )
+            assert success is True
 
-        task = await db.task.get_task("task1")
-        assert task is not None
-        assert task.task_id == "task1"
-        assert task.team_name == "team10"
-        assert task.title == "Test Task"
-        assert task.content == "Complete test"
-        assert task.status == "pending"
-        assert task.assignee is None
+            task = await db.task.get_task("task1")
+            assert task is not None
+            assert task.task_id == "task1"
+            assert task.team_name == "team10"
+            assert task.title == "Test Task"
+            assert task.content == "Complete test"
+            assert task.status == "pending"
+            assert task.assignee is None
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level0
     async def test_get_task_not_found(self, db):
         """Test getting non-existent task returns None"""
-        task = await db.task.get_task("nonexistenttask")
-        assert task is None
+        token = set_session_id("session_id")
+        try:
+            task = await db.task.get_task("nonexistenttask")
+            assert task is None
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level0
     async def test_update_task_status(self, db):
         """Test updating task status"""
-        await db.team.create_team(
-            team_name="team11",
-            display_name="Team 11",
-            leader_member_name="leader11"
-        )
-        await db.task.create_task(
-            task_id="task2",
-            team_name="team11",
-            title="Task 2",
-            content="Content",
-            status="in_progress"
-        )
+        token = set_session_id("session_id")
+        try:
+            await db.team.create_team(
+                team_name="team11",
+                display_name="Team 11",
+                leader_member_name="leader11"
+            )
+            await db.task.create_task(
+                task_id="task2",
+                team_name="team11",
+                title="Task 2",
+                content="Content",
+                status="in_progress"
+            )
 
-        success = await db.task.update_task_status("task2", "completed")
-        assert success is True
+            success = await db.task.update_task_status("task2", "completed")
+            assert success is True
 
-        task = await db.task.get_task("task2")
-        assert task.status == "completed"
+            task = await db.task.get_task("task2")
+            assert task.status == "completed"
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level0
     async def test_update_task_status_not_found(self, db):
         """Test updating status for non-existent task returns False"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         success = await db.task.update_task_status("nonexistenttask", "completed")
         assert success is False
 
@@ -856,6 +879,7 @@ class TestTaskOperations:
     @pytest.mark.level0
     async def test_update_task_title_only(self, db):
         """Test updating task title only"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_title_update",
             display_name="Team Title Update",
@@ -880,6 +904,7 @@ class TestTaskOperations:
     @pytest.mark.level0
     async def test_update_task_content_only(self, db):
         """Test updating task content only"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_content_update",
             display_name="Team Content Update",
@@ -904,6 +929,7 @@ class TestTaskOperations:
     @pytest.mark.level0
     async def test_update_task_both_title_and_content(self, db):
         """Test updating both task title and content"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_both_update",
             display_name="Team Both Update",
@@ -932,6 +958,7 @@ class TestTaskOperations:
     @pytest.mark.level0
     async def test_update_task_not_found(self, db):
         """Test updating non-existent task returns False"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         success = await db.task.update_task("nonexistent_task", title="New Title")
         assert success is False
 
@@ -939,6 +966,7 @@ class TestTaskOperations:
     @pytest.mark.level0
     async def test_update_task_same_values(self, db):
         """Test updating task with same values (no commit needed)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_same_update",
             display_name="Team Same Update",
@@ -965,6 +993,7 @@ class TestTaskOperations:
     async def test_update_in_progress_task_succeeds_in_review_locked(self, db):
         """An IN_PROGRESS task is editable (edit keeps it in progress; the
         assignee is told to re-read). An IN_REVIEW task stays locked."""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_claimed_update",
             display_name="Team Claimed Update",
@@ -1001,6 +1030,7 @@ class TestTaskOperations:
     @pytest.mark.level1
     async def test_claim_task(self, db):
         """Test claiming a task"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team12",
             display_name="Team 12",
@@ -1024,6 +1054,7 @@ class TestTaskOperations:
     @pytest.mark.level1
     async def test_claim_task_not_found(self, db):
         """Test claiming non-existent task returns False"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         success = await db.task.claim_task("nonexistenttask", "member7")
         assert success is False
 
@@ -1031,6 +1062,7 @@ class TestTaskOperations:
     @pytest.mark.level1
     async def test_get_team_tasks(self, db):
         """Test getting all tasks of a team"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team13",
             display_name="Team 13",
@@ -1061,6 +1093,7 @@ class TestTaskOperations:
     @pytest.mark.level1
     async def test_get_team_tasks_with_status_filter(self, db):
         """Test getting tasks filtered by status"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team14",
             display_name="Team 14",
@@ -1098,6 +1131,7 @@ class TestTaskOperations:
     @pytest.mark.level1
     async def test_create_task_duplicate_fails(self, db):
         """Test that creating duplicate task fails"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_err_2",
             display_name="Team Error 2",
@@ -1124,6 +1158,7 @@ class TestTaskOperations:
     @pytest.mark.level1
     async def test_concurrent_create_tasks_with_different_ids(self, db):
         """Test concurrently creating tasks with different task_ids all succeed."""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_conc",
             display_name="Concurrent Team",
@@ -1208,6 +1243,7 @@ class TestTaskDependencyOperations:
         """Adding an edge through mutate_dependency_graph wires it into
         the dependency table; an edge to a COMPLETED target is born
         resolved so the source task's PENDING status survives refresh."""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team15",
             display_name="Team 15",
@@ -1245,6 +1281,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_get_task_dependencies_empty(self, db):
         """Test getting dependencies for task with no dependencies"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team16",
             display_name="Team 16",
@@ -1265,6 +1302,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_get_task_dependencies_multiple(self, db):
         """Test getting multiple dependencies"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team17",
             display_name="Team 17",
@@ -1305,6 +1343,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_with_dependents_only(self, db):
         """Test creating a task that existing tasks depend on (high priority)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_bidir1",
             display_name="Team Bidir1",
@@ -1349,6 +1388,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_with_dependencies_only(self, db):
         """Test creating a task that depends on existing tasks"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_bidir2",
             display_name="Team Bidir2",
@@ -1389,6 +1429,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_insert_between(self, db):
         """Test inserting a task between other tasks in dependency chain"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_bidir3",
             display_name="Team Bidir3",
@@ -1442,6 +1483,7 @@ class TestTaskDependencyOperations:
            Try to add: taskB depends on TaskC, and taskC depends on taskA
            Result would be: taskA -> taskB -> taskC -> taskA (cycle)
         """
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_cycle",
             display_name="Team Cycle",
@@ -1468,6 +1510,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_bidirectional_no_dependencies(self, db):
         """Test creating a task with no dependencies or dependents"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_no_deps",
             display_name="Team NoDeps",
@@ -1494,6 +1537,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_with_completed_dependent_fails(self, db):
         """Test that adding a dependency to a completed task fails"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_terminal1",
             display_name="Team Terminal1",
@@ -1523,6 +1567,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_with_cancelled_dependent_fails(self, db):
         """Test that adding a dependency to a cancelled task fails"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_terminal2",
             display_name="Team Terminal2",
@@ -1547,6 +1592,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_with_claimed_dependent_fails(self, db):
         """An in-progress task rejects a new prerequisite dependency."""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_terminal3",
             display_name="Team Terminal3",
@@ -1575,6 +1621,7 @@ class TestTaskDependencyOperations:
     @pytest.mark.level1
     async def test_add_task_with_nonexistent_dependent_fails(self, db):
         """Test that adding a dependency to a non-existent task fails"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_terminal4",
             display_name="Team Terminal4",
@@ -1599,29 +1646,33 @@ class TestMessageOperations:
     @pytest.mark.level1
     async def test_create_message_point_to_point(self, db):
         """Test creating point-to-point message"""
-        await db.team.create_team(
-            team_name="team18",
-            display_name="Team 18",
-            leader_member_name="leader18"
-        )
+        token = set_session_id("session_id")
+        try:
+            await db.team.create_team(
+                team_name="team18",
+                display_name="Team 18",
+                leader_member_name="leader18"
+            )
 
-        success = await db.message.create_message(
-            message_id="msg1",
-            team_name="team18",
-            from_member_name="member8",
-            to_member_name="member9",
-            content="Hello",
-            broadcast=False
-        )
-        assert success is True
+            success = await db.message.create_message(
+                message_id="msg1",
+                team_name="team18",
+                from_member_name="member8",
+                to_member_name="member9",
+                content="Hello",
+                broadcast=False
+            )
+            assert success is True
 
-        message = await db.message.get_message("msg1")
-        assert message is not None
-        assert message.message_id == "msg1"
-        assert message.from_member_name == "member8"
-        assert message.to_member_name == "member9"
-        assert message.content == "Hello"
-        assert message.broadcast == 0
+            message = await db.message.get_message("msg1")
+            assert message is not None
+            assert message.message_id == "msg1"
+            assert message.from_member_name == "member8"
+            assert message.to_member_name == "member9"
+            assert message.content == "Hello"
+            assert message.broadcast == 0
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level0
@@ -1638,65 +1689,78 @@ class TestMessageOperations:
             leader_member_name="leader18b"
         )
 
-        meta = {"template": "scheduler_task_start", "refs": {"task": "t-1"}}
-        success = await db.message.create_message(
-            message_id="msg-tpl",
-            team_name="team18b",
-            from_member_name="leader18b",
-            to_member_name="dev-1",
-            content="",
-            broadcast=False,
-            meta=meta,
-        )
-        assert success is True
+        token = set_session_id("session_id")
+        try:
+            meta = {"template": "scheduler_task_start", "refs": {"task": "t-1"}}
+            success = await db.message.create_message(
+                message_id="msg-tpl",
+                team_name="team18b",
+                from_member_name="leader18b",
+                to_member_name="dev-1",
+                content="",
+                broadcast=False,
+                meta=meta,
+            )
+            assert success is True
 
-        message = await db.message.get_message("msg-tpl")
-        assert message.content == ""
-        assert json.loads(message.meta) == meta
+            message = await db.message.get_message("msg-tpl")
+            assert message.content == ""
+            assert json.loads(message.meta) == meta
 
-        unread = await db.message.get_messages(
-            team_name="team18b",
-            to_member_name="dev-1",
-            unread_only=True,
-        )
-        assert [m.message_id for m in unread] == ["msg-tpl"]
+            unread = await db.message.get_messages(
+                team_name="team18b",
+                to_member_name="dev-1",
+                unread_only=True,
+            )
+            assert [m.message_id for m in unread] == ["msg-tpl"]
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_create_message_broadcast(self, db):
         """Test creating broadcast message"""
-        await db.team.create_team(
-            team_name="team19",
-            display_name="Team 19",
-            leader_member_name="leader19"
-        )
+        token = set_session_id("session_id")
+        try:
+            await db.team.create_team(
+                team_name="team19",
+                display_name="Team 19",
+                leader_member_name="leader19"
+            )
 
-        success = await db.message.create_message(
-            message_id="msg2",
-            team_name="team19",
-            from_member_name="member10",
-            to_member_name=None,
-            content="Broadcast message",
-            broadcast=True
-        )
-        assert success is True
+            success = await db.message.create_message(
+                message_id="msg2",
+                team_name="team19",
+                from_member_name="member10",
+                to_member_name=None,
+                content="Broadcast message",
+                broadcast=True
+            )
+            assert success is True
 
-        message = await db.message.get_message("msg2")
-        assert message is not None
-        assert message.to_member_name is None
-        assert message.broadcast == 1
+            message = await db.message.get_message("msg2")
+            assert message is not None
+            assert message.to_member_name is None
+            assert message.broadcast == 1
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_get_message_not_found(self, db):
         """Test getting non-existent message returns None"""
-        message = await db.message.get_message("nonexistentmsg")
-        assert message is None
+        token = set_session_id("session_id")
+        try:
+            message = await db.message.get_message("nonexistentmsg")
+            assert message is None
+        finally:
+            reset_session_id(token)
 
     @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_get_team_messages(self, db):
         """Test getting all messages of a team"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team20",
             display_name="Team 20",
@@ -1729,6 +1793,7 @@ class TestMessageOperations:
     @pytest.mark.level1
     async def test_get_messages_for_member(self, db):
         """Test getting messages for a specific member"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team21",
             display_name="Team 21",
@@ -1770,6 +1835,7 @@ class TestMessageOperations:
     @pytest.mark.level1
     async def test_mark_message_read(self, db):
         """Test marking message as read"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team22",
             display_name="Team 22",
@@ -1809,6 +1875,7 @@ class TestMessageOperations:
     @pytest.mark.level1
     async def test_create_message_duplicate_fails(self, db):
         """Test that creating duplicate message fails"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_err_3",
             display_name="Team Error 3",
@@ -1837,6 +1904,7 @@ class TestMessageOperations:
     @pytest.mark.level1
     async def test_mark_message_read_not_found(self, db):
         """Test marking non-existent message as read returns False"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         success = await db.message.mark_message_read("nonexistent_msg", "member1")
         assert success is False
 
@@ -1871,6 +1939,7 @@ class TestCascadeDelete:
     @pytest.mark.level1
     async def test_delete_team_cascades_to_tasks(self, db):
         """Test that deleting team cascades to tasks"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team24",
             display_name="Team 24",
@@ -1893,6 +1962,7 @@ class TestCascadeDelete:
     @pytest.mark.level1
     async def test_delete_team_cascades_to_messages(self, db):
         """Test that deleting team cascades to messages"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team25",
             display_name="Team  25",
@@ -1916,6 +1986,7 @@ class TestCascadeDelete:
     @pytest.mark.level1
     async def test_delete_team_cascades_to_dependencies(self, db):
         """Test that deleting team cascades to task dependencies"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team26",
             display_name="Team 26",
@@ -1951,6 +2022,7 @@ class TestVerifyAndFixTaskConsistency:
     @pytest.mark.level1
     async def test_verify_and_fix_empty_team(self, db):
         """Test fixing consistency when team has no tasks"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team27",
             display_name="Team 27",
@@ -1964,6 +2036,7 @@ class TestVerifyAndFixTaskConsistency:
     @pytest.mark.level1
     async def test_verify_and_fix_no_blocked_tasks(self, db):
         """Test when all tasks are pending (nothing to fix)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team28",
             display_name="Team 28",
@@ -1991,6 +2064,7 @@ class TestVerifyAndFixTaskConsistency:
     @pytest.mark.level1
     async def test_verify_and_fix_blocked_nothing_to_fix(self, db):
         """Test when blocked task's dependency is not complete (nothing to fix)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team29",
             display_name="Team 29",
@@ -2026,6 +2100,7 @@ class TestVerifyAndFixTaskConsistency:
         the kind of state a crash between completing a dep and refreshing
         downstream could leave behind.
         """
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         from openjiuwen.agent_teams.tools.models import _get_task_dependency_model
         await db.team.create_team(
             team_name="team30",
@@ -2069,6 +2144,7 @@ class TestVerifyAndFixTaskConsistency:
     @pytest.mark.level1
     async def test_verify_and_fix_multiple_blocked_tasks(self, db):
         """Recovery sweep handles multiple drifted BLOCKED tasks at once."""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         from openjiuwen.agent_teams.tools.models import _get_task_dependency_model
         await db.team.create_team(
             team_name="team31",
@@ -2117,6 +2193,7 @@ class TestVerifyAndFixTaskConsistency:
     @pytest.mark.level1
     async def test_verify_and_fix_partial_dependencies(self, db):
         """Test that tasks only get fixed when ALL dependencies are completed"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team32",
             display_name="Team 32",
@@ -2191,6 +2268,7 @@ class TestCancelAllTasks:
     @pytest.mark.level1
     async def test_cancel_all_pending_tasks(self, db):
         """Test cancelling all pending tasks"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_cancel_all",
             display_name="Cancel All Team",
@@ -2219,6 +2297,7 @@ class TestCancelAllTasks:
     @pytest.mark.level1
     async def test_cancel_all_mixed_status_tasks(self, db):
         """Test cancelling tasks with mixed statuses"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_mixed_cancel",
             display_name="Mixed Cancel Team",
@@ -2254,6 +2333,7 @@ class TestCancelAllTasks:
     @pytest.mark.level1
     async def test_cancel_all_no_active_tasks(self, db):
         """Test cancelling when there are no active tasks"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_no_active",
             display_name="No Active Team",
@@ -2273,6 +2353,7 @@ class TestCancelAllTasks:
     @pytest.mark.level1
     async def test_cancel_all_empty_team(self, db):
         """Test cancelling tasks for team with no tasks"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_empty",
             display_name="Empty Team",
@@ -2288,6 +2369,7 @@ class TestCancelAllTasks:
     @pytest.mark.level1
     async def test_cancel_all_tasks_atomic(self, db):
         """Test that cancel_all_tasks is atomic (single transaction)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_atomic",
             display_name="Atomic Team",
@@ -2316,6 +2398,7 @@ class TestResetTask:
     @pytest.mark.level1
     async def test_reset_claimed_task(self, db):
         """Test resetting a claimed task back to pending"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_reset",
             display_name="Reset Team",
@@ -2351,6 +2434,7 @@ class TestResetTask:
     @pytest.mark.level1
     async def test_reset_nonexistent_task(self, db):
         """Test resetting non-existent task returns None"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         result = await db.task.reset_task("nonexistent-task-id")
         assert result is None
 
@@ -2358,6 +2442,7 @@ class TestResetTask:
     @pytest.mark.level1
     async def test_reset_pending_task_fails(self, db):
         """Test resetting a pending task fails (invalid state transition)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_reset_pending",
             display_name="Reset Pending Team",
@@ -2381,6 +2466,7 @@ class TestResetTask:
     @pytest.mark.level1
     async def test_reset_completed_task_fails(self, db):
         """Test resetting a completed task fails (invalid state transition)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_reset_completed",
             display_name="Reset Completed Team",
@@ -2404,6 +2490,7 @@ class TestResetTask:
     @pytest.mark.level1
     async def test_reset_cancelled_task_fails(self, db):
         """Test resetting a cancelled task fails (invalid state transition)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_reset_cancelled",
             display_name="Reset Cancelled Team",
@@ -2427,6 +2514,7 @@ class TestResetTask:
     @pytest.mark.level1
     async def test_reset_blocked_task_fails(self, db):
         """Test resetting a blocked task fails (invalid state transition)"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_reset_blocked",
             display_name="Reset Blocked Team",
@@ -2454,6 +2542,7 @@ class TestGetTasksByAssignee:
     @pytest.mark.level1
     async def test_get_tasks_by_assignee_empty(self, db):
         """Test getting tasks by assignee when none exist"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_assignee_empty",
             display_name="Assignee Empty Team",
@@ -2467,6 +2556,7 @@ class TestGetTasksByAssignee:
     @pytest.mark.level1
     async def test_get_tasks_by_assignee_with_tasks(self, db):
         """Test getting tasks assigned to a specific member"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_assignee",
             display_name="Assignee Team",
@@ -2488,6 +2578,7 @@ class TestGetTasksByAssignee:
     @pytest.mark.level1
     async def test_get_tasks_by_assignee_with_status_filter(self, db):
         """Test getting tasks by assignee with status filter"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_assignee_filter",
             display_name="Assignee Filter Team",
@@ -2510,6 +2601,7 @@ class TestGetTasksByAssignee:
     @pytest.mark.level1
     async def test_get_tasks_by_assignee_different_members(self, db):
         """Test that tasks are correctly filtered by assignee"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_assignee_multi",
             display_name="Assignee Multi Team",
@@ -2535,6 +2627,7 @@ class TestGetTasksByAssignee:
     @pytest.mark.level1
     async def test_get_tasks_by_assignee_excludes_unclaimed(self, db):
         """Test that unclaimed tasks are not returned"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             team_name="team_assignee_unclaimed",
             display_name="Assignee Unclaimed Team",
@@ -2557,6 +2650,7 @@ class TestSessionTables:
     @pytest.mark.level1
     async def test_create_cur_session_tables_success(self, db):
         """Test that create_cur_session_tables creates dynamic tables"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.team.create_team(
             "team_session",
             "Session Team",
@@ -2773,6 +2867,7 @@ class TestSessionTables:
     @pytest.mark.level1
     async def test_create_tables_idempotent(self, db):
         """Test that create_cur_session_tables is idempotent"""
+        set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
         await db.create_cur_session_tables()
         await db.create_cur_session_tables()
 
@@ -3433,6 +3528,7 @@ async def test_mutate_dependency_graph_atomic_with_cycle(db):
     No edge from the batch survives — the dependency table looks identical
     to the pre-call state.
     """
+    set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="team_atomic_cycle", display_name="T", leader_member_name="leader")
     for tid in ("A", "B", "C"):
         await db.task.create_task(tid, "team_atomic_cycle", tid, "content", "pending")
@@ -3460,6 +3556,7 @@ async def test_mutate_dependency_graph_atomic_with_cycle(db):
 @pytest.mark.level0
 async def test_mutate_dependency_graph_refreshes_downstream(db):
     """Adding a single edge flips the source from PENDING to BLOCKED."""
+    set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="team_refresh", display_name="T", leader_member_name="leader")
     await db.task.create_task("upstream", "team_refresh", "U", "c", "pending")
     await db.task.create_task("downstream", "team_refresh", "D", "c", "pending")
@@ -3484,6 +3581,7 @@ async def test_cancel_task_resolves_outgoing_edges_and_unblocks_downstream(db):
     Regression guard for the prior bug: cancel_task left dependent tasks
     stuck in BLOCKED forever because the outgoing edge was never resolved.
     """
+    set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="team_cancel_unblock", display_name="T", leader_member_name="leader")
     await db.task.create_task("A", "team_cancel_unblock", "A", "c", "pending")
     await db.task.create_task("B", "team_cancel_unblock", "B", "c", "pending")
@@ -3514,6 +3612,7 @@ async def test_cancel_all_tasks_does_not_resurrect_terminal_tasks(db):
     primitive is gated on PENDING/BLOCKED, so CANCELLED tasks are never
     rolled back to PENDING.
     """
+    set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="team_cancel_chain", display_name="T", leader_member_name="leader")
     for tid in ("A", "B", "C"):
         await db.task.create_task(tid, "team_cancel_chain", tid, "c", "pending")
@@ -3542,6 +3641,7 @@ async def test_mutate_dependency_graph_rejects_terminal_target(db):
     The IN_PROGRESS task is mid-execution; silently re-blocking it would
     surprise the assignee. Same protection applies to terminal statuses.
     """
+    set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="team_reject_terminal", display_name="T", leader_member_name="leader")
     await db.task.create_task("upstream", "team_reject_terminal", "U", "c", "pending")
     await db.task.create_task("claimed_task", "team_reject_terminal", "C", "c", "pending")
@@ -3566,6 +3666,7 @@ async def test_mutate_dependency_graph_rejects_terminal_target(db):
 @pytest.mark.level1
 async def test_has_unread_messages_honors_include_broadcast(db) -> None:
     """has_unread_messages gates broadcasts behind the include_broadcast flag."""
+    set_session_id("session_id")  # 夹具绑定对用例体不可见（pytest-asyncio Context 隔离），体内绑定
     await db.team.create_team(team_name="t1", display_name="T1", leader_member_name="leader")
     await db.member.create_member(
         member_name="leader",
@@ -3680,7 +3781,7 @@ async def test_dynamic_index_migration_rewrites_legacy_message_table(db):
         for col in legacy_cols:
             await conn.exec_driver_sql(f"CREATE INDEX ix_{table}_{col} ON {table} ({col})")
 
-        await conn.run_sync(_ensure_dynamic_table_indexes)
+        await conn.run_sync(_ensure_dynamic_table_indexes, [table], {table})
 
         names = set(
             (
@@ -3734,7 +3835,7 @@ async def test_dynamic_index_migration_rewrites_legacy_task_table(db):
         for col in ("team_name", "status", "assignee", "updated_at"):
             await conn.exec_driver_sql(f"CREATE INDEX ix_{table}_{col} ON {table} ({col})")
 
-        await conn.run_sync(_ensure_dynamic_table_indexes)
+        await conn.run_sync(_ensure_dynamic_table_indexes, [table], {table})
 
         names = set(
             (
