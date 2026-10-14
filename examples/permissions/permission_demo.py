@@ -14,6 +14,11 @@ DeepAgent 工具权限与安全提示示例（仅依赖 openjiuwen）。
    :class:`openjiuwen.harness.rails.security.tool_security_rail.PermissionInterruptRail`，
    在 ``before_tool_call`` 上判定 **allow / ask / deny**；``ask`` 走 Confirm 中断（需会话侧继续交互）。
 
+审批正文按「助手意图 → 工具说明 → 已识别的全部文件操作 → 风险等级」展示。
+风险等级为静态提示，不改变权限判定；读取/写入/执行同一路径会分别列出。
+中断 metadata 保留 ``ask_title`` / ``ask_summary``，并提供 ``ask_risk_level`` 与
+``file_operations``，宿主可复用这些数据，避免再次分析时丢失原工作目录。
+
 宿主注入：:class:`openjiuwen.harness.security.permission_engine.host.ToolPermissionHost`
 （``get_permissions_snapshot``、``request_permission_confirmation``、``persist_allow_rule``、
 ``persist_session_allow_rule``、``resolve_workspace_dir``、``permission_yaml_path`` 等）。YAML 落盘路径以

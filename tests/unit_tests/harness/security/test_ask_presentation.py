@@ -203,18 +203,167 @@ def test_tool_ask_for_non_shell_defaults() -> None:
     assert "todo_list" in pres.summary
 
 
-def test_render_message_puts_summary_first() -> None:
+def test_render_message_orders_intent_tool_files_risk() -> None:
     result = PermissionResult(
         permission=PermissionLevel.ASK,
         matched_rule="file_guard:defaults",
         external_paths=[r"C:\tmp\a.txt"],
     )
-    pres = build_permission_ask_presentation(
-        "write_file", {"file_path": r"C:\tmp\a.txt"}, result
-    )
+    pres = build_permission_ask_presentation("write_file", {"file_path": r"C:\tmp\a.txt"}, result)
     msg = render_ask_presentation_message(pres, always_allow_hint="> 记住提示")
     first = next(line for line in msg.splitlines() if line.strip())
-    assert first.strip() == pres.summary
+    assert first.strip() == "**助手想要修改你设备上的文件**"
+    assert "工具 `write_file` 需要授权才能执行" in msg
+    assert "涉及的文件操作：" in msg
+    assert "**风险等级：高风险**" in msg
+    assert msg.index("助手想要") < msg.index("工具 `") < msg.index("涉及的文件操作") < msg.index("风险等级")
     assert "记住提示" in msg
     assert "file_guard" not in msg
     assert "匹配规则" not in msg
+
+
+def test_copy_lists_both_source_and_destination_before_risk(tmp_path: Path) -> None:
+    source, destination = tmp_path / "报告.txt", tmp_path / "备份.txt"
+    pres = build_permission_ask_presentation(
+        "mcp_exec_command",
+        {
+            "command": f'copy "{source.as_posix()}" "{destination.as_posix()}"',
+            "shell_type": "cmd",
+            "workdir": str(tmp_path),
+            "description": "备份报告",
+        },
+        PermissionResult(PermissionLevel.ASK, matched_rule="tools.mcp_exec_command"),
+    )
+    assert [(path, action) for path, action, _ in pres.file_operations] == [
+        (str(source.resolve()), "read"),
+        (str(destination.resolve()), "write"),
+    ]
+    assert pres.risk_level == "中"
+    msg = render_ask_presentation_message(pres)
+    assert "- 读取 " in msg and "报告.txt" in msg
+    assert "- 写入 " in msg and "备份.txt" in msg
+    assert msg.index("助手想要") < msg.index("备份报告") < msg.index("涉及的文件操作") < msg.index("风险等级")
+    assert "`" not in msg.split("涉及的文件操作：", 1)[1].split("**风险等级", 1)[0]
+
+
+def test_file_operations_keep_all_chain_paths_and_distinct_actions(tmp_path: Path) -> None:
+    first, second = tmp_path / "a.txt", tmp_path / "b.txt"
+    pres = build_permission_ask_presentation(
+        "bash",
+        {
+            "command": f'type "{first.as_posix()}" && echo hi > "{first.as_posix()}" && type "{second.as_posix()}"',
+            "workdir": str(tmp_path),
+            "shell_type": "cmd",
+        },
+        PermissionResult(PermissionLevel.ASK, matched_rule="file_guard:defaults", external_paths=[str(first)]),
+    )
+    accesses = {(path, action) for path, action, _ in pres.file_operations}
+    assert accesses == {
+        (str(first.resolve()), "read"),
+        (str(first.resolve()), "write"),
+        (str(second.resolve()), "read"),
+    }
+    assert len(pres.file_operations) == 3
+    assert pres.risk_level == "高"
+
+
+def test_list_includes_all_registered_tool_arguments_and_external_fallback(tmp_path: Path, monkeypatch) -> None:
+    from openjiuwen.harness.security.permission_engine.fileguard import file_tool_specs
+    from openjiuwen.harness.security.permission_engine.fileguard.file_tool_specs import (
+        FileToolSpec,
+        register_file_tool,
+    )
+
+    monkeypatch.setattr(file_tool_specs, "_FILE_TOOL_REGISTRY", dict(file_tool_specs._FILE_TOOL_REGISTRY))
+    register_file_tool(FileToolSpec("presentation_copy", "source", "read"))
+    register_file_tool(FileToolSpec("presentation_copy", "destination", "write"))
+    source, destination, external = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    pres = build_permission_ask_presentation(
+        "presentation_copy",
+        {"source": str(source), "destination": str(destination)},
+        PermissionResult(PermissionLevel.ASK, external_paths=[str(external)]),
+    )
+    assert {(path, action) for path, action, _ in pres.file_operations} == {
+        (str(source.resolve()), "read"),
+        (str(destination.resolve()), "write"),
+        (str(external), "access"),
+    }
+    assert "- 访问 " in render_ask_presentation_message(pres)
+
+
+def test_metadata_summary_stays_compatible_and_no_arguments_are_mutated(tmp_path: Path) -> None:
+    args = {"file_path": str(tmp_path / "a.txt"), "content": "keep"}
+    before = dict(args)
+    result = PermissionResult(PermissionLevel.ASK, matched_rule="tools.write_file")
+    pres = build_permission_ask_presentation("write_file", args, result)
+    assert pres.summary == "write_file（当前模式默认需确认）"
+    assert result.permission == PermissionLevel.ASK
+    assert args == before
+
+
+def test_static_risk_levels_use_commands_and_matched_rule_severity() -> None:
+    for command, expected in [("echo hello", "低"), ("python ./demo.py", "中"), ("rm ./demo.txt", "高")]:
+        pres = build_permission_ask_presentation(
+            "bash",
+            {"command": command},
+            PermissionResult(PermissionLevel.ASK, matched_rule="tools.bash"),
+        )
+        assert pres.risk_level == expected
+    pres = build_permission_ask_presentation(
+        "bash",
+        {"command": "echo hello"},
+        PermissionResult(PermissionLevel.ASK, matched_rule="tiered_policy:rules[custom_risk]"),
+        {"rules": [{"id": "custom_risk", "severity": "HIGH", "action": "ask"}]},
+    )
+    assert pres.risk_level == "高"
+
+
+def test_legacy_manual_presentation_still_renders_summary() -> None:
+    from openjiuwen.harness.security.permission_engine.approve.ask_presentation import PermissionAskPresentation
+
+    pres = PermissionAskPresentation("tool", "title", "summary")
+    assert render_ask_presentation_message(pres, always_allow_hint="> hint") == "summary\n\n> hint\n"
+
+
+def test_exec_alias_uses_native_file_extraction(tmp_path: Path) -> None:
+    target = tmp_path / "报告.txt"
+    pres = build_permission_ask_presentation(
+        "exec_command",
+        {"command": f'type "{target.as_posix()}"', "shell_type": "cmd"},
+        PermissionResult(PermissionLevel.ASK),
+    )
+    assert (str(target.resolve()), "read", "shlex") in pres.file_operations
+
+
+def test_large_file_list_is_not_silently_truncated(tmp_path: Path) -> None:
+    paths = [str(tmp_path / f"文档{i}.txt") for i in range(100)]
+    pres = build_permission_ask_presentation(
+        "send_file_to_user",
+        {"abs_file_path_list": paths},
+        PermissionResult(PermissionLevel.ASK),
+    )
+    msg = render_ask_presentation_message(pres)
+    assert len(pres.file_operations) == 100 and len(msg) > 4000
+    assert msg.count("- 读取 ") == 100 and "文档99.txt" in msg
+
+
+def test_relative_file_operations_bind_to_permission_workspace(tmp_path: Path) -> None:
+    from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
+    from openjiuwen.harness.security.permission_engine.host import ToolPermissionHost
+
+    call = SimpleNamespace(name="write_file", arguments={"file_path": "报告.txt"})
+    result = PermissionResult(
+        PermissionLevel.ASK, matched_rule="file_guard:defaults", external_paths=[str(tmp_path / "报告.txt")]
+    )
+    rail = PermissionInterruptRail(
+        config={"enabled": True},
+        host=ToolPermissionHost(resolve_workspace_dir=lambda: tmp_path),
+    )
+    metadata = rail._build_interrupt_metadata(call, result)
+    assert metadata["file_operations"] == [
+        {
+            "path": str((tmp_path / "报告.txt").resolve()),
+            "action": "write",
+            "source": "tool_arg",
+        }
+    ]

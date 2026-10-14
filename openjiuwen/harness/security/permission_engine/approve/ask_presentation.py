@@ -2,19 +2,21 @@
 
 """Categorized HITL ASK copy: title / summary for permission dialogs.
 
-User-visible text is title + summary (+ remember hint). Internal rule ids stay
-out of the message body. Titles name the matched risk; shell file IO summaries
-use ``write`` / ``read`` / ``exec`` plus the path.
+Keep the legacy title/summary metadata while rendering intent, tool description,
+all identified file operations and a static risk level. Display information does
+not change the permission decision or remembered authorization scope.
 """
 
 from __future__ import annotations
 
 import re
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.sys_operation.cwd import get_cwd
 from openjiuwen.harness.security.permission_engine.models import PermissionResult
 from openjiuwen.harness.security.permission_engine.toolguard.tool_categories import (
     is_shell_tool,
@@ -82,6 +84,26 @@ _RULE_ID_RE = re.compile(r"(?:builtin|rules)\[([^\]]+)\]")
 _FILE_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,15}$")
 _ESCALATING = frozenset({"MEDIUM", "HIGH", "CRITICAL"})
 _ACTION_RANK = {"write": 0, "exec": 1, "read": 2}
+_ACTION_CN = {"read": "读取", "write": "写入", "exec": "执行", "access": "访问"}
+_SOURCE_ORDER = {"tool_arg": 0, "shlex": 1, "llm": 2, "script_scan": 3}
+_RISK_RANK = {"低": 0, "中": 1, "高": 2}
+_SEVERITY_LEVEL = {"LOW": "低", "MEDIUM": "中", "HIGH": "高", "CRITICAL": "高"}
+# Display-only static checks adapted from the enterprise permission checker.
+_STATIC_RISK_PATTERNS = (
+    ("高", r"(?i)(^|[&|;(]\s*)(rm|del|erase)\b"),
+    ("高", r"(?i)(^|[&|;(]\s*)(rmdir|rd)\b[^\r\n&|;]*\s/[sq]\b"),
+    ("高", r"(?i)\b(remove-item|rm)\b[^\r\n&|;]*\s-(r|recurse|force|rf)\b"),
+    ("高", r"(?i)\b(reg\s+delete|format|shutdown|reboot|mkfs|dd\s+if=|>\s*/dev/)\b"),
+    ("高", r"(?i)\bpowershell(?:\.exe)?\b[^\r\n&|;]*(?:-enc|-encodedcommand)\b"),
+    ("高", r"(?i)\b(curl|wget|iwr|invoke-webrequest)\b[^\r\n|]*\|\s*(sh|bash|iex|powershell)\b"),
+    ("中", r"(?i)\b(sudo|chmod|chown|set-executionpolicy)\b"),
+    ("中", r"(?i)\b(pip\s+install|npm\s+install|pnpm\s+install|yarn\s+add)\b"),
+    ("中", r"(?i)(^|[&|;(]\s*)(node|python|python3|py|ruby|perl|php|pwsh|powershell|cmd|bash|sh)\b"),
+    ("中", r"(?i)(^|[&|;(]\s*)(npm|npx|pnpm|yarn)\b"),
+    ("中", r"(?i)(^|[&|;(]\s*)(copy|xcopy|robocopy|move|ren|rename)\b"),
+    ("中", r"(?i)\b(new-item|set-content|add-content|out-file)\b"),
+    ("中", r"(?<![<>=])>(?![>=])|>>"),
+)
 
 
 @dataclass(frozen=True)
@@ -90,6 +112,128 @@ class PermissionAskPresentation:
     title: str
     summary: str
     details: str = ""
+    intent: str = ""
+    tool_name: str = ""
+    description: str = ""
+    # (path, read|write|exec|access, source), in stable extraction order.
+    file_operations: tuple[tuple[str, str, str], ...] = ()
+    risk_level: str = ""
+
+
+def permission_intent_first_line(
+    tool_name: str,
+    permission_config: Mapping[str, Any] | None = None,
+) -> str:
+    """Natural-language intent shared by interrupt and hosted approvals."""
+    if is_shell_tool(tool_name, shell_tools_from_config(permission_config)) or tool_name == "exec_command":
+        return "助手想要在你的设备上运行程序指令"
+    if tool_name.startswith("send_file_to_user"):
+        return "助手想要给你发送一个文件"
+    if tool_name in {"memory_get", "read_memory"}:
+        return "助手想要读取你的记忆内容"
+    if tool_name in {
+        "grep",
+        "glob",
+        "glob_file_search",
+        "free_search",
+        "paid_search",
+        "mcp_free_search",
+        "mcp_paid_search",
+        "mcp_petal_search",
+    }:
+        return "助手想要检索网络或本地信息"
+    action = _PATH_ACTION.get(tool_name)
+    if action in {"read", "list"}:
+        return "助手想要读取你设备上的文件"
+    if action in {"write", "edit"} or tool_name == "apply_patch":
+        return "助手想要修改你设备上的文件"
+    if tool_name in _FETCH_TOOLS:
+        return "助手想要获取网页内容"
+    return "助手想要执行一项需要你授权的操作"
+
+
+def _file_operations(
+    name: str,
+    args: dict[str, Any],
+    result: PermissionResult,
+    permission_config: Mapping[str, Any] | None,
+    workspace: Path | None,
+) -> tuple[tuple[str, str, str], ...]:
+    from openjiuwen.harness.security.permission_engine.fileguard.path_extract import extract_accesses_native
+
+    try:
+        extraction_name = "mcp_exec_command" if name == "exec_command" else name
+        accesses = extract_accesses_native(extraction_name, args, workspace or Path(get_cwd()), permission_config)
+    except (OSError, RuntimeError, ValueError):
+        accesses = []
+    operations = [(str(path), action, source) for path, action, source in accesses]
+    # Never lose paths already identified by the permission decision if extraction
+    # cannot reproduce them. Unknown actions are explicitly shown as access.
+    known_paths = {_operation_path_key(path) for path, _, _ in operations}
+    action = _PATH_ACTION.get(name, "access")
+    action = {"edit": "write", "list": "read"}.get(action, action)
+    for path in result.external_paths or []:
+        if _operation_path_key(path) not in known_paths:
+            operations.append((str(path), action, "tool_arg"))
+    operations.sort(key=lambda item: _SOURCE_ORDER.get(item[2], len(_SOURCE_ORDER)))
+    seen: set[tuple[str, str]] = set()
+    unique: list[tuple[str, str, str]] = []
+    for path, action, source in operations:
+        key = (_operation_path_key(path), action)
+        if key not in seen:
+            seen.add(key)
+            unique.append((path, action, source))
+    return tuple(unique)
+
+
+def _operation_path_key(path: str) -> str:
+    if os.name == "nt" or re.match(r"^[A-Za-z]:[\\/]", path) or path.startswith("\\\\"):
+        return _path_key(path)
+    return path.rstrip("/")
+
+
+def _risk_level(
+    name: str,
+    args: dict[str, Any],
+    result: PermissionResult,
+    permission_config: Mapping[str, Any] | None,
+) -> str:
+    """Static display classification; never changes ALLOW/ASK/DENY."""
+    levels = ["低"]
+    risk = getattr(result, "risk", None)
+    if isinstance(risk, dict) and isinstance(risk.get("level"), str) and risk["level"] in _RISK_RANK:
+        levels.append(risk["level"])
+    if result.external_paths:
+        levels.append("高")
+    for finding in getattr(result, "findings", None) or []:
+        level = _SEVERITY_LEVEL.get(str(getattr(finding, "severity", "")).upper())
+        if level:
+            levels.append(level)
+    matched = result.matched_rule or ""
+    if "file_guard" in matched:
+        levels.append("高")
+    ids = set(_RULE_ID_RE.findall(matched))
+    if ids.intersection(_RULE_RISK_LABELS) or "interpreter_sink" in matched:
+        levels.append("高")
+    for rule in (permission_config or {}).get("rules", []) or []:
+        if isinstance(rule, dict) and str(rule.get("id", "")) in ids:
+            level = _SEVERITY_LEVEL.get(str(rule.get("severity", "")).upper())
+            if level:
+                levels.append(level)
+    if "too_complex" in matched or "parse_unavailable" in matched:
+        levels.append("中")
+    if is_shell_tool(name, shell_tools_from_config(permission_config)) or name == "exec_command":
+        command = _command_text(args)
+        levels.extend(level for level, pattern in _STATIC_RISK_PATTERNS if re.search(pattern, command))
+        if command.strip().startswith("$("):
+            levels.append("高")
+        elif "$(" in command or re.match(r"^%[^%\s]+%", command.strip()):
+            levels.append("中")
+    return max(levels, key=_RISK_RANK.__getitem__)
+
+
+def _plain_text(text: str) -> str:
+    return re.sub(r"([\\`*_{}\[\]<>#])", r"\\\1", " ".join(text.splitlines()))
 
 
 def build_permission_ask_presentation(
@@ -97,6 +241,8 @@ def build_permission_ask_presentation(
     tool_args: dict[str, Any] | None,
     result: PermissionResult,
     permission_config: Mapping[str, Any] | None = None,
+    *,
+    workspace: Path | None = None,
 ) -> PermissionAskPresentation:
     args = tool_args if isinstance(tool_args, dict) else {}
     name = (tool_name or "").strip() or "tool"
@@ -109,6 +255,11 @@ def build_permission_ask_presentation(
         title=title,
         summary=summary,
         details="",
+        intent=permission_intent_first_line(name, permission_config),
+        tool_name=name,
+        description=str(args.get("description") or "").strip(),
+        file_operations=_file_operations(name, args, result, permission_config, workspace),
+        risk_level=_risk_level(name, args, result, permission_config),
     )
 
 
@@ -116,16 +267,47 @@ def render_ask_presentation_message(
     presentation: PermissionAskPresentation,
     *,
     always_allow_hint: str = "",
+    command_details: str = "",
+    supplemental_text: str = "",
 ) -> str:
-    """Message body: summary first (collapsed UI), then optional remember hint."""
-    parts = [presentation.summary.strip(), ""]
+    """Intent → tool/command → complete file list → risk → remember hint.
+
+    Presentations constructed by older callers without an intent keep the
+    legacy summary rendering. Product layers may insert display-only command
+    details without modifying the original executable arguments.
+    """
+    if not presentation.intent:
+        parts = [presentation.summary.strip()]
+    else:
+        parts = [f"**{_plain_text(presentation.intent)}**"]
+        name = " ".join(presentation.tool_name.splitlines())
+        longest = max((len(m.group()) for m in re.finditer(r"`+", name)), default=0)
+        fence = "`" * max(1, longest + 1)
+        tool_line = f"工具 {fence}{name}{fence} 需要授权才能执行"
+        if presentation.description:
+            tool_line += f"：{_plain_text(presentation.description)}"
+        parts.append(tool_line)
+        if command_details.strip():
+            parts.append(command_details.strip())
+        if presentation.file_operations:
+            lines = [
+                f"- {_ACTION_CN.get(action, action)} {_plain_text(path)}"
+                for path, action, _ in presentation.file_operations
+            ]
+            parts.append("涉及的文件操作：\n\n" + "\n".join(lines))
+        elif presentation.summary.strip() and not command_details.strip():
+            parts.append(presentation.summary.strip())
+        parts.append(f"**风险等级：{presentation.risk_level or '中'}风险**")
+        if presentation.title.strip():
+            parts.append(f"授权原因：{_plain_text(presentation.title.strip())}")
     if presentation.details.strip():
         parts.append(presentation.details.strip())
+    if supplemental_text.strip():
+        parts.append(supplemental_text.strip())
     hint = (always_allow_hint or "").strip()
     if hint:
-        parts.append("")
         parts.append(hint)
-    return "\n".join(parts).rstrip() + "\n"
+    return "\n\n".join(parts).rstrip() + "\n"
 
 
 def _summary_for_category(
@@ -140,12 +322,13 @@ def _summary_for_category(
     if category == "network":
         return _network_summary(args) or name
     if category == "finding":
-        return (
-            _shell_file_access_summary(
-                name, args, result, permission_config, require_file_io=True,
-            )
-            or _finding_summary(name, args, result)
-        )
+        return _shell_file_access_summary(
+            name,
+            args,
+            result,
+            permission_config,
+            require_file_io=True,
+        ) or _finding_summary(name, args, result)
     if category == "shell":
         return _shell_summary(name, args, result, permission_config)
     if category == "tool":
@@ -255,7 +438,10 @@ def _path_summary(
 ) -> str:
     if is_shell_tool(tool_name, shell_tools_from_config(permission_config)):
         extracted = _shell_file_access_summary(
-            tool_name, tool_args, result, permission_config,
+            tool_name,
+            tool_args,
+            result,
+            permission_config,
         )
         if extracted:
             return extracted
@@ -304,7 +490,11 @@ def _shell_summary(
     permission_config: Mapping[str, Any] | None = None,
 ) -> str:
     extracted = _shell_file_access_summary(
-        tool_name, tool_args, result, permission_config, require_file_io=True,
+        tool_name,
+        tool_args,
+        result,
+        permission_config,
+        require_file_io=True,
     )
     if extracted:
         return extracted
@@ -338,15 +528,15 @@ def _shell_file_access_summary(
 
     try:
         accesses = extract_shell_path_accesses(
-            cmd, _workdir(tool_args), include_cd_reads=False,
+            cmd,
+            _workdir(tool_args),
+            include_cd_reads=False,
             shell_type=shell_type_for_file_access(tool_name, tool_args),
         )
     except (OSError, RuntimeError, ValueError):
         return ""
     if require_file_io:
-        accesses = [
-            item for item in accesses if _is_file_io_access(item[0], item[1])
-        ]
+        accesses = [item for item in accesses if _is_file_io_access(item[0], item[1])]
     if not accesses:
         return ""
     picked = _pick_shell_access(accesses, result.external_paths or [])
@@ -423,4 +613,5 @@ __all__ = [
     "PermissionAskPresentation",
     "build_permission_ask_presentation",
     "render_ask_presentation_message",
+    "permission_intent_first_line",
 ]

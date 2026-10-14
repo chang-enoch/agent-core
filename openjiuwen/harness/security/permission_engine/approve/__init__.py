@@ -6,6 +6,7 @@ from openjiuwen.harness.security.permission_engine.approve.ask_presentation impo
     PermissionAskPresentation,
     build_permission_ask_presentation,
     render_ask_presentation_message,
+    permission_intent_first_line,
 )
 from openjiuwen.harness.security.permission_engine.approve.persist_rule_merge import (
     merge_external_directory_allow_into_permissions,
@@ -25,6 +26,7 @@ __all__ = [
     "PermissionAskPresentation",
     "build_permission_ask_presentation",
     "render_ask_presentation_message",
+    "permission_intent_first_line",
     "PermissionSuggestion",
     "build_permission_suggestions",
     "build_shell_permission_suggestions",
