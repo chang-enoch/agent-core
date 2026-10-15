@@ -51,6 +51,18 @@ permissions = {
 
 The engine no longer supports a separate legacy “pattern-only” path; express policy with `tools`, `defaults`, `rules`, and `approval_overrides`.
 
+Package command rules ask before recursive, forced root deletion with `rm`
+(including `/`, quoted roots, Windows drive roots and bare drive letters),
+PowerShell `Remove-Item` and its deletion aliases, and CMD `rd`/`rmdir`/`del`/`erase /s`.
+This includes PowerShell parameter prefixes such as `-Rec`/`-Fo`, attached
+CMD switches such as `rd/s/q`, literal dot roots (`/./`, `C:/.`), and Windows
+extended/device prefixes (`\\?\C:\`, `\\.\C:\`).
+Root-content wildcards such as `/*`, `C:\*`, and `C:\*.*` are also covered. Ordinary
+file or directory deletion is left to the host's product rules. These are
+command-text checks; they do not resolve variables or inspect script bodies.
+Hosts must keep permission checks and package command rules enabled for this
+protection to apply. Existing explicit approval grants retain their semantics.
+
 ---
 
 ## 3. `ToolPermissionHost` (summary)
