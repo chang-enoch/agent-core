@@ -856,14 +856,14 @@ def evaluate_tiered_policy(
         if full_candidates:
             full_level = strictest(*(lvl for lvl, _ in full_candidates))
             full_rule = next(rule for lvl, rule in full_candidates if lvl == full_level)
-            if (
-                    strict_merge
-                    and permission == PermissionLevel.UNDETERMINED
-                    and full_level == PermissionLevel.ALLOW
-                    and any(
-                        _has_exact_full_command_allow(tool_name, candidate, invocation_ctx)
-                        for candidate in (tool_args, canon_args)
-                    )
+            can_apply_full_command_allow = (
+                strict_merge
+                and permission == PermissionLevel.UNDETERMINED
+                and full_level == PermissionLevel.ALLOW
+            )
+            if can_apply_full_command_allow and any(
+                _has_exact_full_command_allow(tool_name, candidate, invocation_ctx)
+                for candidate in (tool_args, canon_args)
             ):
                 permission = PermissionLevel.ALLOW
             permission = strictest(permission, full_level)
