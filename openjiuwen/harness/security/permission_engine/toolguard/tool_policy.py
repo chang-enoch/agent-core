@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -95,6 +95,14 @@ def strictest(*levels: PermissionLevel) -> PermissionLevel:
     if not levels:
         return PermissionLevel.ASK
     return min(levels, key=lambda p: _STRICT_ORDER[p])
+
+
+def strict_tool_command_merge_enabled(permission_config: Mapping[str, Any]) -> bool:
+    """Opt-in host policy; an existing defer-only host keeps its semantics."""
+    return (
+        permission_config.get("strict_tool_command_merge") is True
+        and permission_config.get("defer_unmatched") is True
+    )
 
 
 def _tool_category(
@@ -615,6 +623,53 @@ def _sink_basename(subcommand: ShellSubcommand) -> str:
     return base
 
 
+def _has_exact_full_command_allow(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        ctx: _TieredInvocationContext,
+) -> bool:
+    """Only literal ALLOW from the selected source covers unmatched children.
+
+    Regex searches and wildcard matches do not prove whole-command coverage.
+    Source selection remains independent of tool/command strict merging.
+    """
+    if isinstance(ctx.permission_config.get("composition"), dict):
+        selected, source = _composed_param_hits(tool_name, tool_args, ctx)
+        if selected is None or selected[0] != PermissionLevel.ALLOW:
+            return False
+        rules = ctx.source_rules.get(source, [])
+    else:
+        builtin_hits = _collect_param_rule_hits(
+            ctx.builtin_rules, tool_name, tool_args, "builtin", ctx.permission_config,
+        )
+        rules = ctx.builtin_rules if builtin_hits else ctx.rules
+
+    command = _command_text(tool_args)
+    for rule in rules:
+        pattern = rule.get("pattern")
+        if not isinstance(pattern, str):
+            continue
+        pattern = pattern.strip()
+        if pattern.lower().startswith("re:") or any(char in pattern for char in "*?["):
+            continue
+        if pattern != command:
+            continue
+        hits = _collect_param_rule_hits([rule], tool_name, tool_args, "exact", ctx.permission_config)
+        if hits and hits[0][0] == PermissionLevel.ALLOW:
+            return True
+    return False
+
+
+def _merge_tool_command_result(
+        ctx: _TieredInvocationContext,
+        permission: PermissionLevel,
+        matched_rule: str,
+) -> tuple[PermissionLevel, str]:
+    tool_level = ctx.baseline_level if ctx.baseline_level is not None else PermissionLevel.UNDETERMINED
+    tool_rule = ctx.baseline_rule or f"{_MR}:tools:unmatched"
+    return strictest(tool_level, permission), f"{tool_rule}|{matched_rule}"
+
+
 def _has_pipeline(shell_parse: ShellAstParseResult) -> bool:
     if shell_parse.flags.has_pipeline:
         return True
@@ -665,6 +720,8 @@ def evaluate_tiered_policy(
     - 有参数级命中时结果仅来自该层（内置或用户）。
     - 无参数级命中时：仅有整工具则用整工具；否则仅用默认（整工具存在则忽略默认）。
     - 内置规则必须已内联进 ``rules``（``layer: builtin``）；判定路径不再 load YAML。
+    - 宿主同时启用 strict_tool_command_merge 和 defer_unmatched 时，shell 工具与
+      命令独立评估，按 DENY > ASK > UNDETERMINED > ALLOW 合并。
     """
     tools_cfg = permission_config.get("tools") or {}
     if not isinstance(tools_cfg, dict):
@@ -726,6 +783,12 @@ def evaluate_tiered_policy(
         source_order=source_order,
         source_rules=source_rules,
     )
+    strict_merge = strict_tool_command_merge_enabled(permission_config) and shell_parse is not None
+    # No tool baseline or defaults may turn a missing command policy into ALLOW.
+    command_ctx = (
+        replace(invocation_ctx, baseline_level=None, baseline_rule=None)
+        if strict_merge else invocation_ctx
+    )
 
     override_hits = _collect_approval_override_hits(
         approval_overrides, tool_name, tool_args, permission_config,
@@ -773,13 +836,15 @@ def evaluate_tiered_policy(
             sub_permission, sub_rule = _evaluate_single_invocation(
                 tool_name,
                 sub_args,
-                invocation_ctx,
+                command_ctx,
             )
             subcommand_results.append((subcommand.text, sub_permission, sub_rule))
             if sub_permission == PermissionLevel.DENY:
                 break
 
         permission, matched_rule = _aggregate_subcommand_results(subcommand_results)
+        if strict_merge and not subcommand_results:
+            permission, matched_rule = PermissionLevel.UNDETERMINED, f"{_MR}:command:unmatched"
         full_candidates: list[tuple[PermissionLevel, str]] = []
         orig_full = _evaluate_param_rules_only(tool_name, tool_args, invocation_ctx)
         if orig_full is not None:
@@ -791,6 +856,16 @@ def evaluate_tiered_policy(
         if full_candidates:
             full_level = strictest(*(lvl for lvl, _ in full_candidates))
             full_rule = next(rule for lvl, rule in full_candidates if lvl == full_level)
+            if (
+                    strict_merge
+                    and permission == PermissionLevel.UNDETERMINED
+                    and full_level == PermissionLevel.ALLOW
+                    and any(
+                        _has_exact_full_command_allow(tool_name, candidate, invocation_ctx)
+                        for candidate in (tool_args, canon_args)
+                    )
+            ):
+                permission = PermissionLevel.ALLOW
             permission = strictest(permission, full_level)
             if permission == full_level:
                 matched_rule = full_rule
@@ -801,14 +876,21 @@ def evaluate_tiered_policy(
                 matched_rule = (
                     f"{sink_rule}|{matched_rule}" if matched_rule else sink_rule
                 )
+        if strict_merge:
+            permission, matched_rule = _merge_tool_command_result(invocation_ctx, permission, matched_rule)
         return _apply_shell_ast_floor(permission, matched_rule, shell_floor, shell_floor_rule)
 
     eval_args = canon_args if _tool_category(tool_name, permission_config) == "shell" else tool_args
     result = _evaluate_single_invocation(
         tool_name,
         eval_args,
-        invocation_ctx,
+        command_ctx,
     )
+    if strict_merge:
+        if result[0] == PermissionLevel.ALLOW:
+            # This branch has no trustworthy child-command decomposition.
+            result = PermissionLevel.UNDETERMINED, f"{_MR}:command:unverified_structure"
+        result = _merge_tool_command_result(invocation_ctx, *result)
     return _apply_shell_ast_floor(*result, shell_floor, shell_floor_rule)
 
 

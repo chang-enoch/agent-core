@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Object-scoped ASK approvals, stored in the existing approval_overrides list.
+"""Object-scoped approvals, stored in the existing approval_overrides list.
 
-These records only lift ASK after all guards have run; they never override DENY.
+These records lift ASK (also UNDETERMINED in the opt-in strict host policy)
+after all guards have run; they never override DENY.
 The scope is derived from tool arguments on the server, never supplied as a path
 or domain by the client. Legacy command patterns are left unchanged.
 """

@@ -61,6 +61,7 @@ from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import 
     evaluate_tiered_policy,
     matched_rule_uses_approval_override,
     maybe_escalate_shell_operators,
+    strict_tool_command_merge_enabled,
     strictest as tiered_policy_strictest,
 )
 
@@ -402,7 +403,9 @@ class PermissionEngine:
                 tool_name,
             )
 
-        if permission == PermissionLevel.ASK:
+        if permission == PermissionLevel.ASK or (
+            permission == PermissionLevel.UNDETERMINED and strict_tool_command_merge_enabled(self.config)
+        ):
             from openjiuwen.harness.security.permission_engine.approve.operation_grants import has_operation_grant
 
             if has_operation_grant(self.config, tool_name, tool_args, self._workspace_root):

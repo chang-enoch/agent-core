@@ -181,6 +181,7 @@ class PermissionsSection(TypedDict, total=False):
     enabled: bool
     package_builtin_rules: NotRequired[bool]
     defer_unmatched: NotRequired[bool]  # Host resolves rules not covered by an explicit policy.
+    strict_tool_command_merge: NotRequired[bool]  # Host-only opt-in; requires defer_unmatched=True.
     schema: NotRequired[str]
     defaults: NotRequired[dict[str, Any]]
     tools: NotRequired[dict[str, Any]]
