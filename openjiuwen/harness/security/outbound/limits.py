@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-DEFAULT_MAX_REQUEST_MB = 10
-DEFAULT_TIMEOUT_SECONDS = 120
+DEFAULT_MAX_REQUEST_MB = 1024
+DEFAULT_TIMEOUT_SECONDS = 3600
 MAX_REQUEST_MB = 1024
 MAX_TIMEOUT_SECONDS = 3600
 _MB = 1024 * 1024
