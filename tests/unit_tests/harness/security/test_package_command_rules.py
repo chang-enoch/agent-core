@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openjiuwen.harness.security.models import PermissionLevel
 from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
 from openjiuwen.harness.security.permission_engine.toolguard.builtin_rules import (
@@ -189,9 +191,6 @@ def test_package_windows_non_root_or_single_flag_does_not_match_root_delete_rule
         "Remove-Item -Recurse -Force C:\\temp\\build",
         "Remove-Item -Recurse C:\\",
         "Remove-Item -Force C:\\",
-        "erase -Recurse -Force C:\\",
-        "rmdir -Recurse -Force C:\\",
-        "del -Recurse -Force C:\\",
     ):
         level, matched = evaluate_tiered_policy(
             cfg, "powershell", {"command": command},
@@ -199,6 +198,73 @@ def test_package_windows_non_root_or_single_flag_does_not_match_root_delete_rule
         assert "shell_ps_recursive_or_forced_delete" not in (matched or ""), (
             command, level, matched,
         )
+
+
+@pytest.mark.parametrize("command", [
+    'rm -rf "/"', "rm -r --force '/'", "rm --recursive --force /*",
+    "rm -rf C:", "rm -fr D:/", 'rm -r -f "C:\\"',
+    "rm C:/ -f -r", "rm --force --recursive C:/",
+    "rm -rf C:/*", "rm.exe -rf C:/", "/usr/bin/rm -rf /",
+    "& 'C:/bin/rm.exe' -rf C:/", "'/bin/rm' -rf /",
+    "& 'Remove-Item' -Recurse -Force C:/",
+    "echo ready; rm -rf C:", "rm -rf C:/; echo done",
+    "Remove-Item -Recurse -Force C:", 'Remove-Item -LiteralPath "D:\\" -Force -Recurse',
+    "Remove-Item -Recurse -Force C:/*", "ri -R -F /",
+    "erase -Recurse -Force C:\\", "rmdir -Recurse -Force C:\\",
+    "del -Recurse -Force C:\\",
+    "rd /s /q C:\\", "rmdir /q /s D:/", "rd /s/q C:",
+    'rd "C:\\" /s', "cmd /c rd /s /q C:\\",
+    "Remove-Item -Fo -Recurse C:\\", "Remove-Item -Rec -Fo C:\\*",
+    "rm -rf /./", "rm -rf C:/.", "rm -rf /././", "rm -rf C:/./*",
+    "rm -rf \\\\?\\C:\\", "rm -rf \\\\.\\C:\\",
+    "Remove-Item -LiteralPath '\\\\?\\C:\\' -Force -Recurse",
+    "Remove-Item -LiteralPath '\\\\.\\C:\\' -Fo -Rec",
+    "del /s /q C:\\*", "erase/s/q C:\\*.*",
+    "rd/s/q C:\\", "rmdir/s/q C:\\", "rd/q/s C:\\",
+    "cmd /c rd/s/q C:\\", "echo ready; del/s/q C:\\*",
+])
+def test_package_root_delete_variants_override_product_allow(command: str) -> None:
+    cfg = _package_cfg()
+    cfg["shell_guard"] = {"unknown_structure": False, "interpreter_sink": False}
+    cfg["rules"].append({"id": "product_allow", "tools": ["shell"],
+                         "pattern": "re:.*", "action": "allow"})
+    level, matched = evaluate_tiered_policy(cfg, "powershell", {"command": command})
+    assert level == PermissionLevel.ASK, (command, matched)
+    assert "builtin" in matched
+
+
+@pytest.mark.parametrize("command", [
+    'rm -rf "C:/temp"', "rm -rf C:temp", "rm -rf ./dist",
+    "rm -rf /tmp", "rm -rf /tmp/*", "rm -rf C:/temp/*",
+    "rm -rf ./dist; echo C:", "rm -rf ./dist | echo /",
+    'rd /s /q "C:\\temp"', "rd /s/q ./dist", "rd /q C:\\",
+    "Remove-Item -Recurse -Force C:/temp",
+    "Remove-Item -Recurse -Force ./temp; echo C:/",
+    "rm -rf /./tmp", "rm -rf C:/./temp", "rm -rf C:/.hidden",
+    "rm -rf \\\\?\\C:\\temp", "rm -rf \\\\.\\C:\\temp",
+    "Remove-Item -Fo -Rec C:/temp",
+    "Remove-Item -LiteralPath '\\\\?\\C:\\temp' -Fo -Rec",
+    "Remove-Item -Format -Recurse C:/", "Remove-Item -Force -Record C:/",
+    "del/s/q C:\\temp\\*", "rd/s/q C:\\temp", "rmdir/q C:\\",
+    "del /q C:\\*", "rd C:/s C:/", "del /s C:/temp; echo C:/",
+])
+def test_package_root_delete_does_not_capture_other_targets(command: str) -> None:
+    cfg = _package_cfg()
+    cfg["shell_guard"] = {"unknown_structure": False}
+    level, matched = evaluate_tiered_policy(cfg, "powershell", {"command": command})
+    assert level == PermissionLevel.ALLOW, (command, matched)
+
+
+@pytest.mark.parametrize("recurse", ["R", "Re", "Rec", "Recu", "Recur", "Recurs", "Recurse"])
+@pytest.mark.parametrize("force", ["F", "Fo", "For", "Forc", "Force"])
+def test_package_powershell_root_delete_parameter_prefixes(recurse: str, force: str) -> None:
+    cfg = _package_cfg()
+    cfg["shell_guard"] = {"unknown_structure": False, "interpreter_sink": False}
+    cfg["rules"].append({"tools": ["shell"], "pattern": "re:.*", "action": "allow"})
+    command = f"Remove-Item -{force} -{recurse} C:/"
+    level, matched = evaluate_tiered_policy(cfg, "powershell", {"command": command})
+    assert level == PermissionLevel.ASK, (command, matched)
+    assert "shell_ps_recursive_or_forced_delete" in matched
 
 
 def test_package_windows_system_and_disk_cmdlets_are_deny() -> None:
