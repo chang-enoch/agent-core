@@ -58,16 +58,16 @@ class TeamWorkspaceManager:
     """
 
     def __init__(
-        self,
-        config: TeamWorkspaceConfig,
-        workspace_path: str,
-        team_name: str,
-        *,
-        mode: WorkspaceMode = WorkspaceMode.LOCAL,
-        messager: Any | None = None,
-        leader_id: str | None = None,
-        node_id: str | None = None,
-        publish_event: Callable[[str, BaseEventMessage], Awaitable[None]] | None = None,
+            self,
+            config: TeamWorkspaceConfig,
+            workspace_path: str,
+            team_name: str,
+            *,
+            mode: WorkspaceMode = WorkspaceMode.LOCAL,
+            messager: Any | None = None,
+            leader_id: str | None = None,
+            node_id: str | None = None,
+            publish_event: Callable[[str, BaseEventMessage], Awaitable[None]] | None = None,
     ):
         self.config = config
         self.workspace_path = workspace_path
@@ -177,7 +177,11 @@ class TeamWorkspaceManager:
         try:
             os.symlink(target_path, link_path, target_is_directory=True)
         except OSError as exc:
-            if os.name == "nt" and getattr(exc, "winerror", None) == ERROR_PRIVILEGE_NOT_HELD:
+            if os.name == "nt":
+                # Any symlink failure on Windows falls back to a junction —
+                # not only ERROR_PRIVILEGE_NOT_HELD: the soft-delete DLL can
+                # turn the failure into other winerrors (e.g. 5), and the old
+                # gate then skipped junction and went straight to copying.
                 try:
                     self._create_windows_junction(target_path, link_path)
                 except OSError as junction_error:
@@ -196,7 +200,8 @@ class TeamWorkspaceManager:
                     )
                     return
                 team_logger.info(
-                    "Symlink privilege unavailable on Windows; mounted %s via junction at %s",
+                    "Symlink unavailable on Windows (winerror=%s); mounted %s via junction at %s",
+                    getattr(exc, "winerror", None),
                     target_path,
                     link_path,
                 )
@@ -220,7 +225,6 @@ class TeamWorkspaceManager:
     def _create_windows_junction(target_path: str, link_path: str) -> None:
         """Create a directory junction (mklink, then long-path reparse fallback)."""
         create_windows_junction(target_path, link_path)
-
 
     @staticmethod
     def _is_directory_link(path: str) -> bool:
@@ -539,12 +543,12 @@ class TeamWorkspaceManager:
         return lock
 
     async def acquire_lock(
-        self,
-        file_path: str,
-        member_name: str,
-        display_name: str,
-        *,
-        timeout_seconds: int = 300,
+            self,
+            file_path: str,
+            member_name: str,
+            display_name: str,
+            *,
+            timeout_seconds: int = 300,
     ) -> bool:
         """Acquire file-level lock.
 
@@ -629,12 +633,12 @@ class TeamWorkspaceManager:
     # ── Distributed lock coordination (Phase 3 placeholders) ─
 
     async def _remote_acquire_lock(
-        self,
-        file_path: str,
-        member_name: str,
-        display_name: str,
-        *,
-        timeout_seconds: int = 300,
+            self,
+            file_path: str,
+            member_name: str,
+            display_name: str,
+            *,
+            timeout_seconds: int = 300,
     ) -> bool:
         """Send lock acquire request to leader via Messager.
 

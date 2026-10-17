@@ -206,6 +206,35 @@ async def test_rail_after_model_call_handles_missing_response():
 
 
 @pytest.mark.asyncio
+async def test_rail_after_model_call_skips_failed_call():
+    """副修：失败轮（ctx.exception 非 None）不发 AFTER_MODEL_CALL 信号——
+    否则 ErrorBurstDetector 连续失败计数被紧随异常的伪成功信号清零。"""
+    monitor = _RecordingMonitor()
+    rail = ReliabilityRail(monitor=monitor, member_name="m1")
+    await rail.after_model_call(
+        _ctx(ModelCallInputs(response=None), exception=RuntimeError("boom"))
+    )
+    assert monitor.signals == []
+    # 成功轮照发（回归保护）
+    await rail.after_model_call(_ctx(ModelCallInputs(response=_Response())))
+    assert len(monitor.signals) == 1
+    assert monitor.signals[0].kind == SignalKind.AFTER_MODEL_CALL
+
+
+@pytest.mark.asyncio
+async def test_model_error_detector_consecutive_streak_survives_with_skip():
+    """配合 rail 短路：MODEL_EXCEPTION 后不再有伪 AFTER_MODEL_CALL 清账，
+    连续 2 次失败即触发 MEDIUM。"""
+    from openjiuwen.agent_teams.reliability.detectors.model_error import ModelStreamErrorDetector
+
+    detector = ModelStreamErrorDetector(now=lambda: 0.0)
+    assert detector.observe(Signal(kind=SignalKind.MODEL_EXCEPTION, member_name="m", error="e1")) is None
+    anomaly = detector.observe(Signal(kind=SignalKind.MODEL_EXCEPTION, member_name="m", error="e2"))
+    assert anomaly is not None
+    assert anomaly.severity == Severity.MEDIUM
+
+
+@pytest.mark.asyncio
 async def test_monitor_fans_out_to_detectors_and_reports():
     reporter = _RecordingReporter()
     detector = ToolErrorRateDetector(window_seconds=60.0, rate_threshold=100, consecutive_threshold=2, now=lambda: 0.0)
