@@ -28,7 +28,7 @@ from __future__ import annotations
 import copy
 import json
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -497,6 +497,65 @@ class IntelliRouterConfig(BaseModel):
         return entries
 
 
+def materialize_model_group(compiled: Any, selection: Any | None = None) -> list[ModelPoolEntry]:
+    """Materialize a compiler result as the canonical Team model-group pool.
+
+    A compiler-driven model group is intentionally represented by exactly one
+    logical ``"*"`` entry.  Physical deployments remain nested in the
+    structured ``metadata.client.intelli_router`` snapshot and are therefore
+    available to the Foundation router without being mistaken for Team
+    allocator endpoints.
+
+    ``compiled`` is duck-typed to keep this helper usable across package
+    boundaries; callers normally pass ``CompiledModelSelection`` and may pass
+    the corresponding ``ModelSelection`` for an additional identity check.
+    """
+    if compiled is None:
+        raise ValueError("compiled model selection is required")
+    selected_type = getattr(compiled, "selected_type", None)
+    selected_id = getattr(compiled, "selected_id", None)
+    if selection is not None:
+        if getattr(selection, "type", None) != selected_type or getattr(selection, "id", None) != selected_id:
+            raise ValueError("model selection does not match compiled selection")
+    if selected_type != "model_group":
+        raise ValueError("materialize_model_group requires selected_type='model_group'")
+    client = getattr(compiled, "model_client_config", None)
+    client_provider = getattr(client, "client_provider", "") if client is not None else ""
+    client_provider = getattr(client_provider, "value", client_provider)
+    if client is None or str(client_provider) != INTELLI_ROUTER_PROVIDER:
+        raise ValueError("model group must use client_provider='intelli_router'")
+    router = getattr(client, "intelli_router", None)
+    deployments = getattr(router, "deployments", None) if router is not None else None
+    if router is None or not deployments:
+        raise ValueError("model group IntelliRouter configuration must contain deployments")
+
+    router_dump = router.model_dump(mode="json", exclude_none=True) if hasattr(router, "model_dump") else dict(router)
+    request = getattr(compiled, "model_request_config", None)
+    request_dump = (
+        request.model_dump(mode="json", exclude_none=True, exclude_unset=True, by_alias=True)
+        if request is not None and hasattr(request, "model_dump")
+        else {}
+    )
+    # ``model`` is a logical Team field; the request model for a model group
+    # must stay unset so deployment-level defaults are not overwritten.
+    request_dump.pop("model", None)
+    request_dump.pop("model_name", None)
+    verify_ssl = getattr(client, "verify_ssl", None)
+    client_metadata = {"intelli_router": router_dump}
+    if verify_ssl is not None:
+        client_metadata["verify_ssl"] = verify_ssl
+    return [
+        ModelPoolEntry(
+            model_name=INTELLI_ROUTER_UNIFIED_MODEL,
+            api_key="",
+            api_base_url="",
+            api_provider=INTELLI_ROUTER_PROVIDER,
+            description=f"IntelliRouter model group {selected_id}",
+            metadata={"client": client_metadata, "request": request_dump},
+        )
+    ]
+
+
 def _entry_signature(entry: ModelPoolEntry) -> str:
     """Canonical signature of an entry's full config, excluding ``model_id``.
 
@@ -571,4 +630,5 @@ __all__ = [
     "ModelPoolEntry",
     "ModelRouterConfig",
     "inherit_pool_ids",
+    "materialize_model_group",
 ]
