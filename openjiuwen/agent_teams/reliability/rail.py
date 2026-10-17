@@ -165,6 +165,14 @@ class ReliabilityRail(DeepAgentRail):
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
         """Capture output text / thinking lengths from the response."""
+        if getattr(ctx, "exception", None) is not None:
+            # 失败轮（含即将重试的 attempt）的 after 不算成功信号：@rail 的
+            # finally 对模型调用失败也照发 AFTER_MODEL_CALL（CancellationRail
+            # 依赖），若照发，ErrorBurstDetector 的连续失败计数会被紧随异常
+            # 的这条"伪成功"信号即刻清零，consecutive 档永远不报。
+            # 失败轮本无 response 可测（_measure_response(None) 得 (None, None)），
+            # 跳过不损失任何探测信息。
+            return
         text_len, thinking_len = _measure_response(getattr(ctx.inputs, "response", None))
         await self._emit(
             Signal(
