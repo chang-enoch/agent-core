@@ -14,6 +14,13 @@ from openjiuwen.harness.tools.subagent.task_tool import (
     TaskTool,
     create_task_tool
 )
+from openjiuwen.harness.tools.subagent.subagent_tools import (
+    build_subagent_tools,
+)
+from openjiuwen.harness.tools.subagent._control_registry import (
+    release_all_subagent_controls,
+    release_subagent_control,
+)
 
 
 __all__ = [
@@ -24,6 +31,9 @@ __all__ = [
     "SessionsSpawnTool",
     "SessionsCancelTool",
     "build_session_tools",
+    "build_subagent_tools",
     "TaskTool",
     "create_task_tool",
+    "release_all_subagent_controls",
+    "release_subagent_control",
 ]

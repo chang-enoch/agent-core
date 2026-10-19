@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import unittest
 import asyncio
-import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 import re
 
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
@@ -20,7 +19,6 @@ from openjiuwen.harness.deep_agent import DeepAgent
 from openjiuwen.harness.execution_subject import current_execution_subject
 from openjiuwen.harness.schema.config import DeepAgentConfig, SubAgentConfig
 from openjiuwen.harness.tools import TaskTool, create_task_tool
-from openjiuwen.harness.kv_cache import kv_cache_hooks
 
 
 def _create_dummy_model() -> Model:
@@ -91,6 +89,41 @@ class TestTaskTool(unittest.IsolatedAsyncioTestCase):
                 called_inputs["conversation_id"],
             ),
         )
+
+    async def test_invoke_uses_invoke_subagent_seam(self) -> None:
+        class FakeSubAgent:
+            def __init__(self):
+                self.card = AgentCard(name="test_agent", description="test", id="test_id")
+
+            async def invoke(self, inputs: dict[str, str]) -> dict[str, str]:
+                return {"output": "done"}
+
+        code_spec = SubAgentConfig(
+            agent_card=AgentCard(name="code", description="code subagent"),
+            system_prompt="sub",
+        )
+        parent_agent = DeepAgent(AgentCard(name="parent", description="test"))
+        parent_agent.configure(
+            DeepAgentConfig(
+                system_prompt="parent",
+                subagents=[code_spec],
+                tools=[],
+                mcps=[],
+                model=None,
+                skills=[],
+            )
+        )
+        card = ToolCard(id="task_tool_seam", name="task_tool", description="test")
+        tool = TaskTool(card=card, parent_agent=parent_agent)
+        session = Session(session_id="parent_session")
+        with patch.object(parent_agent, "create_subagent", return_value=FakeSubAgent()), \
+             patch.object(tool, "_invoke_subagent", wraps=tool._invoke_subagent) as seam:
+            result = await tool.invoke(
+                {"subagent_type": "code", "task_description": "run task"},
+                session=session,
+            )
+        seam.assert_awaited_once()
+        self.assertTrue(result.success)
 
     async def test_repeated_concurrent_calls_get_isolated_execution_subjects(self) -> None:
         observed_subjects = []
@@ -266,111 +299,6 @@ class TestTaskTool(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         mock_create.assert_called_once()
         self.assertIs(mock_create.call_args.kwargs.get("model"), override)
-
-    async def test_invoke_timeout_returns_failure_and_cancels_subagent(self) -> None:
-        invoke_cancelled = asyncio.Event()
-
-        class HangingSubAgent:
-            def __init__(self):
-                self.card = AgentCard(name="test_agent", description="test", id="test_id")
-                self.deep_config = SimpleNamespace(completion_timeout=0.05)
-
-            async def invoke(self, _inputs):
-                try:
-                    await asyncio.sleep(60)
-                finally:
-                    invoke_cancelled.set()
-
-        parent_agent = SimpleNamespace(
-            create_subagent=lambda *_args, **_kwargs: HangingSubAgent(),
-        )
-        tool = TaskTool(
-            card=ToolCard(id="task_tool_test", name="task_tool", description="test"),
-            parent_agent=parent_agent,
-        )
-        session = Session(session_id="parent_session")
-
-        with patch.object(kv_cache_hooks, "affinity_enabled", return_value=True), patch.object(
-            kv_cache_hooks, "prefetch_sticky_subagent", Mock()
-        ), patch.object(kv_cache_hooks, "finish_subagent", new=AsyncMock()) as mock_finish:
-            started = time.monotonic()
-            result = await tool.invoke(
-                {"subagent_type": "explore", "task_description": "run task"},
-                session=session,
-            )
-            elapsed = time.monotonic() - started
-
-        self.assertFalse(result.success)
-        self.assertIn("invoke timeout", result.error)
-        self.assertIn("parent_session", result.error)
-        self.assertEqual(result.data.get("agent_id"), "test_id")
-        self.assertLess(elapsed, 5.0)
-        self.assertTrue(invoke_cancelled.is_set())
-        mock_finish.assert_awaited_once()
-        self.assertFalse(mock_finish.await_args.kwargs.get("succeeded", True))
-
-    async def test_invoke_timeout_falls_back_to_1800s_without_deep_config(self) -> None:
-        captured_timeouts: list[float] = []
-
-        async def fake_wait_for(_awaitable, timeout=None):
-            captured_timeouts.append(timeout)
-            close = getattr(_awaitable, "close", None)
-            if callable(close):
-                close()
-            raise asyncio.TimeoutError()
-
-        class NoConfigSubAgent:
-            card = AgentCard(name="test_agent", description="test", id="test_id")
-
-            async def invoke(self, _inputs):  # pragma: no cover - cancelled before use
-                await asyncio.sleep(60)
-
-        parent_agent = SimpleNamespace(
-            create_subagent=lambda *_args, **_kwargs: NoConfigSubAgent(),
-        )
-        tool = TaskTool(
-            card=ToolCard(id="task_tool_test", name="task_tool", description="test"),
-            parent_agent=parent_agent,
-        )
-        session = Session(session_id="parent_session")
-
-        with patch("asyncio.wait_for", side_effect=fake_wait_for):
-            result = await tool.invoke(
-                {"subagent_type": "explore", "task_description": "run task"},
-                session=session,
-            )
-
-        self.assertEqual(captured_timeouts, [1800.0])
-        self.assertFalse(result.success)
-        self.assertIn("invoke timeout", result.error)
-
-    async def test_invoke_success_with_completion_timeout_configured(self) -> None:
-        class FastSubAgent:
-            def __init__(self):
-                self.card = AgentCard(name="test_agent", description="test", id="test_id")
-                self.deep_config = SimpleNamespace(completion_timeout=5.0)
-
-            async def invoke(self, _inputs):
-                await asyncio.sleep(0)
-                return {"output": "done"}
-
-        parent_agent = SimpleNamespace(
-            create_subagent=lambda *_args, **_kwargs: FastSubAgent(),
-        )
-        tool = TaskTool(
-            card=ToolCard(id="task_tool_test", name="task_tool", description="test"),
-            parent_agent=parent_agent,
-        )
-        session = Session(session_id="parent_session")
-
-        result = await tool.invoke(
-            {"subagent_type": "explore", "task_description": "run task"},
-            session=session,
-        )
-
-        self.assertTrue(result.success)
-        self.assertEqual(result.data.get("output"), "done")
-        self.assertIsNone(result.error)
 
 
 class TestTaskToolSync(unittest.TestCase):

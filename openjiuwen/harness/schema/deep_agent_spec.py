@@ -1,26 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Serializable DeepAgent specifications for network distribution.
-
-All types in this module are Pydantic BaseModels that support full JSON
-round-trip via ``model_dump_json()`` / ``model_validate_json()``.
-Call ``build()`` on a spec to materialize the corresponding runtime object.
-
-This is the harness-level home for ``DeepAgentSpec`` and its leaf specs:
-``RailSpec`` / ``BuiltinToolSpec`` / ``SubAgentSpec``. It was relocated here
-from ``agent_teams/schema`` because every declaration in it depends only on
-``core.*`` + ``harness.*`` — it describes a single DeepAgent's runtime shape,
-not team topology. Keeping it under ``harness/schema`` lets
-``DeepAgent`` / ``factory`` / team code all reference one DeepAgent-level
-schema with the dependency direction ``agent_teams -> harness``.
-
-The flat route is the single source of truth here: ``DeepAgentSpec`` carries
-tools / mcps / rails / subagents / skills directly; ``resolve_parts`` /
-``build`` materialize them via the leaf ``Spec.build()`` chain. /
-Hot load uses ``ExpertHarnessSpec``
-→ ``resolve_expert_harness_parts`` → ``expert_harness_runtime.apply_expert_harness_hot``.
-"""
+"""Serializable DeepAgentSpec and leaf specs for cold construction."""
 
 from __future__ import annotations
 
@@ -456,10 +437,17 @@ class DeepAgentSpec(BaseModel):
     rails: Optional[list[RailSpec]] = None
     enable_task_loop: bool = True
     enable_async_subagent: bool = False
+    enable_subagent_runtime: bool = False
     add_general_purpose_agent: bool = False
     enable_security_rail: bool = True
     enable_tool_resilience_rail: bool = True
     max_iterations: int = 15
+    task_loop_max_iterations: int = 1000
+    """Upper bound on ReAct iterations when ``enable_task_loop`` is on.
+
+    Replaces the unbounded ``sys.maxsize`` the task loop used to install
+    (ISS-4993): the loop gets generous headroom but a guaranteed stop.
+    """
     workspace: Optional[WorkspaceSpec] = None
     cwd: Optional[str] = None
     """Shell working directory / relative-path base. Defaults to the workspace root."""
@@ -596,10 +584,12 @@ class DeepAgentSpec(BaseModel):
             rails=rails,
             enable_task_loop=self.enable_task_loop,
             enable_async_subagent=self.enable_async_subagent,
+            enable_subagent_runtime=self.enable_subagent_runtime,
             add_general_purpose_agent=self.add_general_purpose_agent,
             enable_security_rail=self.enable_security_rail,
             enable_tool_resilience_rail=self.enable_tool_resilience_rail,
             max_iterations=self.max_iterations,
+            task_loop_max_iterations=self.task_loop_max_iterations,
             workspace=workspace,
             cwd=self.cwd,
             project_root=self.project_root,
