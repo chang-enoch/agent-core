@@ -7,7 +7,6 @@ import asyncio
 import copy
 import dataclasses
 import os
-import sys
 import uuid
 from contextlib import suppress
 import warnings
@@ -128,12 +127,19 @@ from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.prompts.sections.identity import build_identity_section
 from openjiuwen.harness.resources import (
     LoadRecord,
-    find_expert_harness_manifest,
-    load_expert_harness_spec,
+    find_agent_template_manifest,
+    find_plugin_manifest,
+    load_agent_template_package,
+    load_plugin_package,
 )
-from openjiuwen.harness.resources.expert_harness_parts import ExpertHarnessParts, ResolvedSkill
+from openjiuwen.harness.resources.extension_resolver import (
+    ExtensionParts,
+    ResolvedSkill,
+    resolve_agent_template_parts,
+    resolve_plugin_parts,
+)
 from openjiuwen.harness.schema.build_context import BuildContext
-from openjiuwen.harness.schema.expert_harness_spec import ExpertHarnessSpec
+from openjiuwen.harness.schema.extension_spec import PluginSpec
 from openjiuwen.harness.workspace.workspace import Workspace
 
 # Events bridged to the inner ReActAgent.
@@ -426,7 +432,11 @@ class DeepAgent(BaseAgent):
                     else client_cfg.client_provider
                 )
         new_react_config.max_iterations = (
-            sys.maxsize if config.enable_task_loop else config.max_iterations
+            # ISS-4993: the task loop needs headroom, not infinity — a
+            # bounded ceiling guarantees a runaway loop still terminates.
+            config.task_loop_max_iterations
+            if config.enable_task_loop
+            else config.max_iterations
         )
         if config.context_engine_config is not None:
             new_react_config.context_engine_config = config.context_engine_config
@@ -870,7 +880,9 @@ class DeepAgent(BaseAgent):
 
         react_config = ReActAgentConfig()
         react_config.max_iterations = (
-            sys.maxsize
+            # ISS-4993: the task loop needs headroom, not infinity — a
+            # bounded ceiling guarantees a runaway loop still terminates.
+            cfg.task_loop_max_iterations
             if cfg.enable_task_loop
             else cfg.max_iterations
         )
@@ -1259,6 +1271,7 @@ class DeepAgent(BaseAgent):
             ),
             "subagents": None,
             "enable_async_subagent": False,
+            "enable_subagent_runtime": False,
             "add_general_purpose_agent": False,
             "enable_plan_mode": spec.enable_plan_mode,
             "parallel_tool_calls": spec.parallel_tool_calls,
@@ -1358,13 +1371,16 @@ class DeepAgent(BaseAgent):
             return None
 
         from openjiuwen.harness.schema.config import SubAgentConfig
+        from openjiuwen.harness.tools.subagent.type_aliases import canonicalize_subagent_type
 
+        wanted = canonicalize_subagent_type(subagent_type)
         for spec in self._deep_config.subagents or []:
-            if isinstance(spec, SubAgentConfig) and spec.agent_card.name == subagent_type:
-                return spec
+            if isinstance(spec, SubAgentConfig):
+                if canonicalize_subagent_type(spec.agent_card.name) == wanted:
+                    return spec
             if isinstance(spec, DeepAgent):
                 card = getattr(spec, "card", None)
-                if getattr(card, "name", None) == subagent_type:
+                if canonicalize_subagent_type(getattr(card, "name", None) or "") == wanted:
                     return spec
 
         return None
@@ -1633,73 +1649,106 @@ class DeepAgent(BaseAgent):
         rail.uninit(self)
         return self
 
-    async def load_expert_harness(
+    def _new_extension_context(self, context: BuildContext | None) -> BuildContext:
+        if context is not None:
+            ctx = context.derive()
+            ctx.extras = dict(ctx.extras)
+            return ctx
+        return BuildContext(
+            language=self.deep_config.language or "cn",
+            workspace=self.deep_config.workspace,
+            member_card_id=self.card.id,
+        )
+
+    async def _apply_extension_parts(
+        self,
+        parts: ExtensionParts,
+        *,
+        source_uri: str | None,
+    ) -> LoadRecord:
+        from openjiuwen.harness.extension_binder import apply_extension_hot
+
+        record = LoadRecord(source_uri=source_uri, refs=await apply_extension_hot(self, parts))
+        self._load_records[record.load_id] = record.model_copy(deep=True)
+        return record
+
+    async def load_plugin(
         self,
         path: str,
         *,
         context: BuildContext | None = None,
     ) -> LoadRecord:
-        """Hot-load a file-backed ExpertHarness package.
+        """Hot-load a file-backed Plugin package.
 
-        Reads the manifest at ``path`` into an ExpertHarnessSpec, then delegates
-        to ``load_expert_harness_from_spec``.
+        Accepts either a ``packageType=plugin`` ``manifest.json`` or a legacy
+        ``harness_config.yaml`` / ``expert_harness.yaml`` / ``harness.yaml``
+        package (see ``find_plugin_manifest`` for the lookup order); both map
+        onto ``PluginSpec``.
         """
         try:
-            spec = load_expert_harness_spec(path)
+            manifest_path = find_plugin_manifest(path)
+            spec = load_plugin_package(manifest_path)
+            ctx = self._new_extension_context(context)
+            ctx.extras["source_root"] = str(manifest_path.parent)
+            parts = resolve_plugin_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=str(manifest_path))
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_LOAD_PLUGIN_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
-        return await self.load_expert_harness_from_spec(spec, context=context)
 
-    async def load_expert_harness_from_spec(
+    async def load_plugin_spec(
         self,
-        spec: ExpertHarnessSpec,
+        spec: PluginSpec,
         *,
         context: BuildContext | None = None,
     ) -> LoadRecord:
-        """Hot-load an in-memory ExpertHarnessSpec via resolve Parts + apply_hot."""
+        """Hot-load an in-memory ``PluginSpec`` via resolve Parts + apply_hot.
+
+        Unlike :meth:`load_plugin`, there is no package root: every path-bearing
+        field on ``spec`` must already be an absolute path, or resolve rejects it.
+        """
         try:
-            if context is not None:
-                ctx = context.derive()
-                ctx.extras = dict(ctx.extras)
-            else:
-                ctx = BuildContext(
-                    language=self.deep_config.language or "cn",
-                    workspace=self.deep_config.workspace,
-                    member_card_id=self.card.id,
-                )
-            ctx.extras.setdefault(
-                "source_root",
-                (spec.source.root if spec.source else ".") or ".",
-            )
-            ctx.extras["_parent_model"] = self.deep_config.model
-
-            from openjiuwen.harness.resources.expert_harness_parts import (
-                resolve_expert_harness_parts,
-            )
-            from openjiuwen.harness.expert_harness_runtime import apply_expert_harness_hot
-
-            parts = resolve_expert_harness_parts(spec, ctx)
-            source_uri = None
-            if spec.source is not None:
-                source_uri = spec.source.uri or spec.source.root
-            record = LoadRecord(
-                source_uri=source_uri,
-                refs=await apply_expert_harness_hot(self, parts),
-            )
-            self._load_records[record.load_id] = record.model_copy(deep=True)
-            return record
+            ctx = self._new_extension_context(context)
+            parts = resolve_plugin_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=None)
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_LOAD_PLUGIN_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
 
-    async def load_expert_harness_ability(
+    async def load_agent_template(
+        self,
+        path: str,
+        *,
+        context: BuildContext | None = None,
+    ) -> LoadRecord:
+        """Hot-load a file-backed AgentTemplate package (root ``manifest.json``).
+
+        Keeps this agent's ``agent_card`` / model unchanged, overlays the root
+        template's persona/capabilities, and materializes its direct
+        ``subagents`` as runtime ``SubAgentConfig``.
+        """
+        try:
+            manifest_path = find_agent_template_manifest(path)
+            spec = load_agent_template_package(manifest_path)
+            ctx = self._new_extension_context(context)
+            ctx.extras["source_root"] = str(manifest_path.parent)
+            ctx.extras["_parent_model"] = self.deep_config.model
+            parts = resolve_agent_template_parts(spec, ctx)
+            return await self._apply_extension_parts(parts, source_uri=str(manifest_path))
+        except Exception as exc:
+            raise build_error(
+                StatusCode.DEEPAGENT_LOAD_AGENT_TEMPLATE_ERROR,
+                error_msg=str(exc),
+                cause=exc,
+            ) from exc
+
+    async def load_plugin_ability(
         self,
         *,
         tools: Tool | ToolCard | list[Tool | ToolCard] | None = None,
@@ -1707,14 +1756,8 @@ class DeepAgent(BaseAgent):
         skills: ResolvedSkill | list[ResolvedSkill] | None = None,
     ) -> LoadRecord:
         """Hot-load pre-built tools / rails / skills onto this agent.
-
-        Accepts already-constructed instances only. Assembles
-        ``ExpertHarnessParts`` and delegates to ``apply_expert_harness_hot``.
-        Unload via :meth:`unload_expert_harness`.
         """
         try:
-            from openjiuwen.harness.expert_harness_runtime import apply_expert_harness_hot
-
             def _as_ability_list(value):
                 if value is None:
                     return []
@@ -1722,50 +1765,48 @@ class DeepAgent(BaseAgent):
                     return [item for item in value if item is not None]
                 return [value]
 
-            parts = ExpertHarnessParts(
+            parts = ExtensionParts(
                 tools=_as_ability_list(tools),
                 rails=_as_ability_list(rails),
                 skills=_as_ability_list(skills),
             )
-            record = LoadRecord(refs=await apply_expert_harness_hot(self, parts))
-            self._load_records[record.load_id] = record.model_copy(deep=True)
-            return record
+            return await self._apply_extension_parts(parts, source_uri=None)
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_LOAD_PLUGIN_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
 
-    async def unload_expert_harness(self, record: LoadRecord) -> list[str]:
-        """Unload resources produced by a successful ExpertHarness load.
+    async def unload_extension(self, record: LoadRecord) -> list[str]:
+        """Unload resources produced by a successful Plugin / AgentTemplate load.
 
         Resolves ``record.load_id`` against this agent's ``_load_records`` ledger.
         Unknown / already-unloaded ids are a no-op. Only the ledger-owned refs
         are applied; the caller's ``record.refs`` are ignored.
         """
         try:
-            from openjiuwen.harness.expert_harness_runtime import unapply_expert_harness_hot
+            from openjiuwen.harness.extension_binder import unapply_extension_hot
 
             owned = self._load_records.get(record.load_id)
             if owned is None:
                 return []
-            labels = await unapply_expert_harness_hot(self, owned.refs)
+            labels = await unapply_extension_hot(self, owned.refs)
             self._load_records.pop(record.load_id, None)
             return labels
         except Exception as exc:
             raise build_error(
-                StatusCode.DEEPAGENT_LOAD_EXPERT_HARNESS_ERROR,
+                StatusCode.DEEPAGENT_UNLOAD_EXTENSION_ERROR,
                 error_msg=str(exc),
                 cause=exc,
             ) from exc
 
     async def load_harness_config(self, config_path: str) -> list[str]:
-        """Deprecated hot-load entry. Use :meth:`load_expert_harness` instead.
+        """Deprecated hot-load entry. Use :meth:`load_plugin` instead.
 
         Args:
             config_path: Path to a harness_config.yaml manifest or its parent
-                directory. Resolved the same way as ``load_expert_harness``.
+                directory. Resolved the same way as ``load_plugin``.
 
         Returns:
             List of human-readable resource labels (same shape the old
@@ -1773,19 +1814,19 @@ class DeepAgent(BaseAgent):
         """
         warnings.warn(
             "DeepAgent.load_harness_config is deprecated; "
-            "use load_expert_harness instead.",
+            "use load_plugin instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        record = await self.load_expert_harness(config_path)
+        record = await self.load_plugin(config_path)
         return self._load_record_labels(record)
 
     async def unload_harness_config(self, config_path: str) -> list[str]:
-        """Deprecated unload entry. Use :meth:`unload_expert_harness` instead.
+        """Deprecated unload entry. Use :meth:`unload_extension` instead.
 
         Locates the ``LoadRecord`` previously produced by ``load_harness_config``
         via ``_load_records`` (keyed by the resolved manifest path),
-        then delegates to ``unload_expert_harness``. Returns an empty list when
+        then delegates to ``unload_extension``. Returns an empty list when
         no matching record is found, mirroring the old "no-op on missing" behavior.
 
         Args:
@@ -1793,12 +1834,12 @@ class DeepAgent(BaseAgent):
         """
         warnings.warn(
             "DeepAgent.unload_harness_config is deprecated; "
-            "use unload_expert_harness instead.",
+            "use unload_extension instead.",
             DeprecationWarning,
             stacklevel=2,
         )
         try:
-            resolved = str(find_expert_harness_manifest(config_path))
+            resolved = str(find_plugin_manifest(config_path))
         except FileNotFoundError:
             return []
         target_record: LoadRecord | None = None
@@ -1808,7 +1849,7 @@ class DeepAgent(BaseAgent):
                 break
         if target_record is None:
             return []
-        return await self.unload_expert_harness(target_record)
+        return await self.unload_extension(target_record)
 
     @staticmethod
     def _load_record_labels(record: LoadRecord) -> list[str]:
@@ -1836,7 +1877,7 @@ class DeepAgent(BaseAgent):
         while self._pending_harness_configs:
             path = self._pending_harness_configs.pop(0)
             try:
-                record = await self.load_expert_harness(path)
+                record = await self.load_plugin(path)
                 logger.info(
                     "Auto-loaded harness config %s: %s",
                     path,
@@ -2983,6 +3024,65 @@ class DeepAgent(BaseAgent):
             self._ensure_supervisor_running()
             logger.info("[DeepAgent] Started for session %s", sid)
 
+    async def _release_interaction_subagents(self) -> None:
+        """Cancel cached subagents when the parent interaction session ends."""
+        session = self._interaction_session
+        if session is None:
+            return
+        try:
+            parent_session_id = session.get_session_id()
+        except Exception as exc:
+            logger.warning(
+                "[DeepAgent] Failed to read session id for subagent release: %s",
+                exc,
+            )
+            return
+        if not parent_session_id:
+            return
+        from openjiuwen.harness.tools.subagent._control_registry import (
+            release_subagent_control,
+        )
+
+        try:
+            await release_subagent_control(
+                self,
+                parent_session_id,
+                reason="parent_ended",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[DeepAgent] Failed to release subagent control on stop: %s",
+                exc,
+                exc_info=True,
+            )
+
+    async def aclose(self) -> None:
+        """Extend :meth:`BaseAgent.aclose` to the wrapped react agent and subagents.
+
+        Rails register on both this agent's callback manager and the inner
+        ``_react_agent``'s one, so both namespaces must be cleared; cached
+        subagent controls for every parent session are cancelled as well.
+        """
+        await super().aclose()
+        react_agent = self._react_agent
+        if react_agent is not None and react_agent is not self:
+            try:
+                await react_agent.aclose()
+            except Exception as exc:  # noqa: BLE001 - 释放路径不抛出
+                logger.warning(
+                    "[DeepAgent] aclose: react agent close failed: %s", exc
+                )
+        try:
+            from openjiuwen.harness.tools.subagent._control_registry import (
+                release_all_subagent_controls,
+            )
+
+            await release_all_subagent_controls(self, reason="agent_closed")
+        except Exception as exc:  # noqa: BLE001 - 释放路径不抛出
+            logger.warning(
+                "[DeepAgent] aclose: subagent control release failed: %s", exc
+            )
+
     async def stop(self) -> None:
         """Terminate the interaction loop and wake any attached output consumer."""
         if not self._interaction_started:
@@ -3009,6 +3109,8 @@ class DeepAgent(BaseAgent):
         for task in emit_tasks:
             with suppress(asyncio.CancelledError, Exception):
                 await task
+
+        await self._release_interaction_subagents()
 
         if self._interaction_session is not None:
             with suppress(Exception):

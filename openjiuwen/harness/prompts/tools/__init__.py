@@ -75,6 +75,9 @@ from openjiuwen.harness.prompts.tools.goal import (
     GetCurrentGoalMetadataProvider,
     SubmitGoalReportMetadataProvider,
 )
+from openjiuwen.harness.prompts.tools.im_search import (
+    ImSearchMetadataProvider,
+)
 from openjiuwen.harness.prompts.tools.list_skill import (
     ListSkillMetadataProvider,
 )
@@ -108,6 +111,14 @@ from openjiuwen.harness.prompts.tools.session_tools import (
 )
 from openjiuwen.harness.prompts.tools.skill_tool import (
     SkillToolMetadataProvider,
+)
+from openjiuwen.harness.prompts.tools.subagent_tools import (
+    SubagentCloseMetadataProvider,
+    SubagentListMetadataProvider,
+    SubagentResumeMetadataProvider,
+    SubagentSendInputMetadataProvider,
+    SubagentSpawnMetadataProvider,
+    SubagentWaitMetadataProvider,
 )
 from openjiuwen.harness.prompts.tools.task_tool import (
     TaskMetadataProvider,
@@ -163,6 +174,12 @@ _PROVIDERS: List[ToolMetadataProvider] = [
     SessionsSpawnMetadataProvider(),
     SessionsCancelMetadataProvider(),
     SkillToolMetadataProvider(),
+    SubagentSpawnMetadataProvider(),
+    SubagentWaitMetadataProvider(),
+    SubagentListMetadataProvider(),
+    SubagentSendInputMetadataProvider(),
+    SubagentCloseMetadataProvider(),
+    SubagentResumeMetadataProvider(),
     TodoCreateMetadataProvider(),
     TodoListMetadataProvider(),
     TodoModifyMetadataProvider(),
@@ -193,6 +210,7 @@ _PROVIDERS: List[ToolMetadataProvider] = [
     ExitWorktreeMetadataProvider(),
     SubmitGoalReportMetadataProvider(),
     GetCurrentGoalMetadataProvider(),
+    ImSearchMetadataProvider(),
 ]
 
 _REGISTRY: Dict[str, ToolMetadataProvider] = {p.get_name(): p for p in _PROVIDERS}

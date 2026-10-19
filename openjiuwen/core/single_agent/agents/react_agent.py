@@ -212,6 +212,37 @@ def log_llm_response(log: Any, ai_message: Any) -> None:
 _TOOLCALL_PROGRESS_GRACE_S = 15.0
 _TOOLCALL_PROGRESS_INTERVAL_S = 30.0
 
+# --- soft-stop (Termination) bounded continue --------------------------------
+# Rails (e.g. Agent RAS thinking-loop abort) raise Termination mid-stream and
+# may tag details.soft_stop_needs_continue. When the partial has no content and
+# no tool_calls, continue at most SOFT_STOP_MAX_CONTINUES times with steering;
+# then hard-fail. Non-tagged empty turns get one same-round EMPTY_RESPONSE
+# retry, then the OA.05000090 empty-response error (must not silent-succeed).
+SOFT_STOP_NEEDS_CONTINUE_KEY = "_soft_stop_needs_continue"
+SOFT_STOP_CONTINUE_COUNT_KEY = "_soft_stop_continue_count"
+SOFT_STOP_MAX_CONTINUES = 1
+SOFT_STOP_RECOVERY_FAILED_MSG = "思考循环恢复失败，请重试或简化任务。"
+SOFT_STOP_FALLBACK_STEERING = (
+    "Previous turn was interrupted during thinking with no user-visible "
+    "content and no tool calls. Continue the unfinished task now: call a "
+    "tool or reply with concrete user-facing content. Do not repeat the "
+    "same long reasoning loop."
+)
+EMPTY_RESPONSE_MSG = "模型未返回有效内容（空响应），请重试或检查上下文。"
+# Ordinary reasoning-only / blank no-tool turns (not RAS soft-stop): bounded
+# same-round retry after injecting [EMPTY_RESPONSE], then hard error.
+EMPTY_RESPONSE_MAX_RETRIES = 1
+
+
+def _termination_requests_soft_stop_continue(exc: Termination) -> bool:
+    """True when a soft-stop Termination asks ReAct for a bounded continue."""
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict) and details.get("soft_stop_needs_continue"):
+        return True
+    # Backward-compatible: older rails only set the thinking-loop message.
+    msg = getattr(exc, "message", None) or str(exc)
+    return "thinking-loop" in msg
+
 
 def _maybe_toolcall_progress_output(
         *,
@@ -1123,10 +1154,13 @@ class ReActAgent(BaseAgent):
                 ))
                 return ai_message
             # Generic soft-stop (control-flow termination): keep partial for steering.
-            # Raised by reliability/other rails; core only knows the type, not the source.
+            # Raised by reliability/other rails; core only knows the type + optional
+            # details.soft_stop_needs_continue (bounded continue on empty partial).
             if isinstance(exc, Termination):
                 ai_message = self._assistant_message_from_chunk(accumulated_chunk)
                 ctx.inputs.response = ai_message
+                if _termination_requests_soft_stop_continue(exc):
+                    ctx.extra[SOFT_STOP_NEEDS_CONTINUE_KEY] = True
                 return ai_message
             raise
 
@@ -2268,6 +2302,7 @@ class ReActAgent(BaseAgent):
 
                 if invoke_inputs.result is None:
                     _truncation_retry_count = 0
+                    _empty_response_retry_count = 0
                     for iteration in range(start_iteration, self._config.max_iterations):
                         logger.info(f"ReAct iteration {iteration + 1}/{self._config.max_iterations}")
                         ctx.extra["_react_iteration"] = iteration + 1
@@ -2422,23 +2457,85 @@ class ReActAgent(BaseAgent):
                             )
 
                             if not ai_message.tool_calls:
+                                content = (getattr(ai_message, "content", None) or "").strip()
+                                reasoning = (
+                                    getattr(ai_message, "reasoning_content", None) or ""
+                                ).strip()
+                                soft_stop_continue = bool(
+                                    ctx.extra.pop(SOFT_STOP_NEEDS_CONTINUE_KEY, False)
+                                )
+
+                                # Soft-stop empty partial (e.g. RAS thinking-loop abort
+                                # mid-reasoning): bounded continue before empty-response
+                                # error or silent end. Check BEFORE close_steering_if_empty
+                                # so we do not close the steering inbox then fail to drain.
+                                if soft_stop_continue and not content:
+                                    used = int(
+                                        ctx.extra.get(SOFT_STOP_CONTINUE_COUNT_KEY, 0) or 0
+                                    )
+                                    if used < SOFT_STOP_MAX_CONTINUES:
+                                        ctx.extra[SOFT_STOP_CONTINUE_COUNT_KEY] = used + 1
+                                        if not ctx.has_pending_steering():
+                                            # Queue missing/stale or inject landed on
+                                            # context only — force a steer into context.
+                                            await context.add_messages(
+                                                UserMessage(
+                                                    content=(
+                                                        f"[STEERING] "
+                                                        f"{SOFT_STOP_FALLBACK_STEERING}"
+                                                    ),
+                                                )
+                                            )
+                                        logger.warning(
+                                            "[ReActAgent] soft-stop empty partial; "
+                                            "bounded continue recovery=%s/%s "
+                                            "session_id=%s reasoning_present=%s "
+                                            "pending_steering=%s",
+                                            used + 1,
+                                            SOFT_STOP_MAX_CONTINUES,
+                                            session.get_session_id(),
+                                            bool(reasoning),
+                                            ctx.has_pending_steering(),
+                                        )
+                                        continue
+                                    await context.add_messages(
+                                        UserMessage(
+                                            content=(
+                                                "[SOFT_STOP_RECOVERY_FAILED] Thinking-loop "
+                                                "soft-stop recovery exhausted after "
+                                                f"{SOFT_STOP_MAX_CONTINUES} continue(s)."
+                                            ),
+                                        )
+                                    )
+                                    await self.context_engine.save_contexts(session)
+                                    result = {
+                                        "output": SOFT_STOP_RECOVERY_FAILED_MSG,
+                                        "result_type": "error",
+                                        "finish_reason": getattr(
+                                            ai_message, "finish_reason", "null"
+                                        ),
+                                        "reasoning_present": bool(reasoning),
+                                        "soft_stop_recovery_exhausted": True,
+                                    }
+                                    invoke_inputs.result = result
+                                    break
+
                                 # If steering arrived while the
                                 # model was generating, continue
                                 # the loop so the next iteration
                                 # drains and injects it.
                                 if not ctx.close_steering_if_empty():
                                     continue
-                                content = (getattr(ai_message, "content", None) or "").strip()
-                                reasoning = (
-                                    getattr(ai_message, "reasoning_content", None) or ""
-                                ).strip()
                                 # Reasoning-only (or fully blank) no-tool turns are not a
                                 # valid ReAct answer: they deliver nothing to the user /
-                                # team board. Treat as error so callers can retry instead
-                                # of silently ending with empty output (see 2026-09-11
-                                # team stall: OA.05000090). Leave a reject notice in
-                                # context for the next wake (e.g. stale-claim nudge);
-                                # do not call the model again in this same loop.
+                                # team board (see 2026-09-11 team stall: OA.05000090).
+                                # Retry once in-loop with an [EMPTY_RESPONSE] notice so
+                                # the model can recover; exhaust → explicit error (never
+                                # silent empty success). Soft-stop RAS empties are handled
+                                # above and do not consume this budget. Only continue when
+                                # another for-loop iteration remains — otherwise continue
+                                # falls into for-else as "Max iterations reached" and
+                                # loses EMPTY_RESPONSE / finish_reason / reasoning_present.
                                 if not content:
                                     await context.add_messages(
                                         UserMessage(
@@ -2450,12 +2547,28 @@ class ReActAgent(BaseAgent):
                                             ),
                                         )
                                     )
+                                    has_next_iteration = (
+                                        iteration + 1 < self._config.max_iterations
+                                    )
+                                    if (
+                                        _empty_response_retry_count < EMPTY_RESPONSE_MAX_RETRIES
+                                        and has_next_iteration
+                                    ):
+                                        _empty_response_retry_count += 1
+                                        logger.info(
+                                            "[ReActAgent] empty no-tool turn; "
+                                            "same-round retry=%s/%s session_id=%s "
+                                            "iteration=%s reasoning_present=%s",
+                                            _empty_response_retry_count,
+                                            EMPTY_RESPONSE_MAX_RETRIES,
+                                            session.get_session_id(),
+                                            iteration + 1,
+                                            bool(reasoning),
+                                        )
+                                        continue
                                     await self.context_engine.save_contexts(session)
                                     result = {
-                                        "output": (
-                                            "模型未返回有效内容（空响应），"
-                                            "请重试或检查上下文。"
-                                        ),
+                                        "output": EMPTY_RESPONSE_MSG,
                                         "result_type": "error",
                                         "finish_reason": getattr(
                                             ai_message, "finish_reason", "null"
