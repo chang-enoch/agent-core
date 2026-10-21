@@ -50,7 +50,7 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
 
     # 文件夹命名
     if rec.folder_id is None:
-        err("folder-name", f"文件夹名 '{rec.folder}' 不符合 历史 SDD 或 D_YYYYMMDD_HHMM_<slug> 规范")
+        err("folder-name", f"文件夹名 '{rec.folder}' 不符合 历史 SDD 或 D-YYYYMMDD-HHMM-<slug> 规范")
 
     # 解析失败则无法继续逐字段校验
     if rec.parse_error:
@@ -138,38 +138,6 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
         elif ad is None:
             err("date-format", "approved-date 不是合法的 YYYY-MM-DD 日期")
 
-    # testing 阶段专属：design-id 必填
-    if rec.stage_dir == "testing":
-        design_id = lib.coerce_str(fm.get("design-id", "")) if "design-id" in fm else ""
-        if "design-id" not in fm or not design_id:
-            err("design-id", "转测文档必须填写 design-id（关联的设计文档 id）")
-        elif not lib.ID_RE.match(design_id):
-            err("design-id", f"design-id '{design_id}' 不是合法的历史 SDD 或分钟时间标识")
-        elif design_id not in all_ids:
-            warn("design-id", f"design-id 指向的 {design_id} 在仓库中不存在（可能尚未创建）")
-
-        # test-type 校验
-        test_type = lib.coerce_str(fm.get("test-type", "")) if "test-type" in fm else ""
-        valid_test_types = ("functional", "integration", "e2e", "performance", "security", "regression")
-        if "test-type" in fm and test_type and test_type not in valid_test_types:
-            err("test-type", f"test-type '{test_type}' 不在受控词表内（{', '.join(valid_test_types)}）")
-
-        # in-testing / completed / failed 状态要求 approved-date
-        if status in ("in-testing", "completed", "failed"):
-            ad = lib.as_date(fm.get("approved-date")) if "approved-date" in fm else None
-            if "approved-date" not in fm:
-                err("approved-date", f"status '{status}' 要求填写 approved-date")
-            elif ad is None:
-                err("date-format", "approved-date 不是合法的 YYYY-MM-DD 日期")
-
-        # completed 状态要求 completed-date
-        if status == "completed":
-            cd = lib.as_date(fm.get("completed-date")) if "completed-date" in fm else None
-            if "completed-date" not in fm:
-                err("completed-date", "completed 状态必须填写 completed-date")
-            elif cd is None:
-                err("date-format", "completed-date 不是合法的 YYYY-MM-DD 日期")
-
     # archive 专属：archived-date + implementation 必填
     if rec.stage_dir == "archive":
         archd = lib.as_date(fm.get("archived-date")) if "archived-date" in fm else None
@@ -245,8 +213,6 @@ def _section_is_empty(body: str, heading_keyword: str) -> bool:
 def _check_repo(records: list[lib.DocRecord], findings: list[Finding], root: Path | None) -> None:
     """跨文档校验：id 唯一性 + REGISTRY 对账。"""
     # id 唯一性（按 frontmatter id；解析失败的文档跳过）
-    # 例外：testing/ 文档按设计与其关联的 design.md 共享同一文件夹号（id），
-    # 经 design-id 关联 + id-folder 不变量双重约束，跨 stage 同号属预期，不算重复。
     seen: dict[str, str] = {}
     for rec in records:
         if rec.parse_error:
@@ -256,11 +222,6 @@ def _check_repo(records: list[lib.DocRecord], findings: list[Finding], root: Pat
             continue
         if doc_id in seen:
             prev = seen[doc_id]
-            prev_is_testing = prev.startswith("testing/")
-            cur_is_testing = rec.stage_dir == "testing"
-            if prev_is_testing or cur_is_testing:
-                # testing↔design 跨 stage 共享同号：预期，跳过
-                continue
             findings.append(
                 Finding(
                     rec.rel_path,

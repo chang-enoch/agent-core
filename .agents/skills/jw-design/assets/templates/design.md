@@ -1,5 +1,5 @@
 ---
-id: D_YYYYMMDD_HHMM_<slug> # Asia/Singapore minute timestamp plus topic; preserve legacy IDs
+id: D-YYYYMMDD-HHMM-<slug> # Asia/Singapore minute timestamp plus topic; preserve legacy IDs
 title: <一句话特性标题>     # 与下方 H1 保持一致
 slug: <kebab-slug>        # 必须等于文件夹名的 slug 段（小写、连字符）
 status: draft             # draft|in-review|changes-requested|approved|rejected（proposals 阶段）
@@ -12,7 +12,7 @@ version: 1                # 每完成一轮评审 +1
 domain: core              # memory|scheduler|messaging|protocol|harness|security|observability|core|tooling
 tags: []
 related: []              # 相关（非替代）设计的 id 列表，如 [SDD-0003]
-# supersedes: D_YYYYMMDD_HHMM_<slug>   # 若本设计取代某旧设计
+# supersedes: D-YYYYMMDD-HHMM-<slug>   # 若本设计取代某旧设计
 # ↓↓↓ 进入开发 / 归档时按生命周期补充 ↓↓↓
 # approved-date: YYYY-MM-DD     # status 变 approved 时
 # dev-start-date: YYYY-MM-DD    # 移入 active/ 时

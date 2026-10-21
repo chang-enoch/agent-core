@@ -1,6 +1,6 @@
 # SDD 编号台账 (REGISTRY)
 
-> 历史 SDD 编号台账，保留原有记录。新设计使用 `D_YYYYMMDD_HHMM_<slug>`，不再取号或追加登记。
+> 历史 SDD 编号台账，保留原有记录。新设计使用 `D-YYYYMMDD-HHMM-<slug>`，不再取号或追加登记。
 
 | id | slug | created | owner         | initial-PR |
 |----|------|---------|---------------|------------|

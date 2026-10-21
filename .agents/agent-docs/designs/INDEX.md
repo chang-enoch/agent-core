@@ -1,9 +1,9 @@
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-10-21T15:15+08:00 -->
+<!-- generated-at: 2026-10-21T15:25+08:00 -->
 
 # 设计文档索引 (INDEX)
 
-> 开发前 14 · 开发中 1 · 转测中 5 · 开发后 15 · 已否决 0 · 转测否决 0
+> 开发前 14 · 开发中 1 · 开发后 15 · 已否决 0
 
 ## 开发前 (proposals)
 
@@ -30,16 +30,6 @@
 |---|---|---|---|---|---|---|---|
 | [SDD-0014](active/SDD-0014-swarmflow-session-fork/design.md) | SwarmFlow 有状态会话 fork（agent_session 上下文继承） | in-development | @sodawlh | core | 2 | 2026-08-21 | in-progress |
 
-## 转测中 (testing)
-
-| ID | 标题 | 状态 | 负责人 | 领域 | 版本 | 更新日期 | 实现状态 |
-|---|---|---|---|---|---|---|---|
-| [SDD-0009](testing/SDD-0009-jiuwen-tui-swarmflow-human-session-adaptation/testing.md) | jiuwen TUI 适配 SwarmFlow 三算子转测文档 | draft | @chenchunzhou | core | 2 | 2026-07-28 | — |
-| [SDD-0011](testing/SDD-0011-evolvable-team-workspace/testing.md) | 可演进 Team 工作区转测文档 | draft | @xiajing | core | 1 | 2026-08-31 | — |
-| [SDD-0022](testing/SDD-0022-trajectory-observability-framework/testing.md) | Web 轨迹界面观测特性（agent-core 侧）测试设计与自验报告 | draft | @alan_cheng | observability | 1 | 2026-09-29 | in-progress |
-| [SDD-0010](testing/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/testing.md) | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性转测文档 | completed | @chenchunzhou | observability | 1 | 2026-08-06 | shipped |
-| [SDD-0028](testing/SDD-0028-swarmflow-verify-fork-observability/testing.md) | swarmflow verify / fork 可观测与前端呈现 — 转测文档 | completed | @xiajing | observability | 1 | 2026-09-29 | shipped |
-
 ## 开发后 (archive)
 
 | ID | 标题 | 状态 | 负责人 | 领域 | 版本 | 更新日期 | 实现状态 |
@@ -61,10 +51,6 @@
 | [SDD-0028](archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | swarmflow verify / fork 可观测与前端呈现 | shipped | @xiajing | observability | 1 | 2026-09-29 | shipped |
 
 ## 已否决 (rejected)
-
-（暂无）
-
-## 转测否决 (testing-rejected)
 
 （暂无）
 

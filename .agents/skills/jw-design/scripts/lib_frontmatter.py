@@ -19,13 +19,12 @@ import yaml
 # Schema 常量（与 plan / CONTRIBUTING.md 的 Frontmatter Schema 一一对应）
 # --------------------------------------------------------------------------- #
 
-STAGES: tuple[str, ...] = ("proposals", "active", "testing", "archive")
+STAGES: tuple[str, ...] = ("proposals", "active", "archive")
 
 # status 枚举 ↔ stage 映射（顺序即索引内的展示顺序）
 STATUS_BY_STAGE: dict[str, tuple[str, ...]] = {
     "proposals": ("draft", "in-review", "changes-requested", "approved", "rejected"),
     "active": ("in-development", "on-hold"),
-    "testing": ("draft", "in-review", "in-testing", "completed", "failed", "rejected"),
     "archive": ("shipped", "superseded", "abandoned"),
 }
 
@@ -72,20 +71,18 @@ IMPLEMENTATION_STATUSES: tuple[str, ...] = (
     "abandoned",
 )
 
-ID_RE = re.compile(r"^(?:SDD-\d{4}|D_\d{8}_\d{4}_[a-z0-9]+(?:-[a-z0-9]+)*)$")
+ID_RE = re.compile(r"^(?:SDD-\d{4}|D-\d{8}-\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*)$")
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
-FOLDER_RE = re.compile(r"^(SDD-\d{4}|D_\d{8}_\d{4})[-_]([a-z0-9]+(?:-[a-z0-9]+)*)$")
+FOLDER_RE = re.compile(r"^(SDD-\d{4}|D-\d{8}-\d{4})-([a-z0-9]+(?:-[a-z0-9]+)*)$")
 
 REGISTRY_FILE = "REGISTRY.md"
 INDEX_FILE = "INDEX.md"
 DESIGN_FILE = "design.md"
-TESTING_FILE = "testing.md"
 
 # 各 stage 目录对应的文档文件名
 DOC_FILE_BY_STAGE: dict[str, str] = {
     "proposals": DESIGN_FILE,
     "active": DESIGN_FILE,
-    "testing": TESTING_FILE,
     "archive": DESIGN_FILE,
 }
 
@@ -99,15 +96,15 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 
 @dataclass
 class DocRecord:
-    """单个 design.md / testing.md 的扫描结果。"""
+    """Store the scan result for a single design document."""
 
     path: Path  # 文档绝对路径
     rel_path: str  # 相对仓库根（用于报告 / 索引链接），始终用 "/" 分隔
-    stage_dir: str  # 所在顶层目录名（proposals/active/testing/archive）
+    stage_dir: str  # 所在顶层目录名（proposals/active/archive）
     folder: str  # Stable legacy or timestamp-based design folder name.
     folder_id: str | None  # New IDs include the topic to distinguish same-minute designs.
     folder_slug: str | None  # 由文件夹名解析出的 slug；不合规则为 None
-    doc_file: str  # 文档文件名（design.md 或 testing.md）
+    doc_file: str  # Design document filename.
     body: str = ""  # frontmatter 之后的正文
     fm: dict[str, Any] = field(default_factory=dict)  # 解析出的 frontmatter
     parse_error: str | None = None  # 解析失败原因；非 None 时 fm 不可信
@@ -151,10 +148,10 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str, str | None]:
 
 
 def iter_docs(root: Path | None = None, stage: str | None = None) -> list[DocRecord]:
-    """遍历各阶段目录下的 `<stage>/SDD-*/<doc_file>`，yield DocRecord。
+    """Read legacy and D-prefixed designs from the supported lifecycle stages.
 
-    stage 给定时仅遍历该阶段。testing/ 目录查找 testing.md，其余查找 design.md。
-    结果按 (stage 顺序, 文件夹名) 稳定排序。
+    A supplied stage restricts discovery to that stage. Each folder contains
+    design.md, and results are ordered by stage and folder name.
     """
     root = root or repo_root()
     stages = (stage,) if stage else STAGES
@@ -168,13 +165,13 @@ def iter_docs(root: Path | None = None, stage: str | None = None) -> list[DocRec
             doc_path = folder_path / doc_file
             if not doc_path.is_file():
                 # 没有对应文档文件的文件夹由校验器单独报告，这里跳过非候选目录
-                if not folder_path.name.startswith(("SDD-", "D_")):
+                if not folder_path.name.startswith(("SDD-", "D-")):
                     continue
             folder = folder_path.name
             fm_match = FOLDER_RE.match(folder)
             folder_id = None
             if fm_match:
-                folder_id = folder if folder.startswith("D_") else fm_match.group(1)
+                folder_id = folder if folder.startswith("D-") else fm_match.group(1)
             folder_slug = fm_match.group(2) if fm_match else None
             rec = DocRecord(
                 path=doc_path,

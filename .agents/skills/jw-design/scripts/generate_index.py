@@ -27,10 +27,8 @@ _GENERATED_AT_RE = re.compile(r"^<!-- generated-at:.*-->\s*$", re.MULTILINE)
 STAGE_GROUPS = (
     ("开发前 (proposals)", "proposals", ("draft", "in-review", "changes-requested", "approved")),
     ("开发中 (active)", "active", ("in-development", "on-hold")),
-    ("转测中 (testing)", "testing", ("draft", "in-review", "in-testing", "completed", "failed")),
     ("开发后 (archive)", "archive", ("shipped", "superseded", "abandoned")),
     ("已否决 (rejected)", "proposals", ("rejected",)),
-    ("转测否决 (testing-rejected)", "testing", ("rejected",)),
 )
 
 _COLUMNS = ("ID", "标题", "状态", "负责人", "领域", "版本", "更新日期", "实现状态")

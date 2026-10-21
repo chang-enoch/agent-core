@@ -33,12 +33,11 @@ description: 在 openJiuwen 项目中落实已确认方案，编写实现与测�
 - 历史编号和文件名不调整；spec 沿用已有编号规则。
 - 每个事实保留一个维护位置，其余文档以标识或链接引用，避免复制当前契约与进度。
 
-## 设计交接、转测与归档
+## 设计交接与归档
 
 设计生命周期和字段复用 [lifecycle.md](../jw-design/references/lifecycle.md)，不重复定义。
 开始实际开发时将已批准设计移到 `designs/active/`，同步 `stage`、`status`、日期；
 随实现维护 `implementation` 和实现记录与偏差，禁止根据方案内容推断功能已完成。
-需要转测资料时使用 [testing.md](assets/templates/testing.md)，置于 `designs/testing/<设计标识>/testing.md`。
 根据真实测试和交付结论更新状态；仅在交付得到确认后移入 `designs/archive/`。
 迁移保留设计标识和附件，更新索引；索引命令见 `jw-design`。
 

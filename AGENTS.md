@@ -94,6 +94,6 @@ Pass `COMMITS=N` to check recent commits instead.
 - `.agents/skills/jw-review/SKILL.md`：检视占位，待补充，当前不能据此认定检视通过。
 
 实际资产位于 `.agents/agent-docs/` 的 `designs/`、`specs/`、`features/`、`bugfix/`。
-新 design / feature / bugfix 使用 Asia/Singapore 的 `YYYYMMDD_HHMM` 时间和主题组成稳定标识，
+新 design 使用 `D-YYYYMMDD-HHMM-<slug>`；feature / bugfix 使用 `F_` / `B_` 加 `YYYYMMDD_HHMM` 和主题。时间均采用 Asia/Singapore，
 精确到分钟；历史编号不调整，spec 沿用原命名规则。具体位置与交接规则见对应 skill。
 不运行格式化工具或静态检查，不运行 ruff、pylint、mypy、make check 或 make format。
