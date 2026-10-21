@@ -107,7 +107,7 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
     if created and updated and updated < created:
         err("date-order", f"updated ({updated}) 早于 created ({created})")
 
-    # version
+    # Preserve optional version fields in legacy documents; new reviews use dates.
     if "version" in fm:
         version = fm["version"]
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:
@@ -138,7 +138,7 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
         elif ad is None:
             err("date-format", "approved-date 不是合法的 YYYY-MM-DD 日期")
 
-    # archive 专属：archived-date + implementation 必填
+    # Archival metadata is shared; implementation facts belong to feature records.
     if rec.stage_dir == "archive":
         archd = lib.as_date(fm.get("archived-date")) if "archived-date" in fm else None
         if "archived-date" not in fm:
@@ -147,9 +147,7 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
             err("date-format", "archived-date 不是合法的 YYYY-MM-DD 日期")
 
         impl = fm.get("implementation")
-        if not isinstance(impl, dict):
-            err("implementation", "归档设计必须填写 implementation 映射")
-        else:
+        if isinstance(impl, dict):
             impl_status = lib.coerce_str(impl.get("status", "")) if "status" in impl else ""
             if not impl_status:
                 err("implementation", "implementation.status 必填")
@@ -159,9 +157,6 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
                     f"implementation.status '{impl_status}' 非法（{', '.join(lib.IMPLEMENTATION_STATUSES)}）",
                 )
 
-        # §12 实现记录与偏差 正文应非空（弱校验 → WARN）
-        if _section_is_empty(rec.body, "实现记录与偏差"):
-            warn("impl-notes", "归档设计的『实现记录与偏差』章节疑似为空")
 
     # 关联引用：目标存在性 + 互惠
     for key in ("supersedes", "superseded-by"):

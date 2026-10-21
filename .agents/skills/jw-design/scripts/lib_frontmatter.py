@@ -42,7 +42,6 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "owner",
     "created",
     "updated",
-    "version",
     "domain",
 )
 

@@ -15,8 +15,9 @@ description: 在 openJiuwen 项目中分析需求、制定架构或特性方案�
    - 整体定位与工作链路：[overview-template.md](references/overview-template.md)。
    - 模块职责、协作与系统约束：[architecture-template.md](references/architecture-template.md)。
    - 一次行为变更的详细方案与取舍：[feature-design-template.md](references/feature-design-template.md)。
-3. 需要独立评审与阶段跟踪的设计，以 [design.md](assets/templates/design.md) 的 frontmatter
-   建档，正文按对应 reference 组织；无需同时套用两套章节。
+3. 需要独立评审与阶段跟踪的设计，复制唯一模板 [design.md](assets/templates/design.md)。
+   它整合了设计管理字段、详细方案与日期评审记录；reference 仅提供指导，不再包含第二套可复制正文。
+   负责人、评审人、状态、日期等管理字段统一保留在设计 frontmatter。
 4. 评估主要备选方案，说明选择依据、失败路径、兼容与迁移影响、验证方案及未决问题。
    成稿时按 [writing-guide.md](references/writing-guide.md) 核对表达与事实边界。
 5. 根据反馈迭代；只有用户或实际评审者明确确认后才记录批准。不得自行填写审批结论或评审人。
@@ -31,9 +32,11 @@ description: 在 openJiuwen 项目中分析需求、制定架构或特性方案�
 - 每目录含 `design.md` 和可选 `assets/`，初始位置是 `designs/proposals/`。
 - 已有 SDD 编号及历史文件名保持不变。`REGISTRY.md` 仅是历史台账，新设计不登记、不取号。
 - 本阶段管理 `draft → in-review ⇄ changes-requested → approved / rejected`。
-  评审迭代更新 `version`、`updated` 与评审记录；已批准不代表已经实现。
-- 阶段、状态及字段见 [lifecycle.md](references/lifecycle.md)；进入开发后的迁移、实现偏差和
-  归档由 [jw-dev](../jw-dev/SKILL.md) 负责。
+  评审与设计修订按实际日期追加记录并更新 `updated`，不维护递增 `version`；历史版本字段保留兼容。
+- 设计文档是开发前的方案资产，仅包含设计与验证计划。实际实施、决策、偏差、验证结果和遗留
+  由 [jw-dev](../jw-dev/SKILL.md) 归档至 features，不回填设计正文或 `implementation` 字段。
+- 阶段、状态及字段见 [lifecycle.md](references/lifecycle.md)；开发阶段可维护设计的迁移与归档管理字段，
+  目标方案变化需返回设计阶段确认后按日期修订。
 - 草稿和被否决设计不是生产实现依据；已归档设计属于历史证据，当前行为仍须核对代码和 specs。
   按稳定标识引用设计，通过索引定位当前路径。
 

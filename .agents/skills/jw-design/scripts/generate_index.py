@@ -31,7 +31,7 @@ STAGE_GROUPS = (
     ("已否决 (rejected)", "proposals", ("rejected",)),
 )
 
-_COLUMNS = ("ID", "标题", "状态", "负责人", "领域", "版本", "更新日期", "实现状态")
+_COLUMNS = ("ID", "标题", "状态", "负责人", "领域", "更新日期")
 
 
 def _cell(value) -> str:
@@ -39,13 +39,6 @@ def _cell(value) -> str:
     if value in (None, "", []):
         return "—"
     return lib.coerce_str(value).replace("|", "\\|")
-
-
-def _impl_status(rec: lib.DocRecord) -> str:
-    impl = rec.fm.get("implementation")
-    if isinstance(impl, dict) and impl.get("status"):
-        return _cell(impl["status"])
-    return "—"
 
 
 def _row(rec: lib.DocRecord) -> str:
@@ -58,9 +51,7 @@ def _row(rec: lib.DocRecord) -> str:
         _cell(fm.get("status")),
         _cell(fm.get("owner")),
         _cell(fm.get("domain")),
-        _cell(fm.get("version")),
         _cell(fm.get("updated")),
-        _impl_status(rec),
     )
     return "| " + " | ".join(cells) + " |"
 

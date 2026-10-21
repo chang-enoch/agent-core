@@ -18,9 +18,11 @@ description: 在 openJiuwen 项目中落实已确认方案，编写实现与测�
    遵循现有 Python 环境与编码规范，不运行格式化工具、静态检查、`make check` 或 `make format`。
 3. 契约变化及时维护 `.agents/agent-docs/specs/<module>/`；写法见
    [spec-template.md](references/spec-template.md)。spec 描述当前有效约束，不积累进度日志。
-4. 一次连贯特性在 `.agents/agent-docs/features/<module>/` 归档 why / why-not、验证和遗留；
+4. 设计是开发前资产；features 是开发落地后的实施与决策归档。一次连贯特性在
+   `.agents/agent-docs/features/<module>/` 记录实际实现、实际决策及 why / why-not、设计偏差、验证和遗留；
+   引用稳定设计标识与相关 spec，不复制整篇设计，不向设计回填实际结果。
    根因涉及契约或定位过程值得复用的修复，在 `.agents/agent-docs/bugfix/<module>/` 留存现象、根因和证据。
-   详细结构及原 agent_teams 文档记忆规则见 [development-memory.md](references/development-memory.md)。
+   可复制 [feature.md](assets/templates/feature.md)；详细结构及原 agent_teams 文档记忆规则见 [development-memory.md](references/development-memory.md)。
    修改 harness 模块时另读 [harness-documentation.md](references/harness-documentation.md)，保留其 spec 结构与模块提交组织要求。
 5. 读到文档与代码不一致时，核实后修订当前 spec / 记忆，明确设计意图、实际实现和验证结果。
    归档设计的方向不重写；偏差写在开发记录，方向变化交回设计阶段。
@@ -38,9 +40,14 @@ description: 在 openJiuwen 项目中落实已确认方案，编写实现与测�
 
 设计生命周期和字段复用 [lifecycle.md](../jw-design/references/lifecycle.md)，不重复定义。
 开始实际开发时将已批准设计移到 `designs/active/`，同步 `stage`、`status`、日期；
-随实现维护 `implementation` 和实现记录与偏差，禁止根据方案内容推断功能已完成。
+设计负责人、评审人、状态与日期继续以设计 frontmatter 为唯一来源；计划及 features 引用该处。
+随实现将版本、实现定位、实际决策、偏差、验证证据和遗留归档到 features，
+不在设计中填写 `implementation` 或实际执行章节。设计中的验证计划只定义预期与通过条件。
+目标方案需要变更时返回 jw-design，经确认后按日期更新设计，不把意外实现自动写成已确认方案。
 根据真实测试和交付结论更新状态；仅在交付得到确认后移入 `designs/archive/`。
 迁移保留设计标识和附件，更新索引；索引命令见 `jw-design`。
+feature 的写法还可参考 [feature-design-template.md](../jw-design/references/feature-design-template.md)
+中明确标注供开发阶段使用的证据、偏差与归档指导；设计正文唯一模板不作为实施归档模板重复复制。
 
 完成后交给检视阶段：变更范围、设计/spec 依据、测试证据、已知风险、未完成项。
 需要转测文档时，将实际实现版本、范围和测试证据交给 [jw-testing](../jw-testing/SKILL.md)；

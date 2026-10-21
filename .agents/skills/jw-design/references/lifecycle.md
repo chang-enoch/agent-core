@@ -1,7 +1,7 @@
 # 设计与交付生命周期
 
 设计资产根目录为 `.agents/agent-docs/designs/`。本文件统一定义字段与状态；
-`jw-design` 负责方案形成和评审，`jw-dev` 负责实际开发后的记录与归档。
+`jw-design` 负责方案形成和日期评审；`jw-dev` 将开发事实归档到 features，仅同步设计的必要管理字段。
 本规则不改变用户指令或仓库的提交、PR 权限。
 
 ## 标识与文档结构
@@ -27,16 +27,16 @@
 | `owner` | 真实负责人；未知时明确待确认，不使用示例值冒充 |
 | `reviewers` | 真实参与者；进入评审时填写，未知时不得冒充已评审 |
 | `created`、`updated` | YYYY-MM-DD；updated 不早于 created |
-| `version` | 正整数；每轮实质评审增加版本并记录结论 |
+| 评审日期 | 正文按 YYYY-MM-DD 记录评审主题、真实参与者、结论及修改依据；同步 updated，不再递增版本 |
 | `domain` | memory / scheduler / messaging / protocol / harness / security / observability / core / tooling |
 | `tags`、`related` | 可选主题标签、相关但不替代的完整设计标识 |
 | `supersedes`、`superseded-by` | 可选替代关系；确认替代后双向关联 |
 | `approved-date` | 实际批准日期；不能以生成文档或开始编码推断批准 |
-| `dev-start-date`、`archived-date` | 实际开工、归档日期 |
-| `implementation` | 实现事实：status、repos、prs、commits，可选 tracking；无证据时不填已交付 |
+| `archived-date` | 设计资产归档管理日期，不作为实际交付证据 |
+| `scope`、`plan` | 设计范围与可选计划入口；负责人、评审人、状态及日期始终以设计为管理字段来源 |
 
-`implementation.status`：not-started / in-progress / shipped / partially-shipped / abandoned。
-设计中的 PR、commit 定位用于追溯实际实现；spec / feature / bugfix 元信息不需要提交后回填 hash。
+新设计不填写 version 或 implementation，不将 PR / commit、实施结果、验证证据或交付遗留写入设计。
+历史文档原有版本、日期和实现字段保留兼容，不在本次批量改写。
 
 ## 状态与阶段
 
@@ -48,7 +48,7 @@
 
 - `draft → in-review ⇄ changes-requested`，评审后进入 approved 或 rejected。
 - 用户或实际评审者明确确认后记录 approved、approved-date 和评审结论。
-- 实际开工后 `approved → in-development`，移动 proposals → active，同步 stage 与开工日期。
+- 实际开工后 `approved → in-development`，移动 proposals → active，同步 stage、status 与 updated；实际开工记录留在 features / 执行计划。
 - `in-development ⇄ on-hold`；交付确认后进入 shipped，移动 active → archive。
 - 开发终止可进入 abandoned，移动 active → archive，说明原因和未完成部分。
 - 已交付方案改变方向时创建新设计，以 supersedes / superseded-by 关联；旧设计标为 superseded。
@@ -57,13 +57,19 @@
 移动时同步状态、stage、日期和索引；已跟踪路径使用 `git mv`，未跟踪路径使用普通移动，
 这不代表已经获准提交。附件随设计移动，标识不变。
 
-## 开发记录与冻结
+## 日期评审与开发交接
 
-开发过程中持续记录真实实现、设计偏差、验证结果及遗留。正文结构按选用模板组织，
-不要求固定的章节编号；批准结论不代表已实现，代码合并不代表验收通过。
-归档前补齐实现定位、偏差、验证结论和 archived-date。
-归档后保留历史决策，允许修复坏链接、追加替代指针；方向变化另建设计。
+设计文档是开发前的设计资产。每次实质评审或目标方案修订按日期追加记录，说明参与者、
+主题、结论、原因与受影响章节，更新 updated；同一天可有多条不同主题记录，不分配轮次或递增版本。
+负责人、评审人、阶段、状态与日期保留在设计 frontmatter，计划和 features 只引用该来源。
 
+设计确认后交给开发实施。features 是开发落地后实施与决策归档，记录实际实现、实际选择与取舍、
+设计偏差、版本定位、验证执行、结果及遗留，引用稳定设计标识，不复制整篇方案，也不反向回填设计。
+验证方案及通过条件属于设计，实际证据属于 features；已确认与已实现、已验证分别判断。
+目标方案需要改变时返回设计阶段确认，并按日期修订；实施经过始终保留在 features。
+
+沿用现有 proposals / active / archive 布局维护设计资产的流转管理信息；archive 不增加 implementation 必填条件。
+归档设计保留当时的目标方案及评审依据，方向变化另建设计并以替代关系关联。历史版本字段不批量移除。
 
 ## 内容归属与工具
 
