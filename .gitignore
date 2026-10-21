@@ -290,3 +290,6 @@ tests/unit_tests/extensions/context_evolver/memory_file/
 /records/
 /auto_harness/
 /.idea_bak/
+
+# Local design testing material is not versioned.
+/.agents/agent-docs/designs/testing/
