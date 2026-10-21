@@ -21,6 +21,7 @@ description: 在 openJiuwen 项目中落实已确认方案，编写实现与测�
 4. 一次连贯特性在 `.agents/agent-docs/features/<module>/` 归档 why / why-not、验证和遗留；
    根因涉及契约或定位过程值得复用的修复，在 `.agents/agent-docs/bugfix/<module>/` 留存现象、根因和证据。
    详细结构及原 agent_teams 文档记忆规则见 [development-memory.md](references/development-memory.md)。
+   修改 harness 模块时另读 [harness-documentation.md](references/harness-documentation.md)，保留其 spec 结构与模块提交组织要求。
 5. 读到文档与代码不一致时，核实后修订当前 spec / 记忆，明确设计意图、实际实现和验证结果。
    归档设计的方向不重写；偏差写在开发记录，方向变化交回设计阶段。
 

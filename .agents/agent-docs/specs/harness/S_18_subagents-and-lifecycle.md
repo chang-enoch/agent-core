@@ -151,7 +151,7 @@ authoritative_browser_result 保留兼容名，但权威范围限于执行/观�
 效果仍禁止盲重放。该行为同时适用于 llm/hybrid，不再由 strict/lean 切换执行真值。
 
 此前 F_10/F_12/F_13/F_16 中与本节冲突的预算、自动证明和试验开关约定由本节取代。
-详见 [F_17](../features/F_17_browser-runtime-reduction.md)。
+详见 [F_17](../../features/harness/F_17_browser-runtime-reduction.md)。
 
 ## 接口契约
 
@@ -355,7 +355,7 @@ Jev 候选避免重交页面已经观察到的同一搜索，默认把回到已�
 已执行的新输入/选择、显式新局部目标可表达后续工作；固定读取和其他局部动作继续开放。
 LLM/Jev 共享 local_context，复杂目标复用可选 objective/绑定；普通查询无需额外阶段调用。
 
-详见 [F_18](../features/F_18_browser-receipts-and-local-continuity.md)。
+详见 [F_18](../../features/harness/F_18_browser-receipts-and-local-continuity.md)。
 
 ## Browser 默认观察与结果交接（F_19，当前契约）
 
@@ -368,7 +368,7 @@ LLM/Jev 共享 local_context，复杂目标复用可选 objective/绑定；普�
 统一终态携带 worker 判断、执行回执、来源观察和 summary；字段诊断不替代原文。阻断列表不是完备枚举，
 为空不能证明没有页面障碍。父层与 resume 保留同一结果；模型渲染只展示一次结果，避免三份重复投影。
 常用等待使用已有目标/文本/URL 条件；缺目标仍拒绝，旧目标校验、串行派发、权限和真实未知效果保护保留。
-本节取代 F_17 中继续默认维护 inferred 诊断和语义反证的部分，详见 [F_19](../features/F_19_browser-observation-first-results.md)。
+本节取代 F_17 中继续默认维护 inferred 诊断和语义反证的部分，详见 [F_19](../../features/harness/F_19_browser-observation-first-results.md)。
 
 ## cua 桌面子代理（F_21，当前契约）
 
