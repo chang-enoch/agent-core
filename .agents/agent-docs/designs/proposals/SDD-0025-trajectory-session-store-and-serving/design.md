@@ -10,6 +10,7 @@ created: 2026-09-15
 updated: 2026-09-15
 version: 1
 domain: observability
+modules: [jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web]
 tags: [trajectory, sqlite, sink, content-addressing, stream-frames, live-hints, http-api, execution-subject, jiuwenswarm, gateway, agentserver]
 related: [SDD-0022, SDD-0023, SDD-0026]
 implementation:

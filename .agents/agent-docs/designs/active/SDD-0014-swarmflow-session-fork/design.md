@@ -10,6 +10,7 @@ created: 2026-08-17
 updated: 2026-08-21
 version: 2
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, agent-session, fork, context-inheritance, resume]
 related: [SDD-0002, SDD-0003]
 # supersedes: SDD-NNNN   # 若本设计取代某旧设计

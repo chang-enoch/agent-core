@@ -10,6 +10,7 @@ created: 2026-09-05
 updated: 2026-09-18
 version: 5
 domain: core
+modules: [agent_teams/workflow, agent_teams]
 tags: [swarmflow, team-runtime, lifecycle, pause-resume, stop, lamp-control, cold-recover, leader-advisory]
 related: [SDD-0003, SDD-0008, SDD-0013, SDD-0014]
 approved-date: 2026-09-09

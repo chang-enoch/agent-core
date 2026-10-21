@@ -10,6 +10,7 @@ created: 2026-09-15
 updated: 2026-09-15
 version: 1
 domain: observability
+modules: [jiuwenswarm/channels/web/frontend]
 tags: [trajectory, web-ui, react, projector, context-window, stream-frames, content-addressing, subagent, team-lanes, timeline, archive-replay]
 related: [SDD-0022, SDD-0025, SDD-0024]
 implementation:

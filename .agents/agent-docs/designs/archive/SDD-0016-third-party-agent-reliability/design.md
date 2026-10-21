@@ -12,6 +12,7 @@ version: 2
 approved-date: 2026-08-31
 archived-date: 2026-09-17
 domain: core
+modules: [agent_teams]
 tags: [agent-teams, external-agent, reliability, model-allocation]
 related: []
 implementation:

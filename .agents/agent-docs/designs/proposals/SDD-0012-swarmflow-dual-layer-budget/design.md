@@ -10,6 +10,7 @@ created: 2026-08-14
 updated: 2026-08-18
 version: 1
 domain: scheduler
+modules: [agent_teams/workflow]
 tags: [swarmflow, budget, concurrency, enforcement]
 related: [SDD-0010]
 ---

@@ -10,6 +10,7 @@ created: 2026-08-15
 updated: 2026-09-18
 version: 2
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, early-return, pause-resume, stop, controller, intent-classify, lint, reply-buffer]
 related: [SDD-0002, SDD-0003, SDD-0005, SDD-0006, SDD-0010]
 approved-date: 2026-08-15

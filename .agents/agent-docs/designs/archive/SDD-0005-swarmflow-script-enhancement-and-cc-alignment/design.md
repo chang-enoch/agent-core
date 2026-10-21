@@ -10,6 +10,7 @@ created: 2026-06-22
 updated: 2026-06-24
 version: 1
 domain: tooling
+modules: [agent_teams/workflow]
 tags: [swarmflow, claude-code, tool-description, script-dsl, options-bag]
 related: [SDD-0002, SDD-0003, SDD-0004, SDD-0006]
 approved-date: 2026-06-22

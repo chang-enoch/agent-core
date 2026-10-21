@@ -10,6 +10,7 @@ created: 2026-09-14
 updated: 2026-09-28
 version: 4
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, model-pool, timeout, fail-fast, observability, agent-session, engine]
 related: [SDD-0002, SDD-0007, SDD-0014, SDD-0019]
 ---

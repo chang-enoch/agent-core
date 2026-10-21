@@ -10,6 +10,7 @@ created: 2026-08-26
 updated: 2026-08-26
 version: 1
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, verification, reviewer, primitive, orchestration]
 related: [SDD-0015]
 ---

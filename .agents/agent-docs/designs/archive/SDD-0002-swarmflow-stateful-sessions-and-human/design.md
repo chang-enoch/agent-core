@@ -10,6 +10,7 @@ created: 2026-06-08
 updated: 2026-06-24
 version: 1
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, agent-session, human-in-the-loop, avatar]
 related: [SDD-0003, SDD-0004, SDD-0005, SDD-0007]
 approved-date: 2026-06-08

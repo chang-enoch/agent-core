@@ -10,6 +10,7 @@ created: 2026-06-23
 updated: 2026-06-24
 version: 1
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, worker, team-db, decouple, cleanup]
 related: [SDD-0002, SDD-0005, SDD-0006]
 approved-date: 2026-06-23

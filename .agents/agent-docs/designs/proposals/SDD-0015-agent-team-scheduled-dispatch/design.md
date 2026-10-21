@@ -10,6 +10,7 @@ created: 2026-08-20
 updated: 2026-08-20
 version: 1
 domain: scheduler
+modules: [agent_teams]
 tags: [agent-team, scheduled-dispatch, task-graph, verification]
 related: [SDD-0005]
 ---

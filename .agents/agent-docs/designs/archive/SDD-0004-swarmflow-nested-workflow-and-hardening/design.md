@@ -10,6 +10,7 @@ created: 2026-06-16
 updated: 2026-06-24
 version: 1
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, nested-workflow, hardening, e2e, structured-output]
 related: [SDD-0002, SDD-0003, SDD-0005]
 approved-date: 2026-06-16

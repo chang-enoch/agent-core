@@ -10,6 +10,7 @@ created: 2026-09-17
 updated: 2026-10-09
 version: 1
 domain: core
+modules: [agent_teams]
 tags: [agent-team, session-runtime, execution-lifecycle, cancellation, generation]
 related: [SDD-0013, SDD-0015, SDD-0018]
 ---

@@ -30,6 +30,9 @@ description: 在 openJiuwen 项目中分析需求、制定架构或特性方案�
   时间使用 Asia/Singapore，精确到分钟；slug 为小写英文短横线主题，属于完整标识的一部分。
   完整名称存在时，先辨认是同一设计的续写还是不同设计；不同设计使用更具体的 slug，不覆盖、不分配递增号。
 - 每目录含 `design.md` 和可选 `assets/`，初始位置是 `designs/proposals/`。
+- `modules` 填相关模块目录列表，省略固定的 `openjiuwen/` 前缀，例如 `[agent_teams, harness]`；
+  跨仓模块保留仓库前缀。INDEX 按模块分组，模块内展示生命周期。跨模块可在多个分组检索，
+  缺失时进入“未分类”；`domain` 仍表示领域，不代替模块目录。
 - 已有 SDD 编号及历史文件名保持不变。`REGISTRY.md` 仅是历史台账，新设计不登记、不取号。
 - 本阶段管理 `draft → in-review ⇄ changes-requested → approved / rejected`。
   评审与设计修订按实际日期追加记录并更新 `updated`，不维护递增 `version`；历史版本字段保留兼容。

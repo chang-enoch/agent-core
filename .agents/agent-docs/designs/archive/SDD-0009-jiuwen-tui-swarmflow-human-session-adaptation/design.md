@@ -10,6 +10,7 @@ created: 2026-07-17
 updated: 2026-07-28
 version: 2
 domain: core
+modules: [agent_teams/workflow, jiuwenswarm]
 tags: [swarmflow, tui, human-in-the-loop, agent-session, avatar]
 related: [SDD-0002, SDD-0003]
 approved-date: 2026-07-20

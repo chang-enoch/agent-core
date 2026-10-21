@@ -10,6 +10,7 @@ created: 2026-06-22
 updated: 2026-06-24
 version: 1
 domain: harness
+modules: [harness]
 tags: [async-tool, native-harness, id-generator, disk-spill, control-tools]
 related: [SDD-0003, SDD-0005, SDD-0007]
 approved-date: 2026-06-22

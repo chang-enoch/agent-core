@@ -10,6 +10,7 @@ created: 2026-09-14
 updated: 2026-09-14
 version: 1
 domain: core
+modules: [agent_teams]
 tags: [agent-team, model-group, intelli-router, model-pool, external-cli, recovery]
 related: []
 ---

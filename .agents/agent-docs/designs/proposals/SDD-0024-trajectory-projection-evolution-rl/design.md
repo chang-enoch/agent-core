@@ -10,6 +10,7 @@ created: 2026-09-15
 updated: 2026-09-15
 version: 1
 domain: observability
+modules: [agent_evolving, harness]
 tags: [trajectory, projection, span-processor, self-evolution, agent-rl, online-rl, sft, rollout, team, rsi]
 related: [SDD-0022, SDD-0011, SDD-0026]
 implementation:

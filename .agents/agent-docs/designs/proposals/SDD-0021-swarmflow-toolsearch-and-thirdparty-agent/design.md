@@ -10,6 +10,7 @@ created: 2026-09-18
 updated: 2026-09-29
 version: 6
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, tool-search, progressive-tool, third-party-agent, claude, codex, cache, fork, observability]
 related: [SDD-0002, SDD-0005, SDD-0007, SDD-0014, SDD-0016, SDD-0020]
 ---

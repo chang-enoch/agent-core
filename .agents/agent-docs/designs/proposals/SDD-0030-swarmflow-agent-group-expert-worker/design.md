@@ -10,6 +10,7 @@ created: 2026-10-14
 updated: 2026-10-15
 version: 1
 domain: core
+modules: [agent_teams/workflow, agent_teams]
 tags: [swarmflow, agent-template, agent-group, expert, worker, persona, design-canvas, cache, observability]
 related: [SDD-0007, SDD-0013, SDD-0018, SDD-0020, SDD-0021]
 ---

@@ -29,6 +29,7 @@
 | `created`、`updated` | YYYY-MM-DD；updated 不早于 created |
 | 评审日期 | 正文按 YYYY-MM-DD 记录评审主题、真实参与者、结论及修改依据；同步 updated，不再递增版本 |
 | `domain` | memory / scheduler / messaging / protocol / harness / security / observability / core / tooling |
+| `modules` | 相关模块目录列表，如 `[agent_teams, harness]`，省略固定的 openjiuwen/ 前缀，跨仓模块保留仓库前缀；索引按模块分组，跨模块设计在各组展示，未填写时进入“未分类”，不以 domain 推断模块 |
 | `tags`、`related` | 可选主题标签、相关但不替代的完整设计标识 |
 | `supersedes`、`superseded-by` | 可选替代关系；确认替代后双向关联 |
 | `approved-date` | 实际批准日期；不能以生成文档或开始编码推断批准 |

@@ -10,6 +10,7 @@ created: 2026-09-15
 updated: 2026-09-15
 version: 1
 domain: observability
+modules: [extensions/observability]
 tags: [otel, exporter, langfuse, otlp, file-exporter, collector, projection, offline-import, jiuwenswarm-config]
 related: [SDD-0022, SDD-0025]
 implementation:

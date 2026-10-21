@@ -13,6 +13,7 @@ approved-date: 2026-08-14
 dev-start-date: 2026-08-12
 archived-date: 2026-08-14
 domain: core
+modules: [agent_teams]
 tags: [agent-teams, workspace, evolution, prompt-template, tool-desc, frontmatter, lazy-cache, path-truth, file-data-store, topology]
 related: [SDD-0002, SDD-0003]
 implementation:

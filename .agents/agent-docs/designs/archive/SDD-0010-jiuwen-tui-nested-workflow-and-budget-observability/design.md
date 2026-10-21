@@ -12,6 +12,7 @@ version: 2
 approved-date: 2026-08-04
 archived-date: 2026-08-06
 domain: observability
+modules: [agent_teams/workflow, jiuwenswarm]
 tags: [swarmflow, tui, nested-workflow, budget, tokens, workflow-monitor]
 related: [SDD-0004, SDD-0009]
 implementation:

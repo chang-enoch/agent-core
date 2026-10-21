@@ -10,6 +10,7 @@ created: 2026-06-08
 updated: 2026-06-24
 version: 1
 domain: core
+modules: [agent_teams/workflow]
 tags: [swarmflow, resume, journal, wal, pause-resume, durability]
 related: [SDD-0002, SDD-0004, SDD-0005]
 approved-date: 2026-06-08

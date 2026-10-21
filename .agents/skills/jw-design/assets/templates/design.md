@@ -9,6 +9,7 @@ reviewers: [] # Actual participants; fill when a review takes place.
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 domain: core # memory / scheduler / messaging / protocol / harness / security / observability / core / tooling
+modules: [] # Module directories without the openjiuwen/ prefix, e.g. [agent_teams, harness].
 tags: []
 scope: <涉及模块及设计边界>
 plan: <关联开发计划条目；无则删除此字段>

@@ -62,6 +62,23 @@ def _status_sort_key(rec: lib.DocRecord, status_order: tuple[str, ...]):
     return (rank, rec.folder)
 
 
+def _module_names(rec: lib.DocRecord) -> list[str]:
+    """Return declared module directories without inferring ownership from domain."""
+    declared = rec.fm.get("modules", [])
+    if isinstance(declared, str):
+        declared = [declared]
+    if not isinstance(declared, list):
+        raise ValueError(f"{rec.rel_path}: modules must be a string or list of strings")
+    names: list[str] = []
+    for value in declared:
+        if not isinstance(value, str):
+            raise ValueError(f"{rec.rel_path}: modules entries must be strings")
+        name = value.strip().removeprefix("openjiuwen/")
+        if name and name not in names:
+            names.append(name)
+    return names or ["未分类"]
+
+
 def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     valid = [r for r in records if not r.parse_error]
     skipped = [r for r in records if r.parse_error]
@@ -87,21 +104,38 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     out.append("")
     out.append("> " + " · ".join(counts))
     out.append("")
+    out.append("按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出，全局统计按文档去重。")
+    out.append("")
+
+    modules: dict[str, list[lib.DocRecord]] = {}
+    for rec in valid:
+        for name in _module_names(rec):
+            modules.setdefault(name, []).append(rec)
+    names = sorted(modules, key=lambda name: (name == "未分类", name))
+
+    out.extend(["## 模块目录", "", "| 模块 | 设计数 |", "|---|---|"])
+    for number, name in enumerate(names, start=1):
+        out.append(f"| [{_cell(name)}](#module-{number}) | {len(modules[name])} |")
+    if not names:
+        out.append("| — | 0 |")
+    out.append("")
 
     header = "| " + " | ".join(_COLUMNS) + " |"
     sep = "|" + "|".join(["---"] * len(_COLUMNS)) + "|"
 
-    for title, _stage_dir, _statuses in STAGE_GROUPS:
-        rows = grouped[title]
-        out.append(f"## {title}")
-        out.append("")
-        if rows:
+    for number, name in enumerate(names, start=1):
+        out.extend([f'<a id="module-{number}"></a>', "", f"## {_cell(name)}", ""])
+        module_paths = {rec.rel_path for rec in modules[name]}
+        for title, _stage_dir, _statuses in STAGE_GROUPS:
+            rows = [rec for rec in grouped[title] if rec.rel_path in module_paths]
+            if not rows:
+                continue
+            out.append(f"### {title}")
+            out.append("")
             out.append(header)
             out.append(sep)
             out.extend(_row(r) for r in rows)
-        else:
-            out.append("（暂无）")
-        out.append("")
+            out.append("")
 
     if skipped:
         out.append("## ⚠ 无法解析（已跳过，请运行 validate 修复）")

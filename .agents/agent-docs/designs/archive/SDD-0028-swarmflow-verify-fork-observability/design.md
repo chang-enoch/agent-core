@@ -10,6 +10,7 @@ created: 2026-09-22
 updated: 2026-09-29
 version: 1
 domain: observability
+modules: [agent_teams/workflow, jiuwenswarm]
 tags: [swarmflow, verify, fork, observability]
 related: [SDD-0014, SDD-0017]
 approved-date: 2026-09-22

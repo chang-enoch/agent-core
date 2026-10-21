@@ -10,6 +10,7 @@ created: 2026-06-22
 updated: 2026-07-18
 version: 1
 domain: harness
+modules: [agent_teams/workflow]
 tags: [swarmflow, concurrency, orchestration, agent-teams]
 related: []
 approved-date: 2026-07-18

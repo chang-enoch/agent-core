@@ -10,6 +10,7 @@ created: 2026-09-15
 updated: 2026-09-15
 version: 1
 domain: observability
+modules: [extensions/observability, harness, agent_teams]
 tags: [otel, genai-semconv, trajectory, harness, agent-teams, subagent, external-cli, span-processor, stream-frames, content-addressing]
 related: [SDD-0023, SDD-0024, SDD-0025, SDD-0026]
 implementation:
