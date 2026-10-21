@@ -92,6 +92,7 @@ Pass `COMMITS=N` to check recent commits instead.
 - `.agents/skills/jw-design/SKILL.md`：仅设计阶段，包含设计概览、架构和特性方案参考。
 - `.agents/skills/jw-dev/SKILL.md`：开发、测试、契约同步及 feature / bugfix 记忆维护。
 - `.agents/skills/jw-review/SKILL.md`：检视占位，待补充，当前不能据此认定检视通过。
+- `.agents/skills/jw-testing/SKILL.md`：独立撰写与维护转测文档，输出暂存本地被忽略的 designs/testing/，不进入设计生命周期或索引。
 
 实际资产位于 `.agents/agent-docs/` 的 `designs/`、`specs/`、`features/`、`bugfix/`。
 新 design 使用 `D-YYYYMMDD-HHMM-<slug>`；feature / bugfix 使用 `F_` / `B_` 加 `YYYYMMDD_HHMM` 和主题。时间均采用 Asia/Singapore，
