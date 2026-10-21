@@ -4,7 +4,7 @@
 |---|---|
 | 日期 | 2026-09-17 |
 | 范围 | `openjiuwen/agent_teams`、Runner 团队接口 |
-| 接口规约 | [S_28 群聊文件与成员输入](../specs/S_28_group-conversation-and-delegation.md) |
+| 接口规约 | [S_28 群聊文件与成员输入](../../specs/agent_teams/S_28_group-conversation-and-delegation.md) |
 
 ## 1. 整体结构
 
@@ -107,7 +107,7 @@ notice = await Runner.post_member_input(
 
 活跃运行时使用自身数据库和有效 workspace。离线调用需要 `db_config`；公开群历史可通过 `workspace_path` 指定自定义位置，未指定时使用已登记位置或默认位置。SDK 的 `mentions` 使用成员 ID，不解析正文中的 `@` 文本；`user` 和被动人类成员不会收到模型通知。
 
-宿主负责调用者认证、目标授权和团队生命周期。完整签名和返回语义见 [S_28](../specs/S_28_group-conversation-and-delegation.md)。
+宿主负责调用者认证、目标授权和团队生命周期。完整签名和返回语义见 [S_28](../../specs/agent_teams/S_28_group-conversation-and-delegation.md)。
 
 ## 6. jiuwenswarm 专家团代理
 
@@ -126,7 +126,7 @@ jiuwenswarm 用群 manifest 中的 `proxy_teams` 绑定大群代理人与目标�
 
 ## 2026-09-24：统一输入与群聊模块
 
-当前接口契约以 [S_28](../specs/S_28_group-conversation-and-delegation.md) 为准。
+当前接口契约以 [S_28](../../specs/agent_teams/S_28_group-conversation-and-delegation.md) 为准。
 公开输入使用 `type=group_chat` / `GroupChatMessage`，首条 run 输入和后续 interact
 共用 runtime 派发及 `group_chat/handler.py`。群聊文件实现与工具分别位于
 `group_chat/conversation.py` 和 `group_chat/tools.py`，现有邮箱消费者保持不变。
@@ -137,7 +137,7 @@ jiuwenswarm 保存会话的 `conversation_mode`，在两个 Team 输入入口透
 
 ## 2026-09-29：复用广播存储与消费水位
 
-当前契约见 [S_28](../specs/S_28_group-conversation-and-delegation.md)。
+当前契约见 [S_28](../../specs/agent_teams/S_28_group-conversation-and-delegation.md)。
 
 - 决策：每条公开消息写一条现有 DB 广播，history.json 为投影，发布既有 BROADCAST 事件。群聊消费者只处理明确 mentions，投递成功后推进原有广播 read_at；定时轮询和外部收件箱遵循同一筛选。
 - 决策：从 read_at 到触发消息取近期摘录，保留触发消息并给出完整文件路径。无 @ 不写模型上下文，不推进水位，也不阻塞团队完成。

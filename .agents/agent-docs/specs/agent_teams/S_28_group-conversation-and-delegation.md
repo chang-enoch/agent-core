@@ -1,6 +1,6 @@
 # S_28 群聊输入与文件归档
 
-最近修订：2026-10-10。关联特性：[F_112](../features/F_112_group-conversation-and-delegation.md)。
+最近修订：2026-10-10。关联特性：[F_112](../../features/agent_teams/F_112_group-conversation-and-delegation.md)。
 
 ## 职责与入口
 

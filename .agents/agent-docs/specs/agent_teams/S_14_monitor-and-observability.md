@@ -26,7 +26,7 @@
    - `semconv.py` / `redaction.py`：属性常量 + 脱敏
    - `subagent_elements.py`：在 team 侧 subagent 工厂只注入 agent rail（`maybe_agent_observability_rail()`，idempotent）——subagent 不是 member，不挂 team rail，团队归属靠嵌在 member span 下体现
 
-  Span 树结构、生命周期、ActiveSpanTracker 详细设计见 [F_37_observability-otel-trace.md](../features/F_37_observability-otel-trace.md)。
+  Span 树结构、生命周期、ActiveSpanTracker 详细设计见 [F_37_observability-otel-trace.md](../../features/agent_teams/F_37_observability-otel-trace.md)。
 
 **不管**的事情：
 
