@@ -415,7 +415,8 @@ STRINGS: dict[str, str] = {
     ),
     "create_task_scheduled.task.member": (
         "Owner created together with the task (one of assignee / member): same fields as spawn_teammate "
-        "(member_name / display_name / desc / prompt / model_name) plus a required lifetime; when the team declares "
+        "(member_name / display_name / desc / prompt / model_name / isolation) plus a required lifetime; when the "
+        "team declares "
         "external CLI kinds, cli_agent runs it on an external CLI instead. The member becomes the "
         "task's assignee and is started by the scheduling framework; once every task on its board is terminal it "
         "retires per lifetime"
@@ -443,6 +444,11 @@ STRINGS: dict[str, str] = {
     "create_task_scheduled.task.member.group": (
         "Optional, requires expert. The expert group name, making expert a member name of that group; when "
         "this team was assembled from that group, the new member matches its predefined member of that name"
+    ),
+    "create_task_scheduled.task.member.isolation": (
+        "Optional isolation mode, as in spawn_teammate: set 'worktree' only when the user asks for it or the member "
+        "must modify repository files in an isolated checkout; omit it for read-only, discussion or research tasks. "
+        "Not supported for external CLI members (cli_agent, or an external-runtime expert)"
     ),
     "create_task_scheduled.task.member.lifetime": (
         "Retirement policy: shutdown = shut down automatically once its tasks are all done (terminal, the name "

@@ -1051,6 +1051,7 @@ async def test_inline_cli_member_model_rules_match_spawn_teammate(
         ({"cli_agent": "codex"}, "cli_agent 'codex' is not declared"),
         ({"cli_agent": None, "external_cli": {"fallback_model_name": "m"}}, "applies only to an external CLI member"),
         ({"external_cli": "claude"}, "member.external_cli must be an object"),
+        ({"isolation": "worktree"}, "member.isolation cannot be set for an external CLI member"),
     ],
 )
 async def test_inline_cli_member_rejections_write_nothing(
@@ -1060,6 +1061,20 @@ async def test_inline_cli_member_rejections_write_nothing(
     result = await _scheduled_create_task(backend, catalog).invoke({"tasks": [_cli_task("t1", "rev-1", **member)]})
     assert not result.success
     assert error in result.error
+    assert await _member_count(db) == 0
+
+
+@pytest.mark.level1
+@pytest.mark.asyncio
+async def test_inline_external_expert_rejects_isolation_like_spawn_expert(
+    db: TeamDatabase, catalog: FakeCatalog
+) -> None:
+    backend = _backend(db, ExternalCliAgentSpec(cli_agent="claude"))
+    task = _expert_task("t1", "cli-2", expert="claude-expert", isolation="worktree")
+    result = await _scheduled_create_task(backend, catalog).invoke({"tasks": [task]})
+    assert not result.success
+    assert "member.isolation cannot be set for expert" in result.error
+    assert "external CLI runtime" in result.error
     assert await _member_count(db) == 0
 
 

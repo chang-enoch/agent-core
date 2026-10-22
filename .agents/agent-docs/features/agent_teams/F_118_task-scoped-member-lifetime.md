@@ -162,6 +162,8 @@ RESTARTING ──(重建失败回滚)──▶ DORMANT                         �
 
 - 五个公开参数与 `spawn_teammate` 逐字相同，参数描述串复用 `spawn_teammate.*`，只新增
   `create_task.task.member` / `create_task.task.member.lifetime` 两个 key。
+  （勘误：当时 `spawn_teammate` 已有 7 个参数，本期只取了其中 5 个，`isolation` / `permissions`
+  未纳入且未记录理由；`isolation` 由 [[F_127_inline-member-worktree-isolation]] 补上。）
 - `lifetime` 必填：内联的全部意义就是"任务内的人"，默认常驻等于把 `spawn_teammate` 换个位置写。
 - `team_mode == "predefined"` 时 `member` 属性与其散文一起消失（与 `spawn_teammate` 被摘掉同一
   个门，capability 槽模式）。

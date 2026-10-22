@@ -309,7 +309,7 @@ STRINGS: dict[str, str] = {
     ),
     "create_task_scheduled.task.member": (
         "随任务一起创建的承担者（与 assignee 二选一）：字段同 spawn_teammate"
-        "（member_name / display_name / desc / prompt / model_name），外加必填的 lifetime；"
+        "（member_name / display_name / desc / prompt / model_name / isolation），外加必填的 lifetime；"
         "团队声明了外部 CLI 类型时也可以用 cli_agent 让它以外部 CLI 运行。"
         "成员落为该任务的 assignee，由调度框架拉起；名下任务全部终态后按 lifetime 退场"
     ),
@@ -334,6 +334,10 @@ STRINGS: dict[str, str] = {
     "create_task_scheduled.task.member.group": (
         "可选，需同时给 expert。专家团名，表示 expert 是该团内的成员名；本团队由该专家团组建时，"
         "新成员与团里预定义的同名成员同源"
+    ),
+    "create_task_scheduled.task.member.isolation": (
+        "可选隔离模式，同 spawn_teammate：仅当用户明确要求或该成员需要在隔离检出中修改仓库文件时设为 "
+        "'worktree'；只读、讨论、调研类任务省略。外部 CLI 成员（cli_agent 或外部运行时专家）不支持"
     ),
     "create_task_scheduled.task.member.lifetime": (
         "退场策略：shutdown = 名下任务全部完成后自动关闭（终态，名字不可复用）；"

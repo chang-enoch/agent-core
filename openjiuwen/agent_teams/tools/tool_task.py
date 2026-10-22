@@ -92,7 +92,9 @@ def _inline_member_schema(
 
     The five public fields are ``spawn_teammate``'s, word for word — an inline
     member *is* a teammate row, only written by ``create_task`` — so their
-    descriptions are shared. ``lifetime`` is what makes it inline: a member
+    descriptions are shared. ``isolation`` is ``spawn_teammate``'s too, for a
+    native member that edits the repository; an external CLI member cannot
+    take it. ``lifetime`` is what makes it inline: a member
     declared with its task always carries a retirement policy.
     ``member_model_description`` overrides the plain ``model_name`` prose,
     e.g. with a model group's selectable catalog. ``expert_enabled`` (the host
@@ -114,6 +116,11 @@ def _inline_member_schema(
             "model_name": {
                 "type": "string",
                 "description": member_model_description or t("spawn_teammate", "model_name"),
+            },
+            "isolation": {
+                "type": "string",
+                "enum": ["worktree"],
+                "description": t("create_task_scheduled", "task.member.isolation"),
             },
             "lifetime": {
                 "type": "string",
@@ -255,6 +262,14 @@ def _validate_inline_members(
         error = _check_inline_external_cli(member, expert=expert, external_cli_enabled=external_cli_enabled)
         if error:
             return f"Task {_spec_label(spec)!r}: {error}"
+        isolation = member.get("isolation")
+        if isolation not in (None, "worktree") or (isolation and (member.get("cli_agent") or "").strip()):
+            reason = (
+                "must be 'worktree' or omitted"
+                if isolation not in (None, "worktree")
+                else "cannot be set for an external CLI member (member.cli_agent)"
+            )
+            return f"Task {_spec_label(spec)!r}: member.isolation {reason}"
         # An expert member takes its display name and description from the template.
         for key in () if expert else ("display_name", "desc"):
             if not (member.get(key) or "").strip():
@@ -368,6 +383,7 @@ async def _materialize_inline_members(
                 desc=desc,
                 prompt=prompt,
                 allocation=allocation,
+                isolation=member.get("isolation"),
                 lifetime=member["lifetime"],
                 agent_template=agent_template,
             )
@@ -394,7 +410,7 @@ async def _resolve_inline_experts(
     """Resolve every inline member's expert template before anything is written.
 
     As in ``spawn_expert``, ``external_cli`` is rejected for an expert that
-    runs natively.
+    runs natively, and ``isolation`` for one with an external runtime.
     """
     from openjiuwen.agent_teams.tools.tool_expert import ExpertUnavailable
 
@@ -413,6 +429,11 @@ async def _resolve_inline_experts(
             return {}, (
                 f"Task {_spec_label(spec)!r}: expert '{template.ref.label()}' runs natively; member.external_cli "
                 "applies only to experts with an external runtime — omit it"
+            )
+        if template.external_cli is not None and member.get("isolation") is not None:
+            return {}, (
+                f"Task {_spec_label(spec)!r}: member.isolation cannot be set for expert "
+                f"'{template.ref.label()}': it runs on an external CLI runtime"
             )
         templates[member["member_name"].strip()] = template
     return templates, None
