@@ -272,7 +272,7 @@ STRINGS: dict[str, str] = {
     # view_experts._desc lives in descs/en/expert/view_experts.md
     "view_experts.action": "list (default) lists the installed single experts; get shows one expert in full",
     "view_experts.query": (
-        "list only: case-insensitive substring filter over package name, display name and description"
+        "list only: relevance search, most relevant first; an exact package-name match comes first"
     ),
     "view_experts.name": "Required for get: the expert's package name (name in the list, not the display name)",
     # ===== view_expert_groups ==================================================
@@ -281,7 +281,8 @@ STRINGS: dict[str, str] = {
         "list (default) lists the installed expert groups; get shows one group and its members"
     ),
     "view_expert_groups.query": (
-        "list only: case-insensitive substring filter over group name, display name and description"
+        "list only: relevance search including the members, most relevant first; "
+        "an exact group-name match comes first"
     ),
     "view_expert_groups.capabilities": "list only: keep only groups that have all listed capability tags",
     "view_expert_groups.name": "Required for get: the expert group name",

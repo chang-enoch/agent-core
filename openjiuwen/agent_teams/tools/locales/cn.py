@@ -211,12 +211,12 @@ STRINGS: dict[str, str] = {
     # ===== view_experts ========================================================
     # view_experts._desc lives in descs/cn/expert/view_experts.md
     "view_experts.action": "list（默认）列出已安装的单个专家；get 查看一个专家的完整信息",
-    "view_experts.query": "仅 list 使用：按包名、显示名、描述做子串过滤（不区分大小写）",
+    "view_experts.query": "仅 list 使用：按相关度检索，结果最相关的排前面；包名完全一致的排第一",
     "view_experts.name": "get 必填：专家的包名（list 结果中的 name，不是显示名）",
     # ===== view_expert_groups ==================================================
     # view_expert_groups._desc lives in descs/cn/expert/view_expert_groups.md
     "view_expert_groups.action": "list（默认）列出已安装的专家团；get 查看一个专家团及其成员表",
-    "view_expert_groups.query": "仅 list 使用：按团名、显示名、描述做子串过滤（不区分大小写）",
+    "view_expert_groups.query": "仅 list 使用：按相关度检索（含团内成员），结果最相关的排前面；团名完全一致的排第一",
     "view_expert_groups.capabilities": "仅 list 使用：只列出同时具备全部所列能力标签的专家团",
     "view_expert_groups.name": "get 必填：专家团名",
     "view_expert_groups.member": "仅 get 使用，可选：只展开该专家团内这一个成员的详情",

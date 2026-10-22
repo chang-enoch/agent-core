@@ -179,7 +179,10 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     绑定专家团的 Team 不会单独多出 `spawn_expert`。同一信号还门控调度模式 `create_task` 内联 `member` 的
     `expert` / `group` 属性：内联成员按专家模板创建时与 `spawn_expert` 共用 `ExpertTemplateResolver`
     （模板来源、人设、显示名去重、`options.agent_template`），外部运行时专家同样可以内联。查看工具只读 core 卡片（`read_agent_template_card` /
-    `read_agent_group_card`），读不出的包跳过并记 warning；只有 `spawn_expert` 调用完整加载器。三个
+    `read_agent_group_card`），读不出的包跳过并记 warning；只有 `spawn_expert` 调用完整加载器。两个查看工具
+    `list` 的 `query` 是相关度检索而不是过滤：按 BM25（core `BM25Index`）对加权字段打分，名字与 `query`
+    完全一致（不区分大小写）的排第一，其后按分数降序，只以子串命中的排在最后，同分保持目录顺序；
+    `view_expert_groups` 先按 `capabilities` 过滤再排序。三个
     工具不在事件循环线程上做文件 IO：包读取经 `asyncio.to_thread` 在工作线程里执行。
     `spawn_expert` 是又一个 `_SpawnToolBase` 子类：模板来源由 `group` 决定（等于
     `TeamAgentSpec.agent_group_name` 时取本 Team spec 里组装好的成员，不调目录、不读磁盘；否则经目录

@@ -113,8 +113,21 @@ author_email: chengshuo5@huawei.com
     首次启动消息取消后，系统提示词只放团队准则，私有 `prompt` 由 `TeamContextTracker` 写进对话历史，两种成员都把空值
     当"没有私有约定"处理，必填只剩规则不一致。`spawn_bridge_agent` 的 `prompt` 仍必填：它是经 `adapter.connect`
     下发给远程 agent 的唯一角色说明。
+13. **查看工具的 `query` 改为 BM25 相关度排序**（2026-10-22 追补）。原实现是整句子串过滤：只看名字、显示名、
+    描述，标签 / 分类 / 团内成员都搜不到；多个词必须作为一整段连续出现；结果按目录顺序，不告诉 leader 哪个最合适。
+    现在 `_rank_by_query` 用 core 的 `BM25Index`（分词器对中文出单字 + 二元组、对 ASCII 出单词，不需要分词库）给
+    每张卡片的检索文档打分，规则依次是：名字与 `query` 完全一致（不区分大小写）的排第一，然后按分数降序，只有
+    子串命中、分数为 0 的排最后，同分保持目录顺序。字段权重靠在文档里重复字段文本实现：名字与显示名 ×3、标签 ×2、
+    分类与描述 ×1，显示名 / 描述 / 标签的所有语言都进文档。`view_expert_groups` 额外收入能力标签与团内可拉起成员
+    （不含 `leader`）的名字、显示名、描述，先按 `capabilities` 过滤再排序。保留子串兜底，是因为 BM25 只匹配整词，
+    `fin` 这样的前缀查询会变成无结果。
 
 ## 拒绝的方案
+
+- **检索放在宿主（jiuwenswarm 的市场列表 RPC）里做**：leader 看到的列表来自本工具，宿主的市场接口只服务 Web 管理面板；
+  在宿主排序改变不了 leader 的结果，还要求每个宿主各写一遍。
+- **只保留 BM25、去掉子串兜底**：BM25 只匹配整词，前缀查询（`fin`）与旧行为相比会直接失去结果。
+- **按最高分的比例截断低分结果**：阈值没有可解释的取值；只排序不截断，低相关的结果排在后面，由 leader 自己取舍。
 
 - **内联成员把 `fallback_model_name` / `builtin_model` / `effort` 平铺在 `member` 上**（`spawn_external_cli` 的写法）：
   外部专家与 `cli_agent` 成员要两套写法，且与 `spawn_expert` 不一致；统一放进 `member.external_cli`。
@@ -168,6 +181,10 @@ TeamMember.options.agent_template = {
   `spawn_expert` 一致（含 `lifetime`、退场扫描可见），`cli_agent` 内联成员登记为 `external_cli`，5 组模型参数在内联成员与
   `spawn_external_cli` 上报错一致，拒绝路径与整批回滚不留成员行与 CLI 类型映射；`set_expert_catalog` → leader 构建 → 工具注册的端到端注入；运行时
   上下文经 JSON 往返（子进程拉起）保留快照与外部配置。
+- 决策 13：`tools/test_tool_expert.py` 新增 4 个用例——中文多字查询按显示名 / 标签 / 描述加权排序并丢弃无关专家、
+  名字完全一致置顶、前缀查询经子串兜底仍能命中；专家团按团内成员的显示名检索、`capabilities` 先过滤；
+  `_rank_by_query` 的置顶 / 分数 / 子串兜底顺序与同分保序。`tests/unit_tests/agent_teams` 3957 passed / 36 skipped /
+  2 xfailed。
 
 ## 已知遗留
 
@@ -179,3 +196,5 @@ TeamMember.options.agent_template = {
 - 包目录被物理删除后，快照中的绝对路径在 `_prepare` 热挂时报错、成员进入 `ERROR`——沿用 F_81 的既有行为，
   本次没有新增专门用例。
 - 组织功能的 `ExpertGroupCatalog` 与本目录并存，收编见 SDD-0032 §12。
+- 决策 13 的中文单字也算一个词：所有专家的显示名都带「专家」时，查「理财专家」会把每个专家都列出来（无关的排在后面）。
+  专家数量大到列表影响 token 成本时，再考虑截断或给 `list` 加数量上限。

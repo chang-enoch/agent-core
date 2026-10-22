@@ -43,6 +43,7 @@ from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType, 
 from openjiuwen.agent_teams.tools.locales import make_translator
 from openjiuwen.agent_teams.tools.member_options import get_member_agent_template, get_member_options
 from openjiuwen.agent_teams.tools.team import TeamBackend
+from openjiuwen.agent_teams.tools.tool_expert import _rank_by_query
 from openjiuwen.agent_teams.tools.tool_factory import create_team_tools
 from openjiuwen.agent_teams.tools.tool_member import SpawnTeammateTool
 from openjiuwen.agent_teams.tools.tool_permissions import EXPERT_TOOLS
@@ -307,6 +308,67 @@ async def test_view_expert_groups_expands_one_member(db: TeamDatabase, catalog: 
     assert "spawnable: true" in tool.render_for_llm(one)
     unknown = await tool.invoke({"action": "get", "name": "designer", "member": "ghost"})
     assert unknown.error == "Member 'ghost' is not in expert group 'designer' (members: leader, clip, cli-member)"
+
+
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_view_experts_list_query_ranks_by_relevance(db: TeamDatabase, tmp_path: Path) -> None:
+    root = tmp_path / "ranked"
+    experts = {
+        "weather": _expert_package(root / "weather", "weather", display_name={"zh": "天气助手"}),
+        "notes": _expert_package(
+            root / "notes", "notes", display_name={"zh": "笔记助手"}, description="偶尔整理理财记录"
+        ),
+        "finance": _expert_package(
+            root / "finance", "finance", display_name={"zh": "个人理财专家"}, tags=[{"zh": "理财"}]
+        ),
+    }
+    tool = _tools(_backend(db), FakeCatalog(experts, {}))["view_experts"]
+
+    by_words = await tool.invoke({"query": "理财专家"})
+    by_name = await tool.invoke({"query": "Notes"})
+    by_prefix = await tool.invoke({"query": "fin"})
+
+    assert [item["name"] for item in by_words.data["experts"]] == ["finance", "notes"], (
+        "display name and tags outweigh a description mention; the unrelated expert is dropped"
+    )
+    assert [item["name"] for item in by_name.data["experts"]][0] == "notes"
+    assert [item["name"] for item in by_prefix.data["experts"]] == ["finance"], "prefix queries still match"
+
+
+@pytest.mark.level1
+@pytest.mark.asyncio
+async def test_view_expert_groups_list_query_searches_member_texts(db: TeamDatabase, catalog: FakeCatalog) -> None:
+    tool = _tools(_backend(db), catalog)["view_expert_groups"]
+
+    by_member = await tool.invoke({"query": "镜头"})
+    filtered_out = await tool.invoke({"query": "镜头", "capabilities": ["audio"]})
+    unrelated = await tool.invoke({"query": "weather"})
+
+    assert [item["name"] for item in by_member.data["groups"]] == ["designer"]
+    assert filtered_out.data["groups"] == []
+    assert unrelated.data["groups"] == []
+
+
+@pytest.mark.level1
+def test_rank_by_query_pins_exact_names_then_scores_then_substring_hits() -> None:
+    names = ["finance-pro", "finance", "refinance"]
+    documents = [
+        "finance-pro finance finance finance finance",
+        "finance 理财",
+        "refinance",
+    ]
+
+    assert _rank_by_query("finance", names, documents) == [1, 0, 2], (
+        "exact name first although finance-pro scores higher; refinance matches only as a substring"
+    )
+    assert _rank_by_query(None, names, documents) == [0, 1, 2]
+    assert _rank_by_query("weather", names, documents) == []
+
+
+@pytest.mark.level1
+def test_rank_by_query_keeps_catalog_order_on_ties() -> None:
+    assert _rank_by_query("分析", ["b", "a"], ["数据分析", "数据分析"]) == [0, 1]
 
 
 # ---------------------------------------------------------------------------

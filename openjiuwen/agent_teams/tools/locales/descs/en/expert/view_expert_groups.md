@@ -11,14 +11,14 @@ Browse the expert groups (`agent_group` packages) **installed** on this machine 
 | Parameter | Usage |
 |---|---|
 | **action** | `list` (default) lists all; `get` shows one group |
-| **query** | `list` only: substring filter over group name, display name and description |
+| **query** | `list` only: relevance search over group name, display name, tags, capability tags, description, and the names and descriptions of the spawnable members, most relevant first; a group name equal to `query` (case-insensitive) comes first |
 | **capabilities** | `list` only: keep groups that have **all** listed capability tags |
 | **name** | Required for `get`: the group name |
 | **member** | `get` only, optional: expand this one member |
 
 ## Output
 
-- `list`: one line per group — name / display name / spawnable member count / capability tags / one-line description; the group this team is bound to is marked `bound=true`.
+- `list`: one line per group, in relevance order when `query` is given — name / display name / spawnable member count / capability tags / one-line description; the group this team is bound to is marked `bound=true`.
 - `get`: group info plus the full member table, one line per member — name / display name / runtime / `spawnable` (whether `spawn_expert` can run it; `leader` cannot) / description; members this team already has as predefined members are marked `predefined=true`.
 
 Member names are unique only within their group, so spawning a group member always takes `group` too.
