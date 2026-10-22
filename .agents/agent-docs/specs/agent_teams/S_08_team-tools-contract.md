@@ -37,7 +37,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md |
 
 ## 范围 / 边界
@@ -404,7 +404,10 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     单播/多播的具体收件人若是 `ERROR` 或 `DORMANT`（F_118），这次定向投递本身构成显式恢复 /
     唤醒请求：写库前经 `recover_member` 的 `{ERROR, DORMANT}→RESTARTING` CAS 重建 runtime
     （失败回滚到被认领时的原状态）；广播不批量恢复，避免一条泛化消息触发全队 restart storm，
-    也**永远不唤醒休眠成员**。ERROR / DORMANT runtime 已经退出时，`shutdown_member` 则直接
+    也**永远不唤醒休眠成员**。成员发出的消息（autonomous 成员与开启成员间通信的 scheduled 成员）
+    工具侧拉不起人——成员 backend 没有 spawn 回调——由 leader 的 `MessageHandler._wake_peer_recipients`
+    观察事件后按同一规则代为拉起（`TeamBackend.wake_member` / `autostart_unstarted`，F_126 后续修复），
+    工具本身保持不变。ERROR / DORMANT runtime 已经退出时，`shutdown_member` 则直接
     CAS 到 `SHUTDOWN` 并清理 stale handle，不发送一个永远不会被消费的 shutdown event
     （DORMANT 仍发布 `MemberShutdownEvent` 供名册刷新，`target_status="shut_down"`）。
     走 `SHUTDOWN_REQUESTED` 正常路径时，事件的 `target_status` 取 `retire_target(lifetime, force)`，

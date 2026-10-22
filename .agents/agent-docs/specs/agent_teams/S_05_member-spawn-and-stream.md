@@ -18,7 +18,7 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/spawn/`、`openjiuwen/agent_teams/agent/spawn_manager.py`、`openjiuwen/agent_teams/agent/stream_controller.py`、`openjiuwen/agent_teams/agent/payload.py`、`openjiuwen/agent_teams/agent/agent_configurator.py`、`openjiuwen/agent_teams/worktree/`、`openjiuwen/agent_teams/context.py` |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联 feature | F_38_team-teammate-worktree-isolation-agenttool.md、F_28_native-harness-team-adoption.md、F_60_native-harness-pause-abort-resume.md、F_69_cwd-workspace-project-root-separation.md、F_74_leader-member-activity-and-team-idle.md、F_77_team-idle-requires-a-settled-task-board.md、F_79_team-scoped-skill-library-and-visibility.md、F_80_fork-identity-conversion.md、F_84_task-creation-starts-members.md、F_125_team-expert-catalog-and-spawn.md |
 
 ## 范围 / 边界
@@ -95,8 +95,8 @@ author_email: chengshuo5@huawei.com
    成功，其余并发路径查到 `STARTING`/`READY` 直接返回 False。spawn 失败回滚
    `STARTING→UNSTARTED` 保证可重试。
 
-   漏斗有**五个触发点**，全都是"活要交给一个还没起来的成员"——前四个是交付那一刻
-   的即时拉起，第五个是兜底对账：
+   漏斗有**六个触发点**，全都是"活要交给一个还没起来的成员"——前五个是交付那一刻
+   的即时拉起，第六个是兜底对账：
 
    | 触发点 | 代码位置 |
    |---|---|
@@ -104,13 +104,17 @@ author_email: chengshuo5@huawei.com
    | leader `create_task` 落库后拉起（**仅 autonomous**，F_84）| `tools/tool_task.py::TaskCreateTool._auto_start_members` |
    | interact dispatch（`@member` / `@all` / operator 消息）| `runtime/manager.py::_dispatch_payload` |
    | 调度器投递交接消息（F_62）| `agent/scheduling/scheduler.py` |
+   | 成员间消息：leader 观察到非 leader 发出的 MESSAGE / BROADCAST 后代为拉起收件人（F_126）| `agent/coordination/handlers/message.py::MessageHandler._wake_peer_recipients` |
    | leader round-idle 对账（看板有非终态任务时，F_84）| `agent/team_agent.py::_reconcile_member_startup` |
 
    **前四个共用一个入口**：`TeamBackend.autostart_unstarted()`——它持有构造期注入的
    `on_member_started` 回调（= `TeamAgent._on_teammate_created`），把角色门与回调门
    收在一处，调用方只表达"确保名册起来了"的意图，不各自捎带一份 spawn 回调。
+   第五个按收件人粒度走它的单人版 `TeamBackend.wake_member(name)`（同一回调、同一角色门；
+   UNSTARTED 启动、ERROR / DORMANT 经 `recover_member` 唤醒、其余状态一次读后返回），广播仍走
+   `autostart_unstarted()`——与 leader 自己 `send_message` 的规则逐条对应。
 
-   第五个是**边缘触发的兜底**，挂在 leader 自己 round 结束的那条边上
+   第六个是**边缘触发的兜底**，挂在 leader 自己 round 结束的那条边上
    （`StreamController._on_idle_settled`）：这一轮的意图已经完整表达，此时名册还有
    UNSTARTED 而看板上有活，就是代码该补的缺口。它**必须排在同一条边上的
    `_request_completion_poll` 之前**——拉起成员会让团队重新动起来，先做完成判定会

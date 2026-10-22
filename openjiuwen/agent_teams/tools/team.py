@@ -1001,6 +1001,35 @@ class TeamBackend:
             return []
         return await self.startup(on_created=self._on_member_started)
 
+    async def wake_member(self, member_name: str) -> bool:
+        """Bring up one named member so the message just addressed to it gets read.
+
+        The single-recipient counterpart of ``autostart_unstarted``, for mail
+        the leader did not send itself (member to member, F_126): an UNSTARTED
+        recipient is started, an ERROR / DORMANT one is recovered — the same
+        rules the leader's own ``send_message`` applies to its direct
+        recipients. A member that is already running is left alone after one
+        status read, so the common case writes nothing.
+
+        Leader-only and callback-gated like ``autostart_unstarted``; the CAS in
+        ``startup_member`` / ``recover_member`` settles races with the other
+        startup paths.
+
+        Args:
+            member_name: The recipient to bring up.
+
+        Returns:
+            True when this call started or recovered the member.
+        """
+        if not self.is_leader or self._on_member_started is None:
+            return False
+        status = await self.get_member_status(member_name)
+        if status == MemberStatus.UNSTARTED.value:
+            return await self.startup_member(member_name, self._on_member_started)
+        if status in {source.value for source in self._RECOVERABLE_STATUSES}:
+            return await self.recover_member(member_name)
+        return False
+
     async def startup_member(
         self,
         member_name: str,

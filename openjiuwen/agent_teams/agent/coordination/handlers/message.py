@@ -26,6 +26,7 @@ from openjiuwen.agent_teams.agent.coordination.event_bus import (
     InnerEventType,
 )
 from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordinationHandler
+from openjiuwen.agent_teams.constants import USER_PSEUDO_MEMBER_NAME
 from openjiuwen.agent_teams.i18n import reply_hint_for, t
 from openjiuwen.agent_teams.inbound_render import (
     INBOUND_TYPE_BROADCAST,
@@ -83,6 +84,7 @@ class MessageHandler(BaseCoordinationHandler):
         if self._blueprint.role == TeamRole.LEADER:
             if event.event_type == TeamEvent.MESSAGE:
                 await self._ack_user_bound_message(event)
+            await self._wake_peer_recipients(event)
             await self._notify_human_agent_inbound(event)
         await self._poll.resume_polls()
         await self._process_unread_messages(member_name)
@@ -572,6 +574,42 @@ class MessageHandler(BaseCoordinationHandler):
                     recipient,
                     exc,
                 )
+
+    async def _wake_peer_recipients(self, event: CoordinationEvent) -> None:
+        """Bring up the recipients of a member-to-member message (leader only).
+
+        Only the leader owns spawning, so a member's ``send_message`` writes
+        the row and publishes the event but cannot start a peer that never
+        ran, nor wake a DORMANT / ERROR one; the message would sit unread
+        until something else started that peer. The leader sees every team
+        message event, so it applies the rules of its own ``send_message``
+        here: a direct (or multicast) recipient is started or recovered, a
+        broadcast starts UNSTARTED members only and leaves DORMANT / ERROR
+        ones asleep. The woken runtime drains its mailbox on start.
+
+        Messages the leader sent itself are skipped — its tool already did
+        this, and its framework handoffs keep their own wake rules.
+        """
+        backend = self._infra.team_backend
+        if backend is None:
+            return
+        payload = event.get_payload()
+        sender = getattr(payload, "from_member_name", None)
+        if sender == self._blueprint.member_name:
+            return
+        try:
+            if event.event_type == TeamEvent.BROADCAST:
+                started = await backend.autostart_unstarted()
+                if started:
+                    team_logger.info("Started members for a broadcast from {}: {}", sender, started)
+                return
+            recipient = getattr(payload, "to_member_name", None)
+            if not recipient or recipient in (USER_PSEUDO_MEMBER_NAME, self._blueprint.member_name):
+                return
+            if await backend.wake_member(recipient):
+                team_logger.info("Woke member {} for a message from {}", recipient, sender)
+        except Exception as exc:
+            team_logger.error("Failed to wake recipients of a message from {}: {}", sender, exc)
 
     async def _ack_user_bound_message(self, event: CoordinationEvent) -> None:
         """Mark a teammate→user direct message as read on the user's behalf.

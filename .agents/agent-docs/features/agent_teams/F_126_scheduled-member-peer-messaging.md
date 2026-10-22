@@ -64,8 +64,8 @@ leader 多一轮推理、信息多一次转述失真，成员还会因为等转�
 5. **描述独立一份**：`send_message_scheduled_peers.md`（cn / en）。不复用 autonomous 的
    `send_message.md`——那份讲"通知成员领取任务"，而调度模式的交接契约（完成走 `summary` / `note`、
    不发完成汇报）必须保留；也不复用 `send_message_scheduled.md`——那份的核心是"你不能发给其他成员"。
-   新描述把点对点限定为**协作沟通**，明确不能借此互相派活或改任务归属，并提示发给未开工 / 休眠
-   成员的消息只落邮箱。
+   新描述把点对点限定为**协作沟通**，明确不能借此互相派活或改任务归属，并说明发给未启动 / 休眠 /
+   出错成员的消息会由框架把对方拉起来（见下文「后续修复」）。
 6. **提示词用 capability 槽 `{{member_messaging}}`**（只在 `dispatch_scheduled_*` 两个模板里）：
    - leader 版两种取值都非空：关 → 原来那条"成员之间不能直接通信"（原文挪进
      `dispatch_scheduled_leader_messaging_closed.md`，逐字不变）；开 → "成员之间可以直接通信，
@@ -86,9 +86,9 @@ leader 多一轮推理、信息多一次转述失真，成员还会因为等转�
   member_name 时只能先查名册），也会拿到 autonomous 那份讲认领流程的描述。
 - **在 `ReportToLeaderTool` 里按开关放宽白名单**：等于在 `invoke` 里加形态分支，违反 S_08
   不变量 18；schema 的 `enum` 也得跟着条件化，最终两套契约挤在一个类里。
-- **成员给休眠 / 未启动的同伴发消息时顺手唤醒**：`recover_member` / `autostart_unstarted` 是
+- **成员的 `send_message` 自己拉起休眠 / 未启动的同伴**：`recover_member` / `autostart_unstarted` 是
   leader-only 的拉起漏斗（S_05 不变量 1），成员 backend 不持有 spawn 回调；放开它等于让任意成员
-  拉起进程，超出本特性范围。消息照常落邮箱，被调度器或 leader 点名时一并读到，描述里写明这一点。
+  拉起进程。拉起仍归 leader，见「后续修复」。
 
 ## 验证
 
@@ -105,5 +105,34 @@ leader 多一轮推理、信息多一次转述失真，成员还会因为等转�
 
 - swarm 侧（`modes.team.jiuwen_team.enable_member_messaging` + 实验特性子开关）在 swarm 仓库
   单独落地，依赖本改动合入后 bump core `rev`。
-- 成员间消息不唤醒休眠 / 未启动的同伴（见拒绝的方案最后一条）；若后续需要，应走 leader 侧
-  代投或调度器的点名唤醒，而不是给成员 backend 开拉起权限。
+
+## 后续修复：成员间消息由 leader 代为拉起收件人（2026-10-23）
+
+**问题**：初版落地后，成员发给一个从未启动（UNSTARTED）或已休眠 / 出错（DORMANT / ERROR）的同伴的
+消息只落进邮箱，没有任何进程去读——直到 leader 点名或调度器开工才被读到。调度模式下成员通常要等
+派到任务才启动，打开成员间通信后这几乎是常态；autonomous 成员互发消息同样受影响。
+
+**决策**：拉起权不下放，仍由 leader 执行。leader 本来就订阅全队消息事件（给发往 `user` 的消息
+自动 ack），在 `MessageHandler.on_message_or_broadcast` 里新增 `_wake_peer_recipients`，按 leader
+自己 `send_message` 的规则处理**非 leader 发出**的消息：
+
+- 点对点 / 多播（每个收件人一条 `MESSAGE` 事件）：收件人不是 `user` / leader 时调新增的
+  `TeamBackend.wake_member(name)`——先读一次状态，UNSTARTED 走 `startup_member`（回调用构造期注入的
+  `on_member_started`），ERROR / DORMANT 走 `recover_member`，其余状态不写库直接返回。
+- 广播：`autostart_unstarted()`，只启动 UNSTARTED，**不唤醒** DORMANT / ERROR（与 F_118 的
+  "广播不唤醒"一致）。
+- leader 自己发的消息跳过（工具已处理，调度器交接自有拉起规则）；拉起失败只记日志，不影响后续
+  ack 与人类成员通知。被拉起的成员启动后经首次邮箱轮询读到这条消息（F_33），DORMANT 恢复后读完
+  未读消息（F_118），无需重投。
+
+两种 dispatch 模式都生效，不挂在 `enable_member_messaging` 上。
+
+**拒绝的方案**：
+- 成员 `send_message` 发一种"请 leader 拉起"的新消息 / 事件：多一种协议与工具层的成员专属分支，
+  而 leader 已能看到原事件。
+- 交给 `TeamScheduler`：它只在调度模式 leader 上构造，autonomous 覆盖不到。
+
+**验证**：新增 `tests/unit_tests/agent_teams/test_peer_message_wake.py`（12 例，真实内存 SQLite +
+leader `TeamBackend`）：点对点拉起 UNSTARTED、恢复 DORMANT / ERROR、运行中成员不动、广播只启动
+UNSTARTED、leader 自发 / 发往 `user` / 发往 leader 跳过、拉起失败回滚 CAS 且不抛出、
+`on_message_or_broadcast` 接线、非 leader backend 的 `wake_member` 恒为 False。
