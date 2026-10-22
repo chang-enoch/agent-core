@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.schema.team import ModelPoolEntry
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
     from openjiuwen.agent_teams.team_workspace.workspace_cache import WorkspaceCache
-    from openjiuwen.agent_teams.tools.member_options import MemberBuiltinModel
+    from openjiuwen.agent_teams.tools.member_options import MemberAgentTemplate, MemberBuiltinModel
 
 from openjiuwen.agent_teams.context import get_session_id
 from openjiuwen.agent_teams.i18n import t
@@ -73,6 +73,19 @@ from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.core.common.logging import team_logger
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+
+
+def _with_member_config(
+    agent_template: Optional["MemberAgentTemplate"],
+    member_config: Optional[ExternalCliAgentSpec],
+) -> Optional["MemberAgentTemplate"]:
+    """Store an external member's launch config inside its template record."""
+    if member_config is None:
+        return agent_template
+    from openjiuwen.agent_teams.tools.member_options import MemberAgentTemplate
+
+    record = agent_template or MemberAgentTemplate()
+    return record.model_copy(update={"external_cli": member_config.model_dump(mode="json", by_alias=True)})
 
 
 @dataclass
@@ -123,6 +136,7 @@ class TeamBackend:
         current_model_provider: str | None = None,
         dispatch_mode: str = "autonomous",
         enable_task_verification: bool = False,
+        enable_member_messaging: bool = False,
         enable_fork: bool = False,
         evolution_enabled: bool = True,
         member_workspace_prefix: bool = True,
@@ -190,6 +204,11 @@ class TeamBackend:
             enable_task_verification: Spec-level "verification expected"
                 ceiling (F_62); ``build_team`` may override the runtime
                 instance flag, mirroring ``enable_hitt``.
+            enable_member_messaging: Whether scheduled-dispatch members may
+                message each other directly
+                (``TeamAgentSpec.enable_member_messaging``, F_126). Static,
+                no ``build_team`` override; the tool factory reads it to pick
+                the member ``send_message`` variant.
             enable_fork: Spec-level context-inheritance capability gate
                 (``TeamAgentSpec.enable_fork``). When False the
                 ``checkpoint`` tool is not wired and ``spawn_teammate``
@@ -288,6 +307,9 @@ class TeamBackend:
         # flag, mirroring the ``enable_hitt`` pattern.
         self._spec_enable_task_verification: bool = enable_task_verification
         self._enable_task_verification: bool = enable_task_verification
+        # Peer messaging under scheduled dispatch (F_126): static spec gate,
+        # read by the tool factory and the prompt builders.
+        self._enable_member_messaging: bool = enable_member_messaging
         # Evolution-mechanism master switch (TeamAgentSpec.evolution_enabled),
         # immutable from spec: off means the write side never writes workspace
         # files and the manager carries no cache (the read side falls back to
@@ -476,6 +498,18 @@ class TeamBackend:
         of its description.
         """
         return self._enable_fork
+
+    def member_messaging_enabled(self) -> bool:
+        """Whether scheduled-dispatch members may message each other directly.
+
+        Straight from ``TeamAgentSpec.enable_member_messaging`` (F_126) and
+        meaningful only under scheduled dispatch: autonomous members reach
+        their peers regardless, so consumers combine it with the dispatch
+        mode they were built for. Single gate signal for the member
+        ``send_message`` variant and the messaging prose of the scheduled
+        dispatch prompts.
+        """
+        return self._enable_member_messaging
 
     def bind_group_session(self, session_id: str) -> None:
         if not isinstance(session_id, str) or not session_id.strip():
@@ -751,6 +785,7 @@ class TeamBackend:
         builtin_model: Optional["MemberBuiltinModel"] = None,
         permissions_override: Optional[dict[str, str]] = None,
         lifetime: str | None = None,
+        agent_template: Optional["MemberAgentTemplate"] = None,
     ) -> MemberOpResult:
         """Create a team member record in the database.
 
@@ -791,6 +826,9 @@ class TeamBackend:
                 (``"shutdown"`` / ``"dormant"``, F_118). None = resident.
                 Persisted in ``options`` so the scheduler's retirement scan
                 and the member's own settle read the same fact.
+            agent_template: Expert template the member is spawned from
+                (``spawn_expert``): reference, version and the capability
+                snapshot / external CLI config the member is rebuilt from.
 
         Returns:
             ``MemberOpResult`` describing the outcome. ``__bool__`` falls
@@ -825,6 +863,7 @@ class TeamBackend:
             worktree_isolation=isolation,
             permissions_override=permissions_override,
             lifetime=lifetime,
+            agent_template=agent_template,
         )
 
         # Resolve the latest identity from the evolvable md before writing the
@@ -2577,6 +2616,8 @@ class TeamBackend:
         deleted = await self.db.member.delete_unstarted_member(member_name, self.team_name)
         if not deleted:
             return False
+        # An external-CLI member also left its CLI kind mapping behind.
+        self._external_cli_specs.pop(member_name, None)
         if self._spec_evolution_enabled and self.workspace_cache is not None:
             from openjiuwen.agent_teams.team_workspace.binder import MemberWorkspaceBinder
 
@@ -3049,11 +3090,14 @@ class TeamBackend:
         display_name: str,
         cli_agent: str,
         desc: str = "",
-        prompt: str,
+        prompt: str = "",
         model_name: Optional[str] = None,
         allocation: Optional["Allocation"] = None,
         fallback_allocation: Optional["Allocation"] = None,
         builtin_model: Optional["MemberBuiltinModel"] = None,
+        member_config: Optional[ExternalCliAgentSpec] = None,
+        agent_template: Optional["MemberAgentTemplate"] = None,
+        lifetime: str | None = None,
     ) -> MemberOpResult:
         """Register an external-CLI teammate dynamically.
 
@@ -3071,8 +3115,9 @@ class TeamBackend:
                 ``agent_teams/external/cli_agent/adapters.py``.
             desc: Public description stored on the member row (roster view).
                 Optional; defaults to empty.
-            prompt: Private system prompt the CLI adopts to act as this
-                member. Required.
+            prompt: Private working agreement of this member, delivered like
+                a native teammate's. Optional; without it the member works
+                from the team policy alone.
             model_name: Optional model-name hint; passed to the pool allocator
                 to select a matching model endpoint.
             allocation: Optional pool allocation for this member; persisted as a
@@ -3083,6 +3128,16 @@ class TeamBackend:
             builtin_model: Built-in CLI model (and effort) resolved through
                 ``resolve_builtin_model``; mutually exclusive with
                 ``allocation`` because it runs on the CLI's own login.
+            member_config: Launch config this member actually runs with (an
+                expert template's config merged over the declared kind
+                config). The capability ceiling is unchanged — ``cli_agent``
+                must still be declared; ``None`` uses the declared config.
+            agent_template: Expert template reference persisted with the
+                member; ``member_config`` is stored in it so the member is
+                rebuilt with the same config on restart and cold recovery.
+            lifetime: Retirement policy of a task-scoped member declared
+                inline by scheduled ``create_task`` (F_118); ``None`` keeps
+                the member resident.
 
         Returns:
             ``MemberOpResult`` — failure if the backend name is unknown, its
@@ -3095,8 +3150,6 @@ class TeamBackend:
             missing_sdk_requirement,
         )
 
-        if not prompt:
-            return MemberOpResult.fail("spawn_external_cli_agent requires non-empty 'prompt'")
         # Capability ceiling: the CLI kind must be pre-declared in
         # ``TeamAgentSpec.external_cli_agents`` (all launch knowledge is
         # static there; the spawn call only names the kind).
@@ -3141,6 +3194,8 @@ class TeamBackend:
             allocation=allocation,
             fallback_allocation=fallback_allocation,
             builtin_model=builtin_model,
+            lifetime=lifetime,
+            agent_template=_with_member_config(agent_template, member_config),
         )
         if not result.ok:
             self._external_cli_specs.pop(member_name, None)

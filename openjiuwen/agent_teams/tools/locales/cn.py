@@ -194,7 +194,7 @@ STRINGS: dict[str, str] = {
         "可选；会注入其他成员的 system prompt 并由 list_members 返回，禁止写入私密信息"
     ),
     "spawn_external_cli.prompt": (
-        "[私有] 该 CLI 成员的私有系统提示词，CLI 据此扮演本成员角色。**必填**。"
+        "[私有] 该 CLI 成员的私有工作约定，CLI 据此扮演本成员角色。可选，不填时成员只按团队准则工作。"
         "仅本成员自己可见，不进他人花名册"
     ),
     "spawn_external_cli.cli_agent": (
@@ -224,6 +224,62 @@ STRINGS: dict[str, str] = {
         "可选。推理强度，必须是所选 builtin_model 的 efforts 之一；需同时指定 builtin_model，"
         "省略时取该模型的 default_effort"
     ),
+    # ===== view_experts ========================================================
+    # view_experts._desc lives in descs/cn/expert/view_experts.md
+    "view_experts.action": "list（默认）列出已安装的单个专家；get 查看一个专家的完整信息",
+    "view_experts.query": "仅 list 使用：按包名、显示名、描述做子串过滤（不区分大小写）",
+    "view_experts.name": "get 必填：专家的包名（list 结果中的 name，不是显示名）",
+    # ===== view_expert_groups ==================================================
+    # view_expert_groups._desc lives in descs/cn/expert/view_expert_groups.md
+    "view_expert_groups.action": "list（默认）列出已安装的专家团；get 查看一个专家团及其成员表",
+    "view_expert_groups.query": "仅 list 使用：按团名、显示名、描述做子串过滤（不区分大小写）",
+    "view_expert_groups.capabilities": "仅 list 使用：只列出同时具备全部所列能力标签的专家团",
+    "view_expert_groups.name": "get 必填：专家团名",
+    "view_expert_groups.member": "仅 get 使用，可选：只展开该专家团内这一个成员的详情",
+    # ===== spawn_expert ========================================================
+    # spawn_expert._desc lives in descs/cn/expert/spawn_expert.md
+    "spawn_expert.expert": (
+        "必填。单个专家的包名；给了 group 时是该专家团内的成员名（不能是 leader）"
+    ),
+    "spawn_expert.group": "专家团名；省略表示 expert 是单个专家。拉起专家团内成员时必填",
+    "spawn_expert.member_name": (
+        "[公开] 团队内唯一的成员名（语义化 slug，如 finance-1、clip-2，DNS label 风格 kebab-case）。"
+        "**首字符必须是小写英文字母（a-z），其后仅允许小写字母、数字（0-9）和连字符（-）**；"
+        "同一个专家可以按不同名字拉起多份"
+    ),
+    "spawn_expert.display_name": (
+        "[公开] 可选。省略时用专家的显示名；团队里已有同显示名的成员时自动追加「（member_name）」"
+    ),
+    "spawn_expert.desc": (
+        "[公开] 可选。补充的公开描述，追加在专家自带描述之后，不替换。写本实例与同类实例的分工差异，"
+        "如「负责第 1–10 镜」；禁止写入私密信息"
+    ),
+    "spawn_expert.prompt": (
+        "[私有] 可选。补充的长期约定，追加在专家人设之后，不替换。不要复述人设，也不要写具体任务"
+    ),
+    "spawn_expert.model_name": (
+        "可选。仅当用户明确指定模型时填写，你不得自行选择或推断。本地专家规则同 spawn_teammate，"
+        "外部运行时专家同 spawn_external_cli（团队模型池中与该 CLI 协议兼容的端点）"
+    ),
+    "spawn_expert.external_cli": (
+        "可选对象，只对外部运行时专家（runtime 不是 native）有效，本地专家传入会报错。"
+        "字段含义与校验同 spawn_external_cli 的同名参数"
+    ),
+    "spawn_expert.external_cli.fallback_model_name": (
+        "认证回退模型，规则同 spawn_external_cli.fallback_model_name：只对下方目录 compatible_fallback_models "
+        "中列出的 CLI 类型有效；该 CLI 类型存在兼容模型时必须填写，且当前模型在模型池中且协议兼容时优先选当前模型"
+    ),
+    "spawn_expert.external_cli.builtin_model": (
+        "可选。从下方目录中该专家 CLI 类型的条目里选择一个内置模型，使用 CLI 自身登录运行；与 model_name 互斥"
+    ),
+    "spawn_expert.external_cli.effort": (
+        "可选。推理强度，必须是所选 builtin_model 的 efforts 之一；需同时指定 builtin_model"
+    ),
+    "spawn_expert.isolation": (
+        "可选隔离模式，同 spawn_teammate：仅当用户明确要求或该成员需要在隔离检出中修改仓库文件时设为 "
+        "'worktree'。外部运行时专家不支持"
+    ),
+    "spawn_expert.permissions": "可选，同 spawn_teammate.permissions（只能收紧）。外部运行时专家不支持",
     # ===== set_member_model ====================================================
     # set_member_model._desc lives in descs/cn/member/set_member_model.md
     "set_member_model.member_name": "要切换模型的外部 CLI 成员 member_name（语义化 slug，不是显示名）",
@@ -276,8 +332,31 @@ STRINGS: dict[str, str] = {
     ),
     "create_task_scheduled.task.member": (
         "随任务一起创建的承担者（与 assignee 二选一）：字段同 spawn_teammate"
-        "（member_name / display_name / desc / prompt / model_name），外加必填的 lifetime。"
+        "（member_name / display_name / desc / prompt / model_name），外加必填的 lifetime；"
+        "团队声明了外部 CLI 类型时也可以用 cli_agent 让它以外部 CLI 运行。"
         "成员落为该任务的 assignee，由调度框架拉起；名下任务全部终态后按 lifetime 退场"
+    ),
+    "create_task_scheduled.task.member.expert": (
+        "可选。让该成员按一个已安装的专家模板运行：单个专家的包名，给了 group 时是该专家团内的成员名"
+        "（不能是 leader）。填写后 display_name / desc 可省略（取专家自带的显示名与描述），"
+        "desc / prompt 只追加在专家描述 / 人设之后。外部 CLI 运行时的专家同样可以内联，"
+        "模型参数放在 external_cli 里，规则同 spawn_expert"
+    ),
+    "create_task_scheduled.task.member.cli_agent": (
+        "可选，与 expert 二选一。让该成员以第三方 CLI agent 运行，含义同 spawn_external_cli.cli_agent："
+        "取值必须是 spec.external_cli_agents 中声明过的 CLI 类型；"
+        "model_name 是该 CLI 使用的团队模型池端点"
+    ),
+    "create_task_scheduled.task.member.external_cli": (
+        "可选对象，只对外部 CLI 成员有效（填了 cli_agent，或 expert 是外部运行时专家），其余情况传入会报错。"
+        "字段含义与校验同 spawn_external_cli 的同名参数"
+    ),
+    "create_task_scheduled.task.member.builtin_model": (
+        "可选。从下方目录中该成员 CLI 类型的条目里选择一个内置模型，使用 CLI 自身登录运行；与 model_name 互斥"
+    ),
+    "create_task_scheduled.task.member.group": (
+        "可选，需同时给 expert。专家团名，表示 expert 是该团内的成员名；本团队由该专家团组建时，"
+        "新成员与团里预定义的同名成员同源"
     ),
     "create_task_scheduled.task.member.lifetime": (
         "退场策略：shutdown = 名下任务全部完成后自动关闭（终态，名字不可复用）；"
@@ -396,6 +475,23 @@ STRINGS: dict[str, str] = {
         '用于汇报进展、完成结果、阻塞、改派请求）'
         '或 "user"（仅当收到的消息来源是 user 时用于回复）。'
         "本模式下不能发给其他成员，也不支持多播和广播"
+    ),
+    # ===== send_message_scheduled_peers (scheduled member, peers opened) =======
+    # send_message_scheduled_peers._desc lives in
+    # descs/cn/message/send_message_scheduled_peers.md (F_126). ``content`` /
+    # ``summary`` reuse the send_message keys; ``to`` / ``targets`` gain the
+    # "leader" role word.
+    "send_message_scheduled_peers.to": (
+        '单个收件人："leader"（角色名，系统自动投递给真正的 Leader）、'
+        '其他成员的 member_name（点对点私聊，用于协作沟通）、'
+        '"user"（仅当收到的消息来源是 user 时用于回复），'
+        '或 "*" 广播给全体成员——一次广播会唤醒每一个成员各跑一轮 LLM 交互，务必慎用。'
+        "多播不要填写本字段，改用 targets"
+    ),
+    "send_message_scheduled_peers.targets": (
+        '多播收件人数组（如 ["leader","m2"]）：同一份内容分别发给每个成员，'
+        '开销随接收人数线性增长，仅在必要时使用；可以包含 "leader"，'
+        '禁止包含 "*" 或 "user"。不能与 to 同时填写'
     ),
     # NOTE: worktree tools (enter_worktree / exit_worktree) live in
     # ``openjiuwen.harness.tools.worktree`` and resolve their description

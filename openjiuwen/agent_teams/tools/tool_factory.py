@@ -25,8 +25,13 @@ from openjiuwen.agent_teams.tools.tool_member import (
     SpawnPassiveHumanTool,
     SpawnTeammateTool,
 )
-from openjiuwen.agent_teams.tools.tool_message import ReportToLeaderTool, SendMessageTool
+from openjiuwen.agent_teams.tools.tool_message import (
+    ReportToLeaderTool,
+    ScheduledPeerMessageTool,
+    SendMessageTool,
+)
 from openjiuwen.agent_teams.tools.tool_permissions import (
+    EXPERT_TOOLS,
     HUMAN_AGENT_TOOLS,
     LEADER_TOOLS,
     MEMBER_TOOLS_BY_DISPATCH,
@@ -46,7 +51,9 @@ from openjiuwen.core.foundation.tool.base import Tool
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
 if TYPE_CHECKING:
+    from openjiuwen.agent_teams.experts.catalog import ExpertCatalog
     from openjiuwen.agent_teams.models.allocator import Allocation
+    from openjiuwen.agent_teams.rails.team_context import ExpertBinding
 
 
 # ========== Tool Variants ==========
@@ -64,15 +71,31 @@ _CREATE_TASK_CLASS: dict[str, type] = {
     "scheduled": ScheduledTaskCreateTool,
 }
 
-# Keyed by (dispatch_mode, "leader" | "member"). Under scheduled dispatch the
-# leader still fans out (broadcast / multicast / auto-start), so only the
-# member side collapses to the report-to-leader form.
+# Keyed by (dispatch_mode, "leader" | "member" | "member_peers"). Under
+# scheduled dispatch the leader still fans out (broadcast / multicast /
+# auto-start), so only the member side collapses to the report-to-leader form
+# — unless the team opened peer messaging (F_126), which gives members back
+# the full reach while keeping the ``"leader"`` role word.
 _SEND_MESSAGE_CLASS: dict[tuple[str, str], type] = {
     ("autonomous", "leader"): SendMessageTool,
     ("autonomous", "member"): SendMessageTool,
     ("scheduled", "leader"): SendMessageTool,
     ("scheduled", "member"): ReportToLeaderTool,
+    ("scheduled", "member_peers"): ScheduledPeerMessageTool,
 }
+
+
+def _send_message_reach(role: str, dispatch_mode: str, agent_team: TeamBackend) -> str:
+    """Pick the ``send_message`` table column for one member.
+
+    Peer messaging is a scheduled-only gate: autonomous members reach their
+    peers anyway, so the flag never widens that column.
+    """
+    if role == "leader":
+        return "leader"
+    if dispatch_mode == "scheduled" and agent_team.member_messaging_enabled() is True:
+        return "member_peers"
+    return "member"
 
 # ``member_complete_task`` behaves identically in both modes — only the prose
 # changes (a scheduled member has no claim path to contrast against), so the
@@ -106,13 +129,35 @@ _VIEW_TASK_DESC_KEY: dict[str, str] = {
 # branch-free.
 
 
-def _create_task_kwargs(dispatch_mode: str, *, team_mode: str, model_config_allocator: Any) -> dict[str, Any]:
+def _create_task_kwargs(
+    dispatch_mode: str,
+    *,
+    team_mode: str,
+    model_config_allocator: Any,
+    expert_resolver: Any = None,
+) -> dict[str, Any]:
     if dispatch_mode == "scheduled":
         return {
             "inline_member_enabled": team_mode != "predefined",
             "model_config_allocator": model_config_allocator,
+            "expert_resolver": expert_resolver,
         }
     return {}
+
+
+def _expert_resolver(catalog: "ExpertCatalog | None", binding: "ExpertBinding | None", *, language: str) -> Any:
+    """One expert template resolver for spawn_expert and scheduled create_task's inline member."""
+    if catalog is None:
+        return None
+    from openjiuwen.agent_teams.tools.tool_expert import ExpertTemplateResolver
+
+    return ExpertTemplateResolver(
+        catalog=catalog,
+        language=language,
+        bound_group=binding.bound_group if binding is not None else None,
+        persona_workspace=binding.persona_workspace if binding is not None else None,
+        persona_language=binding.persona_language if binding is not None else None,
+    )
 
 
 # ========== Tool Factory ==========
@@ -139,6 +184,8 @@ def create_team_tools(
     concurrency_governor: Any = None,
     swarmflow_budget: Any = None,
     team_permissions_enabled: bool = False,
+    expert_catalog: "ExpertCatalog | None" = None,
+    expert_binding: "ExpertBinding | None" = None,
 ) -> list[Tool]:
     """Create role-appropriate tool instances filtered by permission sets.
 
@@ -196,6 +243,12 @@ def create_team_tools(
             ``enable_swarmflow``; when None the ``swarmflow`` tool is gated out.
         swarmflow_budget: The leader's shared ``BudgetLedger`` capping the tokens
             its swarmflow runs may burn. Non-None only for a swarmflow leader.
+        expert_catalog: The host's expert locating protocol. Non-None only for
+            a leader whose host injected one; when None the expert tools
+            (``view_experts`` / ``view_expert_groups`` / ``spawn_expert``) are
+            gated out together.
+        expert_binding: Team-spec data ``spawn_expert`` works with (the bound
+            AgentGroup and the persona workspace); passed with ``expert_catalog``.
     """
     from openjiuwen.agent_teams.prompts.loader import make_template_loader
     from openjiuwen.agent_teams.tools.locales import make_translator
@@ -216,7 +269,8 @@ def create_team_tools(
     # Variant selection is a construction-time table lookup: every tool below
     # still has a flat schema and a branch-free ``invoke``.
     create_task_cls = _CREATE_TASK_CLASS[dispatch_mode]
-    send_message_cls = _SEND_MESSAGE_CLASS[(dispatch_mode, "leader" if role == "leader" else "member")]
+    expert_resolver = _expert_resolver(expert_catalog, expert_binding, language=lang)
+    send_message_cls = _SEND_MESSAGE_CLASS[(dispatch_mode, _send_message_reach(role, dispatch_mode, agent_team))]
 
     all_tools = {
         # Team management. ``build_team`` carries the leader's collaboration
@@ -258,7 +312,12 @@ def create_team_tools(
         "create_task": create_task_cls(
             agent_team,
             t,
-            **_create_task_kwargs(dispatch_mode, team_mode=team_mode, model_config_allocator=model_config_allocator),
+            **_create_task_kwargs(
+                dispatch_mode,
+                team_mode=team_mode,
+                model_config_allocator=model_config_allocator,
+                expert_resolver=expert_resolver,
+            ),
         ),
         "update_task": UpdateTaskTool(agent_team, t, dispatch_mode=dispatch_mode),
         "view_task": ViewTaskToolV2(task_mgr, t, desc_key=_VIEW_TASK_DESC_KEY[dispatch_mode]),
@@ -290,6 +349,19 @@ def create_team_tools(
         "async_task_output": AsyncTaskOutputTool(parent_agent, t, language=lang),
         "async_task_cancel": AsyncTaskCancelTool(parent_agent, t, language=lang),
     }
+
+    if expert_catalog is not None:
+        all_tools.update(
+            _expert_tools(
+                agent_team,
+                t,
+                catalog=expert_catalog,
+                binding=expert_binding,
+                language=lang,
+                model_config_allocator=model_config_allocator,
+                resolver=expert_resolver,
+            )
+        )
 
     org_task_manager = getattr(agent_team, "org_task_manager", None)
     if org_task_manager is not None:
@@ -371,6 +443,10 @@ def create_team_tools(
     # spawn tools.
     if swarmflow_model_resolver is None:
         allowed = allowed - {"swarmflow"}
+    # Expert tools exist only when the host injected an expert catalog — all
+    # three together, so a leader never gets spawn_expert without the views.
+    if expert_catalog is None:
+        allowed = allowed - EXPERT_TOOLS
     if role != "human_agent" and getattr(agent_team, "conversation_mode", "team") == "group_chat":
         from openjiuwen.agent_teams.group_chat.tools import GroupSendMessageTool
 
@@ -385,6 +461,41 @@ def create_team_tools(
         _wrap_invoke_with_logging(tool)
 
     return tools
+
+
+def _expert_tools(
+    agent_team: TeamBackend,
+    t: Any,
+    *,
+    catalog: "ExpertCatalog",
+    binding: "ExpertBinding | None",
+    language: str,
+    model_config_allocator: Any,
+    resolver: Any,
+) -> dict[str, Tool]:
+    """Build the three expert tools over one catalog."""
+    from openjiuwen.agent_teams.tools.tool_expert import SpawnExpertTool, ViewExpertGroupsTool, ViewExpertsTool
+
+    bound_group = binding.bound_group if binding is not None else None
+    return {
+        "view_experts": ViewExpertsTool(catalog, t, language=language),
+        "view_expert_groups": ViewExpertGroupsTool(
+            catalog,
+            t,
+            language=language,
+            bound_group=bound_group,
+            declared_cli_kinds=agent_team.external_cli_kinds(),
+        ),
+        "spawn_expert": SpawnExpertTool(
+            agent_team,
+            t,
+            catalog=catalog,
+            language=language,
+            bound_group=bound_group,
+            model_config_allocator=model_config_allocator,
+            resolver=resolver,
+        ),
+    }
 
 
 def _wrap_invoke_with_logging(tool: Tool) -> None:

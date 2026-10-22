@@ -25,8 +25,8 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
-| 最近一次修订日期 | 2026-10-15 |
-| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md |
+| 最近一次修订日期 | 2026-10-22 |
+| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md |
 
 ## 范围 / 边界
 
@@ -150,6 +150,22 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     强度只接受目录中声明的值。`set_member_model` 先落库再推活成员，返回的
     `applied_live` 告诉 leader 是下一 turn 生效还是下次启动生效；`model_ref`
     非空的成员（pool 端点或已持久化的认证 fallback）一律拒绝。
+12a. **专家工具（`EXPERT_TOOLS` = `view_experts` / `view_expert_groups` / `spawn_expert`）只按一个
+    信号门控：宿主是否注入了 `ExpertCatalog`**（`create_team_tools(expert_catalog=...)`，由
+    `TeamRuntimeManager.set_expert_catalog` 经 leader 装配注入，F_125）。没注入时三者都不构造、都被
+    减掉，`create_team_tools` 的输出与没有本特性时逐字节相同；注入后只进 leader 工具集。三者同生同灭，
+    绑定专家团的 Team 不会单独多出 `spawn_expert`。同一信号还门控调度模式 `create_task` 内联 `member` 的
+    `expert` / `group` 属性：内联成员按专家模板创建时与 `spawn_expert` 共用 `ExpertTemplateResolver`
+    （模板来源、人设、显示名去重、`options.agent_template`），外部运行时专家同样可以内联。查看工具只读 core 卡片（`read_agent_template_card` /
+    `read_agent_group_card`），读不出的包跳过并记 warning；只有 `spawn_expert` 调用完整加载器。三个
+    工具不在事件循环线程上做文件 IO：包读取经 `asyncio.to_thread` 在工作线程里执行。
+    `spawn_expert` 是又一个 `_SpawnToolBase` 子类：模板来源由 `group` 决定（等于
+    `TeamAgentSpec.agent_group_name` 时取本 Team spec 里组装好的成员，不调目录、不读磁盘；否则经目录
+    定位 + core 加载器），`desc` / `prompt` **只追加不覆盖**模板描述与人设，成员行写
+    `options.agent_template`。外部运行时模板与 `spawn_external_cli` **共用**声明检查
+    （`check_external_cli_declared`）与模型 / 认证回退 / 内置模型规则（`ExternalCliModelRules`），只对
+    外部 CLI 有意义的参数收在可选对象 `external_cli` 中，其 `builtin_model` / `effort` 属性与
+    `spawn_external_cli` 同一门控（`builtin_models_enabled()`）；本地专家传入 `external_cli` 在写行前报错。
 13. **每个 `TeamTool.invoke` 必须返回 `ToolOutput`，永不抛**。工具内部
     `try / except` 捕获后端异常，落 `team_logger.error`，转成
     `ToolOutput(success=False, error=...)` 返回；不允许把 `Exception`
@@ -212,7 +228,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     收件参数 schema 与一条直线 `_dispatch`。**不为「形态就该有基类」的对称感去造 `_XxxBase`**。
     无论哪种，形态子类里都**零形态分支**，因此不变量 12（schema 扁平、invoke 直线、
     无 role 分支）对每个形态仍成立。
-    `send_message` 的形态是 `(dispatch_mode, leader|member)` 二维：scheduled 下
+    `send_message` 的形态是 `(dispatch_mode, leader|member|member_peers)` 二维：scheduled 下
     leader 仍要广播 / 多播 / `_auto_start_members`，只有成员侧收敛成
     `ReportToLeaderTool`（`to` 收成 `enum ["leader", "user"]`——`"leader"` 是
     **角色占位符**，工具在投递时经 `TeamBackend.resolve_leader_member_name()`
@@ -224,6 +240,13 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     行为相反的描述。`ReportToLeaderTool` 的 enum 是给宿主 LLM 的契约，
     `_dispatch` 里的白名单是给 MCP 客户端的执法（`mcp/server.py` 直接
     `invoke`，不校验 schema）——两层都必须有，不是重复。
+    **例外：团队开启成员间通信（`TeamAgentSpec.enable_member_messaging`，F_126）**时，
+    scheduled 成员落到 `member_peers` 列，形态是 `ScheduledPeerMessageTool(SendMessageTool)`：
+    完整 reach（单播 / 多播 / 广播），同时保留 `"leader"` 角色词（`to` 与 `targets` 中都在投递
+    时解析成真实 leader，解析不到软失败）。列由工厂的 `_send_message_reach` 按
+    `TeamBackend.member_messaging_enabled()` 选，leader 与 autonomous 成员的格子不受开关影响；
+    描述 / 参数用独立 desc_key `send_message_scheduled_peers`。同一门控信号也决定 dispatch
+    提示词的 `{{member_messaging}}` 槽（见 S_09），工具与提示词同源。
     `SendMessageTool` 还在工具边界拒绝 leader `to = "user"`：leader 的普通文本输出
     已直接展示给用户，写入 user pseudo-recipient mailbox 会产生无人标记已读的消息。
     teammate / human_agent 发给 `user` 的既有语义保持不变。
@@ -389,7 +412,10 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     成员工作区（`MemberWorkspaceBinder.release` + `delete_if_zero`）、清掉它预热的 cache 字段——
     与 `spawn_member` 互为精确逆操作。两条注册路径共用 `tool_member.register_teammate`
     （card id / mode / options 只在一处推导）。注册与拉起分离不变——内联成员由调度器交接
-    拉起（`S_05` 不变量 1）。`member` 属性与其描述槽 `{{create_task_inline_member}}` 按
+    拉起（`S_05` 不变量 1）。团队声明了外部 CLI 类型时 `member` 另有 `cli_agent`（与 `expert` 互斥，`prompt` 与本地成员一样可选）
+    与 `external_cli` 对象（属性同 `spawn_expert.external_cli`），外部 CLI 内联成员（含外部运行时专家）经
+    `tool_member.register_external_cli_member`（与 `spawn_external_cli` / `spawn_expert` 共用）登记、带 `lifetime`，
+    `delete_unstarted_member` 回滚时一并清掉 `_external_cli_specs` 映射（F_125）。`member` 属性与其描述槽 `{{create_task_inline_member}}` 按
     `team_mode != "predefined"` 一起出现 / 消失（同 `spawn_teammate` 被摘掉的门），偷传在写库前
     拒掉。`TaskCreateTool`（autonomous）**不暴露也不接受 `member`**：schema 里没有该属性，
     `invoke` 在批次纯校验之后、任何 DB 访问之前把带 `member` 的任务报错拒掉（指引先
@@ -535,7 +561,8 @@ openjiuwen/agent_teams/tools/locales/
 
 | 集合常量 | 成员 |
 |---|---|
-| `LEADER_ONLY_TOOLS` | `build_team`, `clean_team`, `spawn_teammate`, `spawn_human_agent`, `spawn_bridge_agent`, `spawn_external_cli`, `shutdown_member`, `approve_plan`, `approve_tool`, `list_checkpoints`（gate `fork_enabled()`，同 `checkpoint`）, `create_task`, `update_task`, `swarmflow`, `async_tasks_list`, `async_task_output`, `async_task_cancel` |
+| `LEADER_ONLY_TOOLS` | `build_team`, `clean_team`, `spawn_teammate`, `spawn_human_agent`, `spawn_passive_human`, `spawn_bridge_agent`, `spawn_external_cli`, `set_member_model`（gate `builtin_models_enabled()`）, `spawn_expert` / `view_experts` / `view_expert_groups`（`EXPERT_TOOLS`，gate 宿主注入的 `ExpertCatalog`）, `shutdown_member`, `approve_plan`, `approve_tool`, `list_checkpoints`（gate `fork_enabled()`，同 `checkpoint`）, `create_task`, `update_task`, `swarmflow`, `async_tasks_list`, `async_task_output`, `async_task_cancel`，以及组织工具 `org_*`（gate 组织运行时，见 S_29） |
+| `EXPERT_TOOLS` | `view_experts`, `view_expert_groups`, `spawn_expert`——`LEADER_ONLY_TOOLS` 的子集，未注入目录时整体减掉 |
 | `MEMBER_ONLY_TOOLS` | `claim_task`, `submit_plan` |
 | `MEMBER_ONLY_TOOLS_SCHEDULED` | `member_complete_task`, `submit_plan` |
 | `SHARED_TOOLS` | `view_task`, `send_message`, `checkpoint`（gate `fork_enabled()`），`workspace_meta`（后者是死条目——不在 `all_tools`，由 `TeamToolRail.init` 单独 append） |
@@ -628,6 +655,7 @@ ClaimTaskTool          → TeamTaskManager
 MemberCompleteTaskTool → TeamTaskManager
 SendMessageTool        → TeamMessageManager (+ TeamBackend roster check + autostart_unstarted())
 ReportToLeaderTool     → TeamMessageManager (+ TeamBackend.resolve_leader_member_name()：投递时把 "leader" 角色词解析成真实名，读 team_info DB 行并缓存；team 行缺失则 to="leader" 在 invoke 时软失败，非构造期)
+ScheduledPeerMessageTool → SendMessageTool 的全部依赖 (+ TeamBackend.resolve_leader_member_name()：to / targets 里的 "leader" 角色词同上解析，F_126)
 ```
 
 事件发布与状态迁移由 manager 集中负责；工具只是把入参打包后转发给

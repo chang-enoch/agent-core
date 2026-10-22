@@ -254,9 +254,9 @@ STRINGS: dict[str, str] = {
         "list_members — do not put private content here"
     ),
     "spawn_external_cli.prompt": (
-        "[PRIVATE] The private system prompt this CLI member adopts to act as "
-        "this member. **Required**. Visible only to this member, never shown "
-        "in peers' roster"
+        "[PRIVATE] The private working agreement this CLI member adopts to act as "
+        "this member. Optional; without it the member works from the team policy alone. "
+        "Visible only to this member, never shown in peers' roster"
     ),
     "spawn_external_cli.cli_agent": (
         "Identifier of the third-party CLI agent kind to launch, e.g. 'claude' "
@@ -290,6 +290,75 @@ STRINGS: dict[str, str] = {
     "spawn_external_cli.effort": (
         "Optional. Reasoning effort, one of the chosen builtin_model's efforts; requires builtin_model. "
         "Omit to take the model's default_effort"
+    ),
+    # ===== view_experts ========================================================
+    # view_experts._desc lives in descs/en/expert/view_experts.md
+    "view_experts.action": "list (default) lists the installed single experts; get shows one expert in full",
+    "view_experts.query": (
+        "list only: case-insensitive substring filter over package name, display name and description"
+    ),
+    "view_experts.name": "Required for get: the expert's package name (name in the list, not the display name)",
+    # ===== view_expert_groups ==================================================
+    # view_expert_groups._desc lives in descs/en/expert/view_expert_groups.md
+    "view_expert_groups.action": (
+        "list (default) lists the installed expert groups; get shows one group and its members"
+    ),
+    "view_expert_groups.query": (
+        "list only: case-insensitive substring filter over group name, display name and description"
+    ),
+    "view_expert_groups.capabilities": "list only: keep only groups that have all listed capability tags",
+    "view_expert_groups.name": "Required for get: the expert group name",
+    "view_expert_groups.member": "get only, optional: expand just this member of the group",
+    # ===== spawn_expert ========================================================
+    # spawn_expert._desc lives in descs/en/expert/spawn_expert.md
+    "spawn_expert.expert": (
+        "Required. A single expert's package name; with group, a member name of that group (not leader)"
+    ),
+    "spawn_expert.group": "Expert group name; omit when expert is a single expert. Required for a group member",
+    "spawn_expert.member_name": (
+        "[public] Unique member name in the team (semantic slug such as finance-1 or clip-2, DNS-label kebab-case). "
+        "**Must start with a lowercase ASCII letter (a-z), followed only by lowercase letters, digits (0-9) or "
+        "hyphens (-)**; one expert can be spawned several times under different names"
+    ),
+    "spawn_expert.display_name": (
+        "[public] Optional. Defaults to the expert's display name; \" (member_name)\" is appended when a teammate "
+        "already uses that display name"
+    ),
+    "spawn_expert.desc": (
+        "[public] Optional. Added public description, appended after the expert's own description (never replaces "
+        "it). Say how this instance differs from its siblings, e.g. \"covers shots 1-10\"; no private information"
+    ),
+    "spawn_expert.prompt": (
+        "[private] Optional. Added standing agreement, appended after the expert's persona (never replaces it). "
+        "Do not restate the persona or put concrete tasks here"
+    ),
+    "spawn_expert.model_name": (
+        "Optional. Fill only when the user names a model; never pick or infer one yourself. Native experts follow "
+        "spawn_teammate, external-runtime experts follow spawn_external_cli (a team pool endpoint compatible with "
+        "the CLI's protocol)"
+    ),
+    "spawn_expert.external_cli": (
+        "Optional object, only for external-runtime experts (runtime other than native); passing it for a native "
+        "expert is an error. Fields mean and validate like the same-named spawn_external_cli parameters"
+    ),
+    "spawn_expert.external_cli.fallback_model_name": (
+        "Authentication fallback model, same rules as spawn_external_cli.fallback_model_name: valid only for the "
+        "CLI kinds listed under compatible_fallback_models below; required when that kind has compatible models, "
+        "preferring the current model when it is in the pool and protocol-compatible"
+    ),
+    "spawn_expert.external_cli.builtin_model": (
+        "Optional. A built-in model from the expert's CLI kind entry in the catalog below, run on the CLI's own "
+        "login; mutually exclusive with model_name"
+    ),
+    "spawn_expert.external_cli.effort": (
+        "Optional. Reasoning effort, one of the chosen builtin_model's efforts; requires builtin_model"
+    ),
+    "spawn_expert.isolation": (
+        "Optional isolation mode, as in spawn_teammate: set 'worktree' only when the user asks for it or the member "
+        "must modify repository files in an isolated checkout. Not supported for external-runtime experts"
+    ),
+    "spawn_expert.permissions": (
+        "Optional, as spawn_teammate.permissions (tighten only). Not supported for external-runtime experts"
     ),
     # ===== set_member_model ====================================================
     # set_member_model._desc lives in descs/en/member/set_member_model.md
@@ -377,9 +446,34 @@ STRINGS: dict[str, str] = {
     ),
     "create_task_scheduled.task.member": (
         "Owner created together with the task (one of assignee / member): same fields as spawn_teammate "
-        "(member_name / display_name / desc / prompt / model_name) plus a required lifetime. The member becomes the "
+        "(member_name / display_name / desc / prompt / model_name) plus a required lifetime; when the team declares "
+        "external CLI kinds, cli_agent runs it on an external CLI instead. The member becomes the "
         "task's assignee and is started by the scheduling framework; once every task on its board is terminal it "
         "retires per lifetime"
+    ),
+    "create_task_scheduled.task.member.expert": (
+        "Optional. Run this member as an installed expert template: a single expert's package name, or, with "
+        "group, a member name of that group (not leader). With it, display_name / desc may be omitted (the "
+        "expert's own are used) and desc / prompt are appended after the expert's description / persona. "
+        "Experts with an external CLI runtime may be declared inline too; their model arguments go in external_cli, "
+        "with spawn_expert's rules"
+    ),
+    "create_task_scheduled.task.member.cli_agent": (
+        "Optional, exclusive with expert. Run this member as a third-party CLI agent, as spawn_external_cli.cli_agent: "
+        "the value must be a CLI kind declared in spec.external_cli_agents; model_name is the team model pool "
+        "endpoint the CLI uses"
+    ),
+    "create_task_scheduled.task.member.external_cli": (
+        "Optional object, only for external CLI members (cli_agent set, or expert is an external-runtime expert); "
+        "passing it otherwise is an error. Fields mean and validate like the same-named spawn_external_cli parameters"
+    ),
+    "create_task_scheduled.task.member.builtin_model": (
+        "Optional. A built-in model from the member's CLI kind entry in the catalog below, run on the CLI's own "
+        "login; mutually exclusive with model_name"
+    ),
+    "create_task_scheduled.task.member.group": (
+        "Optional, requires expert. The expert group name, making expert a member name of that group; when "
+        "this team was assembled from that group, the new member matches its predefined member of that name"
     ),
     "create_task_scheduled.task.member.lifetime": (
         "Retirement policy: shutdown = shut down automatically once its tasks are all done (terminal, the name "
@@ -552,6 +646,23 @@ STRINGS: dict[str, str] = {
         "Leader; use it for progress, completion, blockers, reassignment requests) "
         'or "user" (only to reply when an incoming message came from the user). You '
         "cannot message other members; multicast and broadcast are unavailable in this mode"
+    ),
+    # ===== send_message_scheduled_peers (scheduled member, peers opened) =======
+    # send_message_scheduled_peers._desc lives in
+    # descs/en/message/send_message_scheduled_peers.md (F_126). ``content`` /
+    # ``summary`` reuse the send_message keys; ``to`` / ``targets`` gain the
+    # "leader" role word.
+    "send_message_scheduled_peers.to": (
+        'Single recipient: "leader" (a role name — the system delivers it to the real '
+        "Leader), another member's member_name (a point-to-point DM for coordination), "
+        '"user" (only to reply when an incoming message came from the user), or "*" to '
+        "broadcast to every member — one broadcast wakes every member for a full LLM "
+        "turn, so use it sparingly. For multicast, leave this field unset and use targets"
+    ),
+    "send_message_scheduled_peers.targets": (
+        'Multicast recipient array (e.g. ["leader","m2"]): the same content is sent as '
+        "separate messages to each member; cost grows linearly with recipient count. "
+        'May contain "leader"; cannot contain "*" or "user". Do not provide together with to'
     ),
     # NOTE: worktree tools (enter_worktree / exit_worktree) live in
     # ``openjiuwen.harness.tools.worktree`` and resolve their description

@@ -250,6 +250,15 @@ class TeamAgentSpec(BaseModel):
     """
     leader: LeaderSpec = LeaderSpec()
     predefined_members: list[PredefinedMemberSpec] = []
+    agent_group_name: Optional[str] = None
+    """Name of the AgentGroup this team was assembled from, if any.
+
+    Set by the host that seeds ``predefined_members`` / ``agents[<member>]``
+    from an AgentGroup package. ``spawn_expert`` uses it to spawn further
+    instances of a bound member from the team's own assembled spec (its
+    ``agents[<member>].agent_template_spec`` and predefined persona) instead
+    of re-reading the package from disk.
+    """
     external_cli_agents: list[ExternalCliAgentSpec] = []
     """Static launch configs for external CLI agents (claudecode / codex / ...).
 
@@ -361,6 +370,17 @@ class TeamAgentSpec(BaseModel):
     reviewer). The reviewer machinery itself (column, guards, voting) is
     always available regardless of this flag. Overridable per team
     instance at ``build_team`` time. See F_62.
+    """
+    enable_member_messaging: bool = False
+    """Let scheduled-dispatch members message each other directly.
+
+    Scheduled dispatch narrows a member's ``send_message`` to the leader and
+    the user, so the leader routes every exchange. When True, members keep
+    the full reach an autonomous member has — point-to-point, multicast and
+    broadcast to peers — while ``"leader"`` stays a valid role recipient.
+    Prompts and the tool description follow the same flag. Static
+    configuration; ignored under ``dispatch_mode="autonomous"``, where
+    members already reach each other. See F_126.
     """
     bootstrap_mode: Literal["leader", "framework"] = "leader"
     """Who materializes the team row, and how the leader receives its policy.
@@ -856,6 +876,7 @@ class TeamAgentSpec(BaseModel):
             leader_member_name=self.leader.member_name,
             language=resolved_language,
             dispatch_mode=self.dispatch_mode,
+            enable_member_messaging=self.enable_member_messaging,
             teammate_mode=str(self.teammate_mode),
             model_pool=team_pool,
             model_pool_strategy=team_strategy,
