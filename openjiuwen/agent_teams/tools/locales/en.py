@@ -409,6 +409,10 @@ STRINGS: dict[str, str] = {
         "Member name that carries this task (optional); the member must already exist (spawn_teammate first) "
         "and must not be the leader. Omit it to put the task on the shared claim pool for members to claim"
     ),
+    "create_task_subtask.task.assignee": (
+        "Member name that carries this subtask (required); must be an existing agent member — it may be you, "
+        "never the leader or a human member"
+    ),
     "create_task_scheduled.task.assignee": (
         "Member name that carries this task (one of assignee / member); the member must already exist (it may "
         "also be a member declared inline via 'member' by another task of the same call) and must not be the "

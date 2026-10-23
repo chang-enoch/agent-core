@@ -137,6 +137,7 @@ class TeamBackend:
         dispatch_mode: str = "autonomous",
         enable_task_verification: bool = False,
         enable_member_messaging: bool = False,
+        max_subtask_depth: int = 0,
         enable_fork: bool = False,
         evolution_enabled: bool = True,
         member_workspace_prefix: bool = True,
@@ -209,6 +210,10 @@ class TeamBackend:
                 (``TeamAgentSpec.enable_member_messaging``, F_126). Static,
                 no ``build_team`` override; the tool factory reads it to pick
                 the member ``send_message`` variant.
+            max_subtask_depth: How deep scheduled-dispatch members may split
+                their task into subtasks (``TeamAgentSpec.max_subtask_depth``,
+                F_128); ``0`` keeps ``create_task`` leader-only. Static, no
+                ``build_team`` override.
             enable_fork: Spec-level context-inheritance capability gate
                 (``TeamAgentSpec.enable_fork``). When False the
                 ``checkpoint`` tool is not wired and ``spawn_teammate``
@@ -310,6 +315,9 @@ class TeamBackend:
         # Peer messaging under scheduled dispatch (F_126): static spec gate,
         # read by the tool factory and the prompt builders.
         self._enable_member_messaging: bool = enable_member_messaging
+        # Member subtasks under scheduled dispatch (F_128): static spec gate
+        # and depth ceiling in one value.
+        self._max_subtask_depth: int = max_subtask_depth
         # Evolution-mechanism master switch (TeamAgentSpec.evolution_enabled),
         # immutable from spec: off means the write side never writes workspace
         # files and the manager carries no cache (the read side falls back to
@@ -510,6 +518,23 @@ class TeamBackend:
         dispatch prompts.
         """
         return self._enable_member_messaging
+
+    def subtask_depth_limit(self) -> int:
+        """How deep scheduled-dispatch members may nest subtasks (``0`` = off).
+
+        Straight from ``TeamAgentSpec.max_subtask_depth`` (F_128); the member
+        ``create_task`` checks a split against it.
+        """
+        return self._max_subtask_depth
+
+    def member_subtasks_enabled(self) -> bool:
+        """Whether scheduled-dispatch members may split their task (F_128).
+
+        Single gate signal for the member ``create_task``, the subtask prose
+        of the scheduled dispatch prompts and the leader policy disclosure.
+        Meaningful only under scheduled dispatch.
+        """
+        return self._max_subtask_depth > 0
 
     def bind_group_session(self, session_id: str) -> None:
         if not isinstance(session_id, str) or not session_id.strip():

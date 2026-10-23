@@ -991,6 +991,164 @@ class ScheduledTaskCreateTool(TeamTool):
         return "\n".join(lines)
 
 
+# Arguments only the leader's scheduled ``create_task`` takes, plus the two
+# subtask columns the tool fills itself (F_128). Named so a stray one from an
+# MCP client is rejected rather than dropped.
+_SUBTASK_FORBIDDEN_FIELDS = (
+    "member",
+    "reviewer",
+    "max_review_rounds",
+    "depended_by",
+    "parent_task_id",
+    "created_by",
+)
+
+# Appended to a successful split (F_128): the parent is parked, so anything
+# the member does on it before resuming is wasted.
+_SUBTASK_SUSPEND_NOTICE = (
+    "Your task {parent} is suspended until these subtasks finish. End this turn now; the scheduler "
+    "resumes {parent} with the subtask results once all of them are done."
+)
+
+
+def _subtask_node_schema(t: Translator) -> dict:
+    """Build the member subtask node schema: base fields, required owner, no in-place edges."""
+    properties = _base_task_node_properties(t)
+    properties.pop("depended_by")
+    properties["assignee"] = {"type": "string", "description": t("create_task_subtask", "task.assignee")}
+    return _task_node_schema(properties, extra_required=["assignee"])
+
+
+class MemberSubtaskCreateTool(TeamTool):
+    """Split the caller's executing task into subtasks (scheduled members, F_128).
+
+    The parent is always the caller's own ``IN_PROGRESS`` task — derived
+    here, never a model argument. One ``add_graph`` call creates the
+    subtasks, makes the parent depend on each of them and parks it at
+    ``BLOCKED``, which frees the caller's active slot: a subtask may go to the
+    caller itself, and no two members can wait on each other's slot. The
+    dependency refresh returns the parent to ``PENDING`` once every subtask is
+    terminal, and the scheduler resumes it with their summaries.
+
+    Narrower than the leader's scheduled form: every subtask names an
+    existing member (no inline ``member``, no reviewers), and there is no
+    ``depended_by`` — a member wires only its own subtasks.
+    """
+
+    def __init__(self, agent_team: TeamBackend, t: Translator):
+        super().__init__(
+            ToolCard(
+                id="team.create_task",
+                name="create_task",
+                description=t("create_task_subtask"),
+            )
+        )
+        self.agent_team = agent_team
+        self.task_manager = agent_team.task_manager
+        self.card.input_params = {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": _subtask_node_schema(t),
+                    "description": t("create_task", "tasks"),
+                },
+            },
+            "required": ["tasks"],
+        }
+
+    async def _validate_owners(self, tasks: list[dict]) -> str | None:
+        """Existing non-leader owners, and no live human — the leader cannot cancel their tasks."""
+        error = await _validate_assignees(self.agent_team, tasks, required=True)
+        if error:
+            return error
+        for spec in tasks:
+            assignee = spec["assignee"].strip()
+            if await self.agent_team.is_live_human_agent(assignee):
+                return (
+                    f"Task {_spec_label(spec)!r}: {assignee!r} is a human member; subtasks go to "
+                    f"agent members only — ask the leader to involve a human"
+                )
+        return None
+
+    async def invoke(self, inputs: dict[str, Any], **kwargs) -> ToolOutput:
+        tasks = inputs.get("tasks", [])
+        if not tasks:
+            return ToolOutput(success=False, error="'tasks' is required")
+
+        error = _validate_task_batch(tasks)
+        if error:
+            return ToolOutput(success=False, error=error)
+        for spec in tasks:
+            stray = [name for name in _SUBTASK_FORBIDDEN_FIELDS if spec.get(name) not in (None, "", [], ())]
+            if stray:
+                return ToolOutput(
+                    success=False,
+                    error=(
+                        f"Task {_spec_label(spec)!r}: {stray} are not accepted when splitting your task — "
+                        "subtasks name an existing member as 'assignee' and only use 'depends_on'"
+                    ),
+                )
+
+        member_name = self.agent_team.member_name
+        executing = await self.task_manager.get_tasks_by_assignee(member_name, TaskStatus.IN_PROGRESS.value)
+        if not executing:
+            return ToolOutput(
+                success=False,
+                error=(
+                    "create_task splits the task you are executing, but you have no in-progress task; "
+                    "ask the leader if new work is needed"
+                ),
+            )
+        parent = executing[0]
+        limit = self.agent_team.subtask_depth_limit()
+        depth = await self.task_manager.task_depth(parent)
+        if depth + 1 > limit:
+            return ToolOutput(
+                success=False,
+                error=(
+                    f"Task {parent.task_id} is already a subtask at depth {depth}; this team allows "
+                    f"subtasks {limit} level(s) deep. Finish it yourself, or tell the leader it needs splitting"
+                ),
+            )
+        error = await self._validate_owners(tasks)
+        if error:
+            return ToolOutput(success=False, error=error)
+
+        result = await self.task_manager.add_graph(
+            [
+                TaskGraphSpec(
+                    title=spec["title"],
+                    content=spec["content"],
+                    task_id=spec.get("task_id"),
+                    depends_on=tuple(spec.get("depends_on") or ()),
+                    assignee=spec["assignee"].strip(),
+                    parent_task_id=parent.task_id,
+                    created_by=member_name,
+                )
+                for spec in tasks
+            ],
+            suspend_parent=parent.task_id,
+        )
+        if not result.ok:
+            return ToolOutput(success=False, error=result.reason)
+
+        briefs = [{**task.brief(), "assignee": task.assignee} for task in result.tasks]
+        return ToolOutput(
+            success=True,
+            data={"parent_task_id": parent.task_id, "tasks": briefs, "count": len(briefs)},
+        )
+
+    def render_for_llm(self, output: ToolOutput) -> str:
+        if not output.success:
+            return output.error or "Operation failed"
+        d = output.data
+        lines = [f"task_id={task['task_id']} title={task['title']} {_owner_phrase(task)}" for task in d["tasks"]]
+        lines.append(f"Created {d['count']} subtask(s) of {d['parent_task_id']}")
+        lines.append(_SUBTASK_SUSPEND_NOTICE.format(parent=d["parent_task_id"]))
+        return "\n".join(lines)
+
+
 class ViewTaskToolV2(TeamTool):
     """Unified task viewing tool (V2).
 
@@ -1110,6 +1268,10 @@ class ViewTaskToolV2(TeamTool):
                 lines.append(f"Blocked by: {', '.join(f'#{tid}' for tid in d['blocked_by'])}")
             if d.get("blocks"):
                 lines.append(f"Blocks: {', '.join(f'#{tid}' for tid in d['blocks'])}")
+            if d.get("parent_task_id"):
+                lines.append(f"Subtask of: #{d['parent_task_id']}")
+            if d.get("subtasks"):
+                lines.append(f"Subtasks: {', '.join(f'#{tid}' for tid in d['subtasks'])}")
             if d.get("upstream"):
                 lines.append("Upstream deliveries:")
                 lines.extend(d["upstream"])
@@ -1127,6 +1289,8 @@ class ViewTaskToolV2(TeamTool):
                 parts.append(f"({format_time_context(task['updated_at'], now_ms)})")
             if task.get("blocked_by"):
                 parts.append(f"[blocked by {', '.join(f'#{tid}' for tid in task['blocked_by'])}]")
+            if task.get("parent_task_id"):
+                parts.append(f"[subtask of #{task['parent_task_id']}]")
             lines.append(" ".join(parts))
         return "\n".join(lines)
 

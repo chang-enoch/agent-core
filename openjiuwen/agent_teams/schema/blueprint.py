@@ -382,6 +382,16 @@ class TeamAgentSpec(BaseModel):
     configuration; ignored under ``dispatch_mode="autonomous"``, where
     members already reach each other. See F_126.
     """
+    max_subtask_depth: int = 0
+    """Let scheduled-dispatch members split their task into subtasks.
+
+    ``0`` (default) keeps ``create_task`` leader-only. A positive value gives
+    scheduled members a ``create_task`` that parks their executing task at
+    ``BLOCKED`` until the new subtasks finish, and caps how deep subtasks may
+    nest (a leader task is depth 0, its subtasks depth 1, ...). Static
+    configuration, no ``build_team`` override; ignored under
+    ``dispatch_mode="autonomous"``. See F_128.
+    """
     bootstrap_mode: Literal["leader", "framework"] = "leader"
     """Who materializes the team row, and how the leader receives its policy.
 
@@ -743,6 +753,10 @@ class TeamAgentSpec(BaseModel):
             raise ValueError(
                 f"review_stall_timeout must be > 0 seconds, got {self.review_stall_timeout}",
             )
+        if self.max_subtask_depth < 0:
+            raise ValueError(
+                f"max_subtask_depth must be >= 0, got {self.max_subtask_depth}",
+            )
         return self
 
     @model_validator(mode="after")
@@ -877,6 +891,7 @@ class TeamAgentSpec(BaseModel):
             language=resolved_language,
             dispatch_mode=self.dispatch_mode,
             enable_member_messaging=self.enable_member_messaging,
+            max_subtask_depth=self.max_subtask_depth,
             teammate_mode=str(self.teammate_mode),
             model_pool=team_pool,
             model_pool_strategy=team_strategy,

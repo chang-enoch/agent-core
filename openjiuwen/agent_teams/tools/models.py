@@ -161,6 +161,15 @@ class TeamTaskBase(SQLModel):
     # members, reviewers and the leader (``view_task``) can read it; events
     # never carry it. Since F_119 it is the full detail behind ``summary``.
     note: Optional[str] = Field(default=None, nullable=True)
+    # Member subtasks (F_128): the task its creator was executing when it
+    # split the work. NULL marks a top-level (leader-created) task. Written
+    # by the tool from the caller's active task, never by the model. No
+    # index: children lookups scan small boards, and every INSERT would pay
+    # for one.
+    parent_task_id: Optional[str] = Field(default=None, nullable=True)
+    # Member that created the task (F_128). Audit / display only — no
+    # permission or routing decision reads it. NULL means the leader.
+    created_by: Optional[str] = Field(default=None, nullable=True)
     updated_at: Optional[int] = Field(default=None, sa_type=BigInteger, nullable=True)
 
     def brief(self) -> dict:

@@ -100,6 +100,7 @@ class TaskSummary(BaseModel):
     status: str
     assignee: Optional[str] = None
     blocked_by: list[str] = Field(default_factory=list)
+    parent_task_id: Optional[str] = None
     updated_at: Optional[int] = None
 
 
@@ -124,6 +125,8 @@ class TaskDetail(BaseModel):
     note: Optional[str] = None
     blocked_by: list[str] = Field(default_factory=list)
     blocks: list[str] = Field(default_factory=list)
+    parent_task_id: Optional[str] = None
+    subtasks: list[str] = Field(default_factory=list)
     updated_at: Optional[int] = None
 
 
@@ -167,6 +170,10 @@ class TaskGraphSpec:
     # Per-task review-round ceiling (F_62, scheduled dispatch); None uses the
     # team default. Meaningful only when ``reviewer`` is non-empty.
     max_review_rounds: int | None = None
+    # Member subtasks (F_128): the creator's executing task and the creator.
+    # Set by the member ``create_task`` variant only; None for leader tasks.
+    parent_task_id: str | None = None
+    created_by: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +228,9 @@ class NewTaskSpec:
     # Per-task review-round ceiling (F_62); None falls back to the team-level
     # ``TeamAgentSpec.default_max_review_rounds`` at judgement time.
     max_review_rounds: int | None = None
+    # Member subtasks (F_128); written verbatim to the matching columns.
+    parent_task_id: str | None = None
+    created_by: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

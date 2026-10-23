@@ -86,6 +86,7 @@ MEMBER_ONLY_TOOLS_SCHEDULED: set[str] = {
     "member_complete_task",  # Complete a task assigned to you
     "submit_plan",  # Submit a plan before executing in plan_mode
     "verify_task",  # Pass/fail a task in the verify gate (reviewer-guarded)
+    "create_task",  # Split your executing task into subtasks (gated by max_subtask_depth, F_128)
 }
 
 # All tools available to leader. Dispatch-invariant: the leader's tool *names*

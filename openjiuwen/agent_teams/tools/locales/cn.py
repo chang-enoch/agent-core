@@ -303,6 +303,9 @@ STRINGS: dict[str, str] = {
         "承担该任务的成员名称（可选）；该成员必须已存在（先 spawn_teammate）且不能是 leader。"
         "未填写则进入公共认领池，等待成员自主认领"
     ),
+    "create_task_subtask.task.assignee": (
+        "承担该子任务的成员名称（必填）；必须是已存在的智能体成员，可以是你自己，不能是 leader 或人类成员"
+    ),
     "create_task_scheduled.task.assignee": (
         "承担该任务的成员名称（与 member 二选一）；该成员必须已存在（也可以是本次调用中其他任务用 member "
         "内联声明的成员）且不能是 leader。调度模式必填承担者，成员不会自主认领"

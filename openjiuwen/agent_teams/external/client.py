@@ -225,6 +225,7 @@ class ExternalTeamClient:
             db=db,
             messager=self._messager,
             enable_member_messaging=self._descriptor.enable_member_messaging,
+            max_subtask_depth=self._descriptor.max_subtask_depth,
         )
         from types import SimpleNamespace
 

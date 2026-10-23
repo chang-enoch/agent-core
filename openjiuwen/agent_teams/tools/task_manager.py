@@ -63,6 +63,7 @@ from openjiuwen.agent_teams.tools.database import (
     TeamTaskBase,
     TeamTaskDependencyBase,
 )
+from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES
 from openjiuwen.agent_teams.tools.models import TeamTaskReviewVoteBase
 from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
 from openjiuwen.core.common.logging import team_logger
@@ -179,8 +180,15 @@ class TeamTaskManager:
             return TaskOpResult.fail(f"Member {owner} not found in team {self.team_name}")
         return TaskOpResult.success()
 
-    async def add_graph(self, specs: list[TaskGraphSpec]) -> TaskGraphResult:
+    async def add_graph(self, specs: list[TaskGraphSpec], *, suspend_parent: str | None = None) -> TaskGraphResult:
         """Create a batch of tasks and their dependency edges atomically.
+
+        ``suspend_parent`` names the caller's ``IN_PROGRESS`` task when a
+        member splits it into subtasks (F_128): in the same transaction the
+        parent gains a ``depends_on`` edge to every new task and parks at
+        ``BLOCKED``, freeing its owner's active slot. The dependency refresh
+        returns it to ``PENDING`` once every subtask is terminal, and the
+        scheduler resumes it from there.
 
         The whole batch flows through a single ``mutate_dependency_graph``
         call, so ``depends_on`` edges may reference tasks created later in
@@ -230,15 +238,20 @@ class TeamTaskManager:
                     assignee=spec.assignee,
                     reviewer=json.dumps(list(spec.reviewer)) if spec.reviewer else None,
                     max_review_rounds=spec.max_review_rounds,
+                    parent_task_id=spec.parent_task_id,
+                    created_by=spec.created_by,
                 )
             )
             edges.extend((task_id, dep_id) for dep_id in spec.depends_on)
             edges.extend((dependent_id, task_id) for dependent_id in spec.depended_by)
+            if suspend_parent:
+                edges.append((suspend_parent, task_id))
 
         mutation = await self.db.task.mutate_dependency_graph(
             team_name=self.team_name,
             new_tasks=new_tasks,
             add_edges=edges,
+            suspend_parent=(suspend_parent, self.member_name) if suspend_parent else None,
         )
         if not mutation.ok:
             return TaskGraphResult.fail(mutation.reason)
@@ -258,6 +271,8 @@ class TeamTaskManager:
                 content=node.content,
                 status=status,
                 assignee=node.assignee,
+                parent_task_id=node.parent_task_id,
+                created_by=node.created_by,
             )
             if await self._start_human_assigned_task_if_ready(task):
                 task = await self.get(node.task_id) or task
@@ -349,6 +364,7 @@ class TeamTaskManager:
                 status=task.status,
                 assignee=task.assignee,
                 blocked_by=unresolved_by_task.get(task.task_id, []),
+                parent_task_id=task.parent_task_id,
                 updated_at=task.updated_at,
             )
             for task in tasks
@@ -375,6 +391,7 @@ class TeamTaskManager:
         blocked_by = [d.depends_on_task_id for d in deps if not d.resolved]
 
         blocks = await self.db.task.get_dependent_task_ids(task_id)
+        subtasks = [sub_id for sub_id, _status in await self.db.task.get_subtask_statuses(self.team_name, task_id)]
 
         return TaskDetail(
             task_id=task.task_id,
@@ -389,6 +406,8 @@ class TeamTaskManager:
             note=task.note,
             blocked_by=blocked_by,
             blocks=blocks,
+            parent_task_id=task.parent_task_id,
+            subtasks=subtasks,
             updated_at=task.updated_at,
         )
 
@@ -1345,6 +1364,12 @@ class TeamTaskManager:
             error_label=f"Task cancelled event for {task_id}",
         )
         await self._handle_unblocked_tasks(unblocked_tasks)
+        # Subtasks only exist to feed their parent (F_128). Cancelling the
+        # parent first matters: a subtask cancelled first would resolve the
+        # parent's last edge and let the scheduler resume a task that is
+        # about to be cancelled.
+        for subtask_id in await self.open_subtask_ids(task_id):
+            await self.cancel(subtask_id)
         await self._maybe_publish_task_list_drained()
         return task
 
@@ -1651,6 +1676,35 @@ class TeamTaskManager:
         )
         return TaskOpResult.success()
 
+    async def open_subtask_ids(self, task_id: str) -> list[str]:
+        """Return the non-terminal direct subtasks of a task (F_128)."""
+        rows = await self.db.task.get_subtask_statuses(self.team_name, task_id)
+        return [sub_id for sub_id, status in rows if status not in TASK_TERMINAL_STATUSES]
+
+    async def has_subtasks(self, task_id: str) -> bool:
+        """Whether a task was ever split into subtasks (F_128).
+
+        Subtasks are only created while their parent is executing, so a
+        parent that is being started again is necessarily resuming.
+        """
+        return bool(await self.db.task.get_subtask_statuses(self.team_name, task_id))
+
+    async def parent_task_ids(self) -> set[str]:
+        """Ids of every task that was split into subtasks (F_128), in one query."""
+        return await self.db.task.get_parent_task_ids(self.team_name)
+
+    async def task_depth(self, task: TeamTaskBase) -> int:
+        """Subtask nesting depth: 0 for a top-level task, parent's + 1 otherwise (F_128)."""
+        depth = 0
+        seen: set[str] = {task.task_id}
+        parent_id = task.parent_task_id
+        while parent_id and parent_id not in seen:
+            depth += 1
+            seen.add(parent_id)
+            parent = await self.get(parent_id)
+            parent_id = parent.parent_task_id if parent is not None else None
+        return depth
+
     async def get_other_active_task_id(self, member_name: str, exclude_task_id: str) -> str | None:
         """Return the task_id of a member's active task other than
         ``exclude_task_id``, or None.
@@ -1705,11 +1759,12 @@ class TeamTaskManager:
             return owner_result
 
         # Entry gate mirrors ``assign``: plan-mode owners land in the plan
-        # gate and must get approval before executing.
+        # gate and must get approval before executing. A parent resuming
+        # after its subtasks (F_128) had its plan approved on first start.
         member = await self.db.member.get_member(member_name, self.team_name)
         entry_status = (
             TaskStatus.PLANNING
-            if member is not None and member.mode == MemberMode.PLAN_MODE.value
+            if member is not None and member.mode == MemberMode.PLAN_MODE.value and not await self.has_subtasks(task_id)
             else TaskStatus.IN_PROGRESS
         )
 
@@ -1780,6 +1835,15 @@ class TeamTaskManager:
         old_assignee = task.assignee
         if not old_assignee:
             return TaskOpResult.fail(f"Task {task_id} has no current assignee to reassign from")
+
+        # A BLOCKED parent waiting on its subtasks is half done, its work in
+        # the current owner's hands (F_128) — the same reason the two gates
+        # are not reassignable (F_82). An ordinary BLOCKED task never started.
+        if task.status == TaskStatus.BLOCKED.value and await self.open_subtask_ids(task_id):
+            return TaskOpResult.fail(
+                f"Task {task_id} is suspended while its subtasks run under {old_assignee}; "
+                "wait for the subtasks to finish, or cancel them first"
+            )
 
         swapped = await self.db.task.reassign_task(task_id, old_assignee, new_assignee)
         if not swapped:

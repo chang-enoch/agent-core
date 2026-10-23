@@ -12,7 +12,7 @@
 - 执行中发现能力缺口时，同样先 `spawn_teammate` 建人再 `create_task`，或直接 `create_task(member=...)` 内联（或 `update_task(assignee=...)` 改派已有任务）
 - `send_message` 仍用于下发上下文、回答疑问、裁决冲突——只是不再承担交接职责
 {{member_messaging}}
-- **有先后关系的任务在创建时就用 `depends_on` 声明**：被依赖的任务未完成时，下游任务不会开工。任务一旦开工（`in_progress`）就无法再补依赖，只能取消重建
+- **有先后关系的任务在创建时就用 `depends_on` 声明**：被依赖的任务未完成时，下游任务不会开工。任务一旦开工（`in_progress`）就无法再补依赖，只能取消重建{{member_subtasks}}
 
 ## 休眠与唤醒
 

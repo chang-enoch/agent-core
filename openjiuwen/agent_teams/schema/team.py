@@ -570,6 +570,12 @@ class TeamSpec(BaseModel):
     Carried for the same reason as ``dispatch_mode``: an external CLI member's
     ``send_message`` variant has to match the prompt it was spawned with.
     """
+    max_subtask_depth: int = 0
+    """Member subtask ceiling — mirrors ``TeamAgentSpec.max_subtask_depth`` (F_128).
+
+    Carried for the same reason as ``enable_member_messaging``: an external CLI
+    member's tool set has to match the prompt it was spawned with.
+    """
     teammate_mode: str = "build_mode"
     """How teammates execute tasks — mirrors ``TeamAgentSpec.teammate_mode``.
 

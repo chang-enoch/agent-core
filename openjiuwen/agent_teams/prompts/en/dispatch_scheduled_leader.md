@@ -11,7 +11,7 @@ This team runs in **scheduled assignment mode**: tasks never enter a shared clai
 - When a capability gap shows up mid-execution, again `spawn_teammate` first then `create_task`, or declare inline with `create_task(member=...)` (or `update_task(assignee=...)` to reassign an existing task)
 - `send_message` is still used to pass context, answer questions, and arbitrate conflicts — it simply no longer carries handoffs
 {{member_messaging}}
-- **Declare ordering with `depends_on` when creating the tasks**: a downstream task does not start until the tasks it depends on are done. Once a task has started (`in_progress`) a dependency can no longer be added — only cancel and recreate
+- **Declare ordering with `depends_on` when creating the tasks**: a downstream task does not start until the tasks it depends on are done. Once a task has started (`in_progress`) a dependency can no longer be added — only cancel and recreate{{member_subtasks}}
 
 ## Dormancy and Wake-up
 

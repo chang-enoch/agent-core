@@ -161,6 +161,8 @@ class TeamPolicyRail(DeepAgentRail):
         # Scheduled peer messaging (F_126): the same backend gate the tool
         # factory reads to pick the member ``send_message`` variant.
         member_messaging = team_backend.member_messaging_enabled() is True if team_backend is not None else False
+        # Member subtasks (F_128): the gate that grants members ``create_task``.
+        member_subtasks = team_backend.member_subtasks_enabled() is True if team_backend is not None else False
         self._static_sections: list[PromptSection] = self._build_static_sections(
             role=role,
             member_prompt=member_prompt,
@@ -172,6 +174,7 @@ class TeamPolicyRail(DeepAgentRail):
             team_mode=team_mode,
             dispatch_mode=dispatch_mode,
             member_messaging=member_messaging,
+            member_subtasks=member_subtasks,
             base_prompt=base_prompt,
             hitt_enabled=hitt_enabled,
             swarmflow_enabled=swarmflow_enabled,
@@ -193,6 +196,7 @@ class TeamPolicyRail(DeepAgentRail):
                     team_mode=team_mode,
                     dispatch_mode=dispatch_mode,
                     member_messaging=member_messaging,
+                    member_subtasks=member_subtasks,
                     language=language,
                     hitt_enabled=hitt_enabled,
                     loader=self._loader,
@@ -466,6 +470,7 @@ class TeamPolicyRail(DeepAgentRail):
         team_mode: str,
         dispatch_mode: str,
         member_messaging: bool,
+        member_subtasks: bool,
         base_prompt: str | None,
         hitt_enabled: bool,
         swarmflow_enabled: bool,
@@ -496,6 +501,7 @@ class TeamPolicyRail(DeepAgentRail):
                 team_mode=team_mode,
                 dispatch_mode=dispatch_mode,
                 member_messaging=member_messaging,
+                member_subtasks=member_subtasks,
                 base_prompt=base_prompt,
                 language=self._language,
                 hitt_enabled=hitt_enabled,

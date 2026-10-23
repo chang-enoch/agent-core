@@ -344,6 +344,7 @@ def build_team_dispatch_section(
     role: TeamRole,
     dispatch_mode: str = "autonomous",
     member_messaging: bool = False,
+    member_subtasks: bool = False,
     language: str = "cn",
     loader: TemplateLoader = load_template,
 ) -> Optional[PromptSection]:
@@ -363,6 +364,10 @@ def build_team_dispatch_section(
             scheduled templates' ``{{member_messaging}}`` capability slot —
             the same signal that picks the member ``send_message`` variant.
             Ignored under autonomous dispatch.
+        member_subtasks: Whether scheduled members may split their task into
+            subtasks (``TeamAgentSpec.max_subtask_depth > 0``, F_128). Fills the
+            scheduled templates' ``{{member_subtasks}}`` capability slot — the
+            same signal that grants members ``create_task``; empty when off.
         language: Prompt language.
 
     Returns:
@@ -377,7 +382,17 @@ def build_team_dispatch_section(
     template = loader(f"dispatch_{mode}_{slug}", language)
     if mode == "scheduled":
         template = template.format(
-            {"member_messaging": _scheduled_member_messaging(slug, member_messaging, language, loader)}
+            {
+                "member_messaging": _scheduled_member_messaging(slug, member_messaging, language, loader),
+                # The slot ends a list line in both templates, so the rule
+                # joins the list as its own item and an empty slot leaves no
+                # blank line behind.
+                "member_subtasks": (
+                    "\n" + loader(f"dispatch_scheduled_{slug}_subtasks", language).content.strip()
+                    if member_subtasks
+                    else ""
+                ),
+            }
         )
     dispatch_text = template.content.strip()
     body = f"{labels['dispatch_heading']}\n\n{dispatch_text}\n"
@@ -671,6 +686,7 @@ def build_team_static_sections(
     team_mode: str = "default",
     dispatch_mode: str = "autonomous",
     member_messaging: bool = False,
+    member_subtasks: bool = False,
     base_prompt: str | None = None,
     language: str = "cn",
     hitt_enabled: bool = False,
@@ -700,6 +716,8 @@ def build_team_static_sections(
         dispatch_mode: How tasks reach members ("autonomous" / "scheduled").
         member_messaging: Whether scheduled members may message each other
             (F_126); forwarded to the dispatch section.
+        member_subtasks: Whether scheduled members may split their task into
+            subtasks (F_128); forwarded to the dispatch section.
         base_prompt: Optional user-supplied prompt appended as the extra section.
         language: Prompt language ("cn" / "en").
         hitt_enabled: Whether HITT is enabled for the team; gates the static
@@ -744,6 +762,7 @@ def build_team_static_sections(
             role=role,
             dispatch_mode=dispatch_mode,
             member_messaging=member_messaging,
+            member_subtasks=member_subtasks,
             language=language,
             loader=loader,
         ),
@@ -780,6 +799,7 @@ def build_leader_policy_disclosure(
     team_mode: str = "default",
     dispatch_mode: str = "autonomous",
     member_messaging: bool = False,
+    member_subtasks: bool = False,
     language: str = "cn",
     hitt_enabled: bool = False,
     loader: TemplateLoader = load_template,
@@ -811,6 +831,8 @@ def build_leader_policy_disclosure(
         dispatch_mode: How tasks reach members ("autonomous" / "scheduled").
         member_messaging: Whether scheduled members may message each other
             (F_126); decides which messaging rule the leader reads.
+        member_subtasks: Whether scheduled members may split their task into
+            subtasks (F_128); adds the leader's subtask rule.
         language: Prompt language ("cn" / "en").
         hitt_enabled: The team's effective HITT flag, as resolved by this
             ``build_team`` call — not the spec ceiling.
@@ -826,6 +848,7 @@ def build_leader_policy_disclosure(
         team_mode=team_mode,
         dispatch_mode=dispatch_mode,
         member_messaging=member_messaging,
+        member_subtasks=member_subtasks,
         base_prompt=None,
         language=language,
         hitt_enabled=hitt_enabled,
@@ -846,6 +869,7 @@ def build_team_member_system_prompt(
     team_mode: str = "default",
     dispatch_mode: str = "autonomous",
     member_messaging: bool = False,
+    member_subtasks: bool = False,
     base_prompt: str | None = None,
     language: str = "cn",
     hitt_enabled: bool = False,
@@ -897,6 +921,7 @@ def build_team_member_system_prompt(
         team_mode=team_mode,
         dispatch_mode=dispatch_mode,
         member_messaging=member_messaging,
+        member_subtasks=member_subtasks,
         base_prompt=base_prompt,
         language=language,
         hitt_enabled=hitt_enabled,

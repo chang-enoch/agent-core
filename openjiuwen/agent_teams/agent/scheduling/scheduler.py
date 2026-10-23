@@ -283,8 +283,13 @@ class TeamScheduler:
                 queue_by_member.setdefault(task.assignee, []).append(task)
 
         acted = False
+        parents = await task_manager.parent_task_ids() if queue_by_member else set()
         for member_name, queue in queue_by_member.items():
-            candidate = min(queue, key=lambda task: (task.updated_at or 0, task.task_id))
+            # A parent back from its subtasks (F_128) goes first: its owner
+            # may have picked up other work while it was parked, and the
+            # half-done task should not queue behind fresh ones.
+            resumable = [task for task in queue if task.task_id in parents]
+            candidate = min(resumable or queue, key=lambda task: (task.updated_at or 0, task.task_id))
             busy_task_id = await task_manager.get_other_active_task_id(member_name, candidate.task_id)
             if busy_task_id:
                 continue
@@ -368,7 +373,9 @@ class TeamScheduler:
     async def _send_task_start(self, task) -> bool:
         """Send the owner its start handoff and remember that it is in the mailbox."""
         owner = task.assignee
-        sent = await self._send_as_leader(owner, render.meta_task_start(task))
+        task_manager = self._infra.task_manager
+        resume = task_manager is not None and await task_manager.has_subtasks(task.task_id)
+        sent = await self._send_as_leader(owner, render.meta_task_start(task, resume=resume))
         if sent:
             self._handoff_known.add((task.task_id, owner))
         return sent
@@ -873,6 +880,11 @@ class TeamScheduler:
         Also the all-done fallback for leader-settled boards: the drained
         event a leader-local settle publishes is self-filtered off the bus,
         so a zero-remaining digest announces the wrap-up directly.
+
+        A member's subtask (F_128) gets no digest of its own: its result goes
+        back to the parent's owner through the resume handoff, and the leader
+        hears about the work once, from the parent. It still counts toward
+        the all-done check.
         """
         if task.task_id in self._digested_tasks:
             return
@@ -880,10 +892,11 @@ class TeamScheduler:
         tasks = await task_manager.list_tasks()
         terminal = (TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value)
         remaining = sum(1 for row in tasks if row.status not in terminal)
-        await self._host.deliver_input(
-            render.render_leader_task_done(task, verified=verified),
-            use_steer=False,
-        )
+        if not getattr(task, "parent_task_id", None):
+            await self._host.deliver_input(
+                render.render_leader_task_done(task, verified=verified),
+                use_steer=False,
+            )
         if remaining == 0 and tasks and not self._all_done_announced:
             self._all_done_announced = True
             await self._host.deliver_input(

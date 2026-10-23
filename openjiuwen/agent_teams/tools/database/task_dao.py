@@ -280,10 +280,42 @@ async def _stage_new_tasks(
                 assignee=spec.assignee,
                 reviewer=spec.reviewer,
                 max_review_rounds=spec.max_review_rounds,
+                parent_task_id=spec.parent_task_id,
+                created_by=spec.created_by,
                 updated_at=now,
             )
         )
     await session.flush()
+
+
+async def _suspend_parent_in_session(
+    session: AsyncSession,
+    parent_task_id: str,
+    owner: str,
+    now: int,
+) -> None:
+    """Park the subtask creator's executing task at ``BLOCKED`` (F_128).
+
+    CAS on ``IN_PROGRESS`` + owner: a parent that was cancelled, reassigned or
+    submitted since the tool read it no longer matches, and the whole batch
+    rolls back with the real cause. Runs before the edges are validated —
+    an executing task cannot take new dependencies, a blocked one can.
+    """
+    team_task_model = _get_task_model()
+    result = await session.execute(
+        update(team_task_model)
+        .where(
+            team_task_model.task_id == parent_task_id,
+            team_task_model.status == TaskStatus.IN_PROGRESS.value,
+            team_task_model.assignee == owner,
+        )
+        .values(status=TaskStatus.BLOCKED.value, updated_at=now)
+    )
+    if (result.rowcount or 0) == 0:
+        raise _MutationFailure(
+            f"Task {parent_task_id} is no longer in progress under {owner}; no subtasks were created"
+        )
+    team_logger.info("Task %s suspended by %s until its subtasks finish", parent_task_id, owner)
 
 
 async def _load_endpoints_and_validate(
@@ -617,6 +649,36 @@ class TaskDao:
                 .group_by(team_task_model.assignee)
             )
             return {assignee: int(count) for assignee, count in result.all()}
+
+    async def get_subtask_statuses(self, team_name: str, parent_task_id: str) -> List[tuple[str, str]]:
+        """Return ``(task_id, status)`` of every direct subtask of a task (F_128).
+
+        Narrow projection: callers only decide "is it a parent / are its
+        subtasks still open / which ones to cascade-cancel".
+        """
+        team_task_model = _get_task_model()
+        async with self._sessions.read() as session:
+            result = await session.execute(
+                select(team_task_model.task_id, team_task_model.status).where(
+                    team_task_model.team_name == team_name,
+                    team_task_model.parent_task_id == parent_task_id,
+                )
+            )
+            return [(row[0], row[1]) for row in result.all()]
+
+    async def get_parent_task_ids(self, team_name: str) -> set[str]:
+        """Return the ids of every task that has at least one subtask (F_128)."""
+        team_task_model = _get_task_model()
+        async with self._sessions.read() as session:
+            result = await session.execute(
+                select(team_task_model.parent_task_id)
+                .where(
+                    team_task_model.team_name == team_name,
+                    team_task_model.parent_task_id.is_not(None),
+                )
+                .distinct()
+            )
+            return set(result.scalars().all())
 
     async def get_tasks_by_assignee(
         self, team_name: str, assignee_id: str, status: Optional[str] = None
@@ -1204,12 +1266,17 @@ class TaskDao:
         *,
         new_tasks: Optional[List[NewTaskSpec]] = None,
         add_edges: Optional[List[tuple[str, str]]] = None,
+        suspend_parent: Optional[tuple[str, str]] = None,
     ) -> GraphMutationResult:
         """Atomic dependency-graph mutation: insert nodes and/or edges.
 
         The body is a five-step pipeline kept inside one transaction;
         each step lives in a top-level helper. Business-rule rejections
         flow through ``_MutationFailure``, caught once at the bottom.
+
+        ``suspend_parent`` is ``(task_id, owner)``: that ``IN_PROGRESS`` task
+        is parked at ``BLOCKED`` in the same transaction, before its new
+        edges are validated (member subtasks, F_128).
         """
         new_tasks = list(new_tasks or [])
         add_edges = list(add_edges or [])
@@ -1234,6 +1301,8 @@ class TaskDao:
             try:
                 now = get_current_time()
                 await _stage_new_tasks(session, team_name, new_tasks, now)
+                if suspend_parent is not None:
+                    await _suspend_parent_in_session(session, *suspend_parent, now)
                 endpoint_tasks = await _load_endpoints_and_validate(session, add_edges)
                 new_edge_set = await _check_cycle_and_compute_new_edges(session, team_name, add_edges)
                 await _apply_new_edges(session, team_name, new_edge_set, endpoint_tasks)

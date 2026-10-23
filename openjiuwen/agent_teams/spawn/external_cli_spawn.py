@@ -176,6 +176,7 @@ async def _build_member_system_prompt(
         team_mode=_resolve_team_mode(spec),
         dispatch_mode=spec.dispatch_mode,
         member_messaging=spec.enable_member_messaging,
+        member_subtasks=spec.max_subtask_depth > 0,
         language=language,
         hitt_enabled=hitt_enabled,
         expose_human_agents_to_teammates=spec.expose_human_agents_to_teammates,
