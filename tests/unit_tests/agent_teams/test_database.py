@@ -319,6 +319,49 @@ class TestTeamDatabaseInit:
             engine.dispose()
 
     @pytest.mark.level1
+    def test_task_migration_adds_subtask_columns_idempotently(self):
+        """A pre-F_128 task table gains ``parent_task_id`` / ``created_by``; old rows read as top-level."""
+        engine = create_engine("sqlite:///:memory:")
+        try:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE team_task_presubtask (
+                        task_id TEXT PRIMARY KEY,
+                        team_name TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        assignee TEXT,
+                        reviewer TEXT,
+                        review_round INTEGER NOT NULL DEFAULT 0,
+                        max_review_rounds INTEGER,
+                        summary TEXT,
+                        note TEXT,
+                        updated_at BIGINT
+                    )
+                    """
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO team_task_presubtask (task_id, team_name, title, content, status) "
+                    "VALUES ('t1', 'team', 't', 'c', 'pending')"
+                )
+
+                _ensure_dynamic_table_indexes(conn, ["team_task_presubtask"], {"team_task_presubtask"})
+                _ensure_dynamic_table_indexes(conn, ["team_task_presubtask"], {"team_task_presubtask"})
+
+                columns = {col["name"] for col in inspect(conn).get_columns("team_task_presubtask")}
+                row = (
+                    conn.exec_driver_sql("SELECT parent_task_id, created_by FROM team_task_presubtask").mappings().one()
+                )
+
+            assert {"parent_task_id", "created_by"} <= columns
+            assert row["parent_task_id"] is None
+            assert row["created_by"] is None
+        finally:
+            engine.dispose()
+
+    @pytest.mark.level1
     def test_team_info_migration_adds_capability_columns(self):
         """A pre-F_62 team_info table gains dispatch_mode / enable_task_verification."""
         from openjiuwen.agent_teams.tools.database.engine import _ensure_team_info_capability_columns
