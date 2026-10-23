@@ -10,7 +10,7 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 | `review_feedback_evolution.py` | `ReviewFeedbackEvolutionCoordinator`：与产品无关的逐 Task Feedback 归因、团队终态汇总演进与新 Skill 候选路由；由 `TeamSkillEvolutionRail` 持有，复用其标准 host-event 队列 |
 | `reviewer_spec.py` | `build_reviewer_agent_spec`：把成员 spec 收窄为临时 reviewer 的基础 spec——框架级裁剪（文件工具只读、关 todo 规划、不挂子代理）恒生效，宿主可再传 rail / 内置工具类型白名单；宿主组装好的放 `TeamAgentSpec.reviewer_agent`，缺省时调度器用 teammate spec 回退 |
 | `verdict.py` | 纯函数投票判定（`settle_review_tally`：二元票池（verifier+challenger）一票否决 + 检视者分数池平均≥0.85）——策略可整体替换，不碰票据存储与状态机 |
-| `render.py` | 两类收件人两套机制：**成员**交接只组投递载荷 `meta_*`（`{template, refs, params}`，`content=""`），文案在 `prompts/<lang>/scheduler_*.md`、投递时渲染（F_63），`is_task_start_meta` 反向判定一条已存邮箱行是否是绑定某任务的开工交接（模板 key 不出本文件，B_06）；**leader** 摘要/升级走 `deliver_input` 直投，仍是 `i18n.py` 的 `scheduler.leader_*` 短串；终态摘要带承担者的完成摘要（`completion_summary`，渲染截断）与按需的 `view_task(action='note')` 提示，取代成员的完成汇报；验收通过不再给承担者发消息，结果经其 rail 的 `TaskOutcomeTracker` 在下次输入时告知（F_119） |
+| `render.py` | 两类收件人两套机制：**成员**交接只组投递载荷 `meta_*`（`{template, refs, params}`，`content=""`），文案在 `prompts/<lang>/scheduler_*.md`、投递时渲染（F_63），`is_task_start_meta` 反向判定一条已存邮箱行是否是绑定某任务的开工交接（模板 key 不出本文件，B_06；含父任务恢复用的 `scheduler_task_resume`，F_128）；**leader** 摘要/升级走 `deliver_input` 直投，仍是 `i18n.py` 的 `scheduler.leader_*` 短串；终态摘要带承担者的完成摘要（`completion_summary`，渲染截断）与按需的 `view_task(action='note')` 提示，取代成员的完成汇报；验收通过不再给承担者发消息，结果经其 rail 的 `TaskOutcomeTracker` 在下次输入时告知（F_119） |
 
 ## 核心不变量
 
@@ -27,7 +27,7 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
    callback，再调用同一 Rail 的终态汇总入口。callback 按 `(task_id, review_round)` 进程内去重、
    异常只记录。scheduler 不理解 LLM、轨迹、Skill 归因、审批或持久化，也不自行构造 Rail。
 10. **退场由调度器请求、成员自落**（F_118）：`_reconcile_retirements` 对 `options.lifetime` 非空且 `READY`（不含 `BUSY`——round 中途请求会搁浅它正在等的回复）的成员，在"名下无非终态任务 + 无未读消息"同时成立时调普通 `shutdown_member`（休眠类不发告别通知）；终态（`SHUTDOWN` / `DORMANT`）由成员按 `retire_target` 自落（S_03 机制 18）。调度器**不直写** `DORMANT`、不拆 handle。给休眠成员派新任务时交接经 `auto_start_member` 唤醒它（`DORMANT→RESTARTING`）。
-11. **交接以邮箱为真相，改派不漏人**（B_06）：开工扫描只在任务离开 `PENDING` 的那一刻发交接；leader `update_task(assignee=...)` 改派一个已活跃的任务（`TASK_REASSIGNABLE_STATUSES` 保留状态）不经过那一刻，新 owner 只收到瞬时 `TASK_CLAIMED`——runtime 未起则无人接收，且调度模式无首启板巡视。`_reconcile_handoffs` 对每个活跃任务（`PLANNING` / `IN_PROGRESS`）核对**当前** owner 的邮箱里是否有 leader 身份、`refs.task` 绑定该任务的 `scheduler_task_start*` 行（已读未读皆可），没有就补发同一条开工交接（同样懒启动 owner）。幂等性来自邮箱本身加进程内 `_handoff_known` 记账（`(task_id, owner)`，本进程发过或查到过即记），重启后每对至多一次邮箱读。调度器仍不理解"刚刚改派"这个事件，只看板 + 邮箱两张表。
+11. **交接以邮箱为真相，改派不漏人**（B_06）：开工扫描只在任务离开 `PENDING` 的那一刻发交接；leader `update_task(assignee=...)` 改派一个已活跃的任务（`TASK_REASSIGNABLE_STATUSES` 保留状态）不经过那一刻，新 owner 只收到瞬时 `TASK_CLAIMED`——runtime 未起则无人接收，且调度模式无首启板巡视。`_reconcile_handoffs` 对每个活跃任务（`PLANNING` / `IN_PROGRESS`）核对**当前** owner 的邮箱里是否有 leader 身份、`refs.task` 绑定该任务的 `scheduler_task_start*` / `scheduler_task_resume` 行（已读未读皆可），没有就补发同一条开工交接（同样懒启动 owner）。幂等性来自邮箱本身加进程内 `_handoff_known` 记账（`(task_id, owner)`，本进程发过或查到过即记），重启后每对至多一次邮箱读。调度器仍不理解"刚刚改派"这个事件，只看板 + 邮箱两张表。
 
 ## 生命周期（kernel 接线）
 
