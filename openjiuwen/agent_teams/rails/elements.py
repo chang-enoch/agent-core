@@ -219,7 +219,19 @@ def build_team_policy_rail(params: dict[str, Any], context: Any) -> Any:
         # prompt that describes the mechanism and the tool that runs it appear
         # and disappear together.
         swarmflow_enabled=get_swarmflow_model_resolver(context) is not None,
+        # The bound-group section names the expert tools, so it rides the same
+        # signal they are wired on: an injected expert catalog.
+        bound_group_name=_expert_scope_group(context),
     )
+
+
+def _expert_scope_group(context: Any) -> str | None:
+    """The bound AgentGroup's name when the expert tools are wired, else ``None``."""
+    if get_expert_catalog(context) is None:
+        return None
+    binding = get_expert_binding(context)
+    bound = binding.bound_group if binding is not None else None
+    return bound.name if bound is not None else None
 
 
 # ---------------------------------------------------------------------------

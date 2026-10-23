@@ -37,7 +37,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-24 |
 | 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md |
 
 ## 范围 / 边界
@@ -183,10 +183,15 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     `read_agent_group_card`），读不出的包跳过并记 warning；只有 `spawn_expert` 调用完整加载器。两个查看工具
     `list` 的 `query` 是相关度检索而不是过滤：按 BM25（core `BM25Index`）对加权字段打分，名字与 `query`
     完全一致（不区分大小写）的排第一，其后按分数降序，只以子串命中的排在最后，同分保持目录顺序；
-    `view_expert_groups` 先按 `capabilities` 过滤再排序。三个
+    `view_expert_groups` 先按 `capabilities` 过滤再排序。`view_experts` 有可选 `group`：给了团名就在该专家团内
+    检索 / 查看（`list` 列出 `leader` 以外的成员并带 `spawnable` / `predefined`，`get` 的 `name` 是成员名），
+    `"*"` 表示只看单个专家；**不传 `group` 时的默认范围在 `dispatch_mode == "scheduled"` 且团队绑定了专家团时是
+    绑定团**，其余情况是单个专家。描述里讲默认范围的 capability 槽 `view_experts_bound_scope` 与之同一门控，
+    leader 系统提示词的 `team_bound_group` section 也是（见 S_09 1b）。三个
     工具不在事件循环线程上做文件 IO：包读取经 `asyncio.to_thread` 在工作线程里执行。
     `spawn_expert` 是又一个 `_SpawnToolBase` 子类：模板来源由 `group` 决定（等于
-    `TeamAgentSpec.agent_group_name` 时取本 Team spec 里组装好的成员，不调目录、不读磁盘；否则经目录
+    `TeamAgentSpec.agent_group_name` 且宿主把该成员组装进了本 Team spec（预定义成员）时取 spec，不调目录、不读磁盘；
+    spec 里没有的绑定团成员（调度模式团队从空名册起步）与其它来源一样经目录
     定位 + core 加载器），`desc` / `prompt` **只追加不覆盖**模板描述与人设，成员行写
     `options.agent_template`。外部运行时模板与 `spawn_teammate` 的外部 CLI 分支**共用**声明检查
     （`check_external_cli_declared`）与模型 / 认证回退 / 内置模型规则（`ExternalCliModelRules`），只对

@@ -10,7 +10,8 @@ team-specific slices line up with the harness sections (safety, tools,
 memory, workspace, ...) by priority.
 
 Section layout owned by this rail (see ``prompts/sections.py`` for
-builders). **The leader takes only two of them** — everything else is
+builders). **The leader takes only two of them** (three under scheduled
+dispatch with a bound AgentGroup) — everything else is
 disclosed by the ``build_team`` tool result instead (F_76), because the
 variant of each convention is not settled until that call is made:
 
@@ -20,6 +21,11 @@ variant of each convention is not settled until that call is made:
                            factory gates the ``swarmflow`` tool on), and the
                            instruction to form the team first.
   P:11  team_role        - role policy + execution mode (non-LEADER roles)
+  P:12  team_bound_group - LEADER only, scheduled dispatch with a bound
+                           AgentGroup and the expert tools wired: names the
+                           group and says to look for experts there first
+                           and spawn them on demand (the same signal that
+                           scopes ``view_experts`` to the group).
   P:12  team_hitt        - HITT collaboration contract (static rules, gated on
                            hitt_enabled). Human members are tagged ``[human]``
                            in the roster message, not listed inline.
@@ -47,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 from openjiuwen.agent_teams.inbound_render import drop_superseded_snapshots, render_clock, render_team_policy_inline
 from openjiuwen.agent_teams.prompts import (
     build_leader_bootstrap_section,
+    build_leader_bound_group_section,
     build_leader_policy_disclosure,
     build_leader_prebuilt_section,
     build_team_extra_section,
@@ -136,6 +143,7 @@ class TeamPolicyRail(DeepAgentRail):
         steer_batch_size: int = 2,
         fork_source: str | None = None,
         loader: TemplateLoader = load_template,
+        bound_group_name: str | None = None,
     ) -> None:
         super().__init__()
         self._language = language
@@ -179,6 +187,7 @@ class TeamPolicyRail(DeepAgentRail):
             hitt_enabled=hitt_enabled,
             swarmflow_enabled=swarmflow_enabled,
             bootstrap_mode=bootstrap_mode,
+            bound_group_name=bound_group_name,
         )
 
         # A framework-built team (F_122) has no ``build_team`` result to carry
@@ -475,6 +484,7 @@ class TeamPolicyRail(DeepAgentRail):
         hitt_enabled: bool,
         swarmflow_enabled: bool,
         bootstrap_mode: str,
+        bound_group_name: str | None,
     ) -> list[PromptSection]:
         """Construct the never-changing sections once at rail init time.
 
@@ -491,6 +501,7 @@ class TeamPolicyRail(DeepAgentRail):
                 base_prompt=base_prompt,
                 swarmflow_enabled=swarmflow_enabled,
                 bootstrap_mode=bootstrap_mode,
+                bound_group_name=bound_group_name if dispatch_mode == "scheduled" else None,
             )
         else:
             sections = build_team_static_sections(
@@ -521,6 +532,7 @@ class TeamPolicyRail(DeepAgentRail):
         base_prompt: str | None,
         swarmflow_enabled: bool,
         bootstrap_mode: str,
+        bound_group_name: str | None,
     ) -> list[PromptSection]:
         """Build the leader's prefix: an opening section, plus the caller's own prompt.
 
@@ -541,6 +553,17 @@ class TeamPolicyRail(DeepAgentRail):
                 loader=self._loader,
             )
         sections = [opening]
+        # Scheduled dispatch with a bound AgentGroup (F_125 decision 14): name
+        # the group so the leader looks for experts there first — the same
+        # signal that scopes ``view_experts`` to it.
+        if bound_group_name is not None:
+            sections.append(
+                build_leader_bound_group_section(
+                    group=bound_group_name,
+                    language=self._language,
+                    loader=self._loader,
+                )
+            )
         extra = build_team_extra_section(base_prompt=base_prompt, language=self._language)
         if extra is not None:
             sections.append(extra)

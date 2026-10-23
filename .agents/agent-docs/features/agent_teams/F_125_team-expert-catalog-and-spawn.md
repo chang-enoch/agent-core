@@ -121,8 +121,41 @@ author_email: chengshuo5@huawei.com
     分类与描述 ×1，显示名 / 描述 / 标签的所有语言都进文档。`view_expert_groups` 额外收入能力标签与团内可拉起成员
     （不含 `leader`）的名字、显示名、描述，先按 `capabilities` 过滤再排序。保留子串兜底，是因为 BM25 只匹配整词，
     `fin` 这样的前缀查询会变成无结果。
+14. **调度模式下绑定了专家团，专家检索默认限定在团内，leader 提示词点名当前专家团**（2026-10-24 追补）。
+    `view_experts` 新增可选 `group`：团名 = 在该专家团内 `list` / `get`（`list` 列出 `leader` 以外的成员，带
+    `spawnable` / `predefined`；`get` 的 `name` 是成员名，成员详情与 `view_expert_groups(member=)` 同一实现），
+    `"*"` = 只看单个专家，任意已安装的专家团都可以指定。**不传 `group` 时**，`dispatch_mode == "scheduled"` 且团队
+    绑定了专家团则默认绑定团，其余情况保持原来的单个专家视图。描述里讲默认范围的 capability 槽
+    `view_experts_bound_scope` 与之同一门控；默认范围内 `get` 找不到名字时，报错提示用 `group="*"` 看团外的单个专家。
+    同一条件（再加上宿主注入了专家目录，因为它点名的是专家工具）下 leader 系统提示词多一个 `team_bound_group`
+    section（P:12，`leader_bound_group.md`）：团名，以及「先在团内找，团外显式传 `group`」（决策 15 起不列成员），
+    前缀逐字节稳定。`autonomous` 不受影响：绑定团的成员已是预定义成员，自主认领模式下 leader 选人的方式没变。
+15. **调度模式下选定专家团，团队从空名册起步，团内成员按需加载**（2026-10-24 追补）。宿主（jiuwenswarm
+    `_apply_agent_group`）在 `dispatch_mode == "scheduled"` 时只设 `agent_group_name`、给 leader 套专家团 leader 模板，
+    **不组装团内成员**（不写 `predefined_members`、不写 `agents[成员]`、不设 `team_mode`，名册为空时推导为 `default`）；
+    其余模式照旧写成 hybrid 预定义名册。core 不新增配置项，绑定团里 spec 没有的成员一律按需从已安装的包加载，与拉起
+    非绑定团成员同一条路：
+    - `ExpertTemplateResolver`（`spawn_expert` 与调度模式内联成员共用）：`group` 是绑定团、且成员在 spec 里时照旧取 spec
+      （决策 6）；不在时落到经目录定位 + `aload_agent_group_package` 的分支，快照随成员行持久化，冷恢复只读成员行。
+    - swarmflow：`BoundGroupExpertLoader`（`workflow/backends/expert_specs.py`）在专家表查不到 `agent_template` 时经目录
+      加载该成员，`compose_template_member` 套在 worker 基线 spec 上、`tools` 清空——与专家表条目的装配逐项相同；加载结果
+      在本次 run 内缓存。`TeamWorkerBackend._gate_agent_template` 因此改为 `async`（`AvatarSessionManager` 的 gate 同步改为
+      await）。加载器只在注入了专家目录、团队绑定了专家团时由 `SwarmflowTool` 构造（`bound_group_expert_loader`）。
+    - `team_bound_group` section 改为只写团名、不列成员：成员由 `view_experts` 查，提示词不需要读包。
 
 ## 拒绝的方案
+
+- **调度模式下由 core 在 `build_team` 时跳过绑定团的预定义成员**：`predefined_members` 的含义随 dispatch_mode 变化，
+  `team_mode` 推导、hybrid 工作流文案、工作空间命名都按"预定义=会注册"处理，会处处出现特例。
+- **新增 `TeamAgentSpec.agent_group_members`（只作模板、不进名册的成员条目）**：能让绑定团成员继续从 spec 取、版本在
+  建队时固定，但多一个配置项和一套两源合并逻辑；而名册为空时不存在「与预定义成员同源」的需求（决策 6 的前提），按需
+  加载即可。代价是建队后升级 / 卸载包会影响之后拉起的成员，已拉起的成员靠成员行快照不受影响。
+- **提示词列出团内成员**：要么在 rail 构造期读包（文件 IO），要么依赖 spec 里的成员；只写团名，成员交给 `view_experts`。
+
+- **绑定团时 `view_experts` 完全看不到团外**（`group` 只接受绑定团名）：用户确认要保留去团外找的出口；改为默认团内、
+  显式 `group` 出团。
+- **只在 `view_experts` 的描述里写绑定团**：工具描述是静态文案，团名只能在提示词里给；放进系统提示词，leader 在
+  规划阶段就知道该先看哪个团。
 
 - **检索放在宿主（jiuwenswarm 的市场列表 RPC）里做**：leader 看到的列表来自本工具，宿主的市场接口只服务 Web 管理面板；
   在宿主排序改变不了 leader 的结果，还要求每个宿主各写一遍。
@@ -185,6 +218,20 @@ TeamMember.options.agent_template = {
   名字完全一致置顶、前缀查询经子串兜底仍能命中；专家团按团内成员的显示名检索、`capabilities` 先过滤；
   `_rank_by_query` 的置顶 / 分数 / 子串兜底顺序与同分保序。`tests/unit_tests/agent_teams` 3957 passed / 36 skipped /
   2 xfailed。
+- 决策 14：`tools/test_tool_expert.py` 新增 3 个用例——调度模式 + 绑定团时不传 `group` 只列团内成员（不含 `leader`、
+  标 `predefined`、未声明 CLI 的外部成员 `spawnable=false`）、团内检索、团内 `get`、团外名字的报错指路 `group="*"`、
+  `group="*"` 回到单个专家、描述带默认范围一节；autonomous 下默认仍是单个专家且描述无该节、无残留占位符；`group`
+  可指定任意已安装专家团，未安装的团与团内不存在的成员报错。`test_team_policy_rail.py` 新增 2 个用例——
+  `team_bound_group` 只在调度模式出现；
+  `_expert_scope_group` 没有专家目录时不给出绑定团。`tests/unit_tests/agent_teams` 4010 passed / 36 skipped / 2 xfailed。
+- 决策 15：`tools/test_tool_expert.py` 新增 1 个用例——团队绑定了专家团但 spec 里没有成员时，`view_experts` 默认列出团内
+  成员且都不标 `predefined`，`spawn_expert` 经目录拉起 `clip`（显示名不加后缀、快照等于包内模板），绑定团非成员的报错改为
+  走目录分支的「不是该专家团的成员」。`workflow/test_worker_backend.py` 新增 3 个用例：专家表缺失时经加载器取成员且只加载
+  一次、专家表优先于加载器、非成员与加载失败在发射前报不可重试错误。`workflow/test_expert_specs.py` 新增 1 个用例：
+  `BoundGroupExpertLoader` 的装配与 `compose_template_member` 一致、`tools` 清空、外部成员标外部、`leader` 与非成员返回
+  `None`。`test_team_policy_rail.py` 的 section 用例改为只断言团名。`tests/unit_tests/agent_teams` 4015 passed / 36 skipped /
+  2 xfailed。jiuwenswarm `test_swarmflow_expert_fixture.py` 新增 2 个参数化用例：autonomous 照旧写 hybrid 预定义名册，
+  scheduled 名册为空、不写 `agents[成员]`、不设 `team_mode`，leader 模板两种模式都套上。
 
 ## 已知遗留
 
@@ -198,3 +245,13 @@ TeamMember.options.agent_template = {
 - 组织功能的 `ExpertGroupCatalog` 与本目录并存，收编见 SDD-0032 §12。
 - 决策 13 的中文单字也算一个词：所有专家的显示名都带「专家」时，查「理财专家」会把每个专家都列出来（无关的排在后面）。
   专家数量大到列表影响 token 成本时，再考虑截断或给 `list` 加数量上限。
+- 决策 14 的团内 `list` / `get` 读磁盘上的专家团卡片：绑定团的包在建队后被卸载，团内检索会报「未安装」。
+  预定义了团内成员的团队（非调度模式）里 `spawn_expert` 仍能从 spec 拉起，两者表现不一致；真遇到时再给绑定团加 spec 兜底。
+- 决策 15 的团内成员不在建队时固定版本：调度模式团队绑定的包在建队后被升级，之后按需拉起的成员（`spawn_expert` /
+  内联成员 / swarmflow `agent_template`）用新版；被卸载则拉不起来，报「未安装」。已经拉起的成员靠成员行快照恢复，但快照
+  里的技能 / 工具 / rail 路径仍指向包内（见上一条「包目录被物理删除」），包被删后重建同样进 `ERROR`。
+- 专家成员的技能可见性允许列表取自成员 spec 的 `skills`（teammate 基线技能 + 模板技能名）：基线没配 `skills` 时，允许
+  列表只有模板技能（含专家团共享技能），成员看不到全局技能库里的其它技能。预定义与按需拉起的成员一致，属既有口径，
+  如需让专家同时看到全局库，要在可见性种子上另行设计。
+- jiuwenswarm 锁定的 core 版本（`pyproject.toml` 的三处 sha 与 `uv.lock`）尚未升级到包含决策 13–15 的提交：未升级前
+  jiuwenswarm 装到的是旧 core，调度模式团队按需拉起团内成员会失败（旧版 `spawn_expert` 只认 spec 里的绑定团成员）。

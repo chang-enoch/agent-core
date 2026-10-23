@@ -212,7 +212,11 @@ STRINGS: dict[str, str] = {
     # view_experts._desc lives in descs/cn/expert/view_experts.md
     "view_experts.action": "list（默认）列出已安装的单个专家；get 查看一个专家的完整信息",
     "view_experts.query": "仅 list 使用：按相关度检索，结果最相关的排前面；包名完全一致的排第一",
-    "view_experts.name": "get 必填：专家的包名（list 结果中的 name，不是显示名）",
+    "view_experts.group": (
+        "可选：在这个专家团内检索 / 查看（list 列出团内可拉起的成员，get 的 name 是成员名）；"
+        "填 \"*\" 表示只看不属于任何专家团的单个专家"
+    ),
+    "view_experts.name": "get 必填：专家的包名（list 结果中的 name，不是显示名）；在专家团内查看时是成员名",
     # ===== view_expert_groups ==================================================
     # view_expert_groups._desc lives in descs/cn/expert/view_expert_groups.md
     "view_expert_groups.action": "list（默认）列出已安装的专家团；get 查看一个专家团及其成员表",

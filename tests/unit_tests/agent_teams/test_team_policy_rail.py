@@ -20,6 +20,7 @@ from openjiuwen.agent_teams.prompts import (
     build_team_workflow_section,
     load_template,
 )
+from openjiuwen.agent_teams.experts.bound_group import BoundAgentGroup
 from openjiuwen.agent_teams.inbound_render import render_event
 from openjiuwen.agent_teams.rails import TeamPolicyRail
 from openjiuwen.agent_teams.schema.team import TeamRole
@@ -609,6 +610,24 @@ class TestTeamPolicyRailStaticSections:
 
             bootstrap = builder.get_all_sections()[TeamSectionName.BOOTSTRAP].render("cn")
             assert ("swarmflow" in bootstrap.lower()) is swarmflow_enabled
+
+    @pytest.mark.asyncio
+    @pytest.mark.level1
+    async def test_leader_rail_names_the_bound_group_only_under_scheduled_dispatch(self):
+        rendered: dict[str, str | None] = {}
+        for dispatch_mode in ("scheduled", "autonomous"):
+            builder = SystemPromptBuilder(language="cn")
+            rail = _leader_rail(dispatch_mode=dispatch_mode, bound_group_name="designer")
+            rail.init(_StubAgent(builder))
+            await rail.before_model_call(_StubContext())
+            section = builder.get_all_sections().get(TeamSectionName.BOUND_GROUP)
+            rendered[dispatch_mode] = section.render("cn") if section is not None else None
+
+        assert rendered["autonomous"] is None, "autonomous dispatch keeps the unscoped expert view"
+        text = rendered["scheduled"]
+        assert "`designer`" in text
+        assert 'spawn_expert(expert=<成员名>, group="designer")' in text
+        assert "{{" not in text
 
     @pytest.mark.asyncio
     @pytest.mark.level1
@@ -1978,3 +1997,20 @@ async def test_clock_anchor_follows_superseded_board_pruning():
     assert old_board not in batch
     assert batch[-1] == new_board
     assert sum(1 for part in batch if _CLOCK_PATTERN.fullmatch(part)) == 1
+
+
+@pytest.mark.level1
+def test_policy_rail_takes_the_bound_group_only_with_the_expert_catalog():
+    from types import SimpleNamespace
+
+    from openjiuwen.agent_teams.rails.elements import _expert_scope_group
+    from openjiuwen.agent_teams.rails.team_context import ExpertBinding, TeamHandleKey
+
+    binding = ExpertBinding(bound_group=BoundAgentGroup(name="designer"))
+    with_catalog = SimpleNamespace(
+        extras={TeamHandleKey.EXPERT_CATALOG: object(), TeamHandleKey.EXPERT_BINDING: binding},
+    )
+    without_catalog = SimpleNamespace(extras={TeamHandleKey.EXPERT_BINDING: binding})
+
+    assert _expert_scope_group(with_catalog) == "designer"
+    assert _expert_scope_group(without_catalog) is None, "the section names expert tools that are not wired"

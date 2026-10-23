@@ -61,6 +61,12 @@ if TYPE_CHECKING:
 
 _MANIFEST = "manifest.json"
 
+#: ``view_experts(group=...)`` value that leaves every AgentGroup and browses the single experts.
+STANDALONE_EXPERTS = "*"
+
+#: Description slot of ``view_experts`` that documents the bound-group default scope.
+_BOUND_SCOPE_SLOT = "view_experts_bound_scope"
+
 #: Field weights of the ``list`` search documents (see ``_search_document``).
 _NAME_WEIGHT = 3
 _DISPLAY_NAME_WEIGHT = 3
@@ -239,6 +245,70 @@ def _render_expert_detail(detail: dict[str, Any], *, header: str) -> str:
     return "\n".join(lines)
 
 
+async def _read_installed_group(catalog: ExpertCatalog, name: str) -> tuple[PackageLocation, AgentGroupCard]:
+    """Locate and read one installed AgentGroup card.
+
+    Raises:
+        ValueError: The group is not installed or its card cannot be read; the
+            message is the model-facing reason.
+    """
+    try:
+        location = await catalog.locate_group(name)
+    except ValueError:
+        installed = [item.name for item in await catalog.list_group_packages()]
+        raise ValueError(
+            f"Expert group '{name}' is not installed (installed: {', '.join(installed) or '<none>'})"
+        ) from None
+    try:
+        card = await _group_card(location)
+    except ValueError as exc:
+        team_logger.warning("[expert] unreadable expert group {!r} at {}: {}", name, location.path, exc)
+        raise ValueError(f"Expert group '{name}' cannot be read: {exc}") from exc
+    return location, card
+
+
+def _is_predefined_member(group: str, member: str, bound_group: BoundAgentGroup | None) -> bool:
+    """Whether ``group/member`` is a predefined member of this team's bound AgentGroup."""
+    return bound_group is not None and bound_group.name == group and bound_group.member(member) is not None
+
+
+def _group_member_detail(
+    location: PackageLocation,
+    entry: AgentGroupMemberCard,
+    language: str,
+    *,
+    bound_group: BoundAgentGroup | None,
+    declared_cli_kinds: frozenset[str],
+) -> dict[str, Any]:
+    """Every card field of one AgentGroup member plus its group / spawnable / predefined flags."""
+    detail = _expert_detail(entry.name, entry.card, language, source=None)
+    detail.update(
+        {
+            "group": location.name,
+            "display_name": entry.display_label(language),
+            "spawnable": _is_spawnable(entry, declared_cli_kinds),
+            "predefined": _is_predefined_member(location.name, entry.name, bound_group),
+        }
+    )
+    return detail
+
+
+def _render_group_member_detail(member: dict[str, Any]) -> str:
+    text = _render_expert_detail(member, header=f"Expert group member {member['group']}/{member['name']}:")
+    text += f"\nspawnable: {str(member['spawnable']).lower()}"
+    if member["predefined"]:
+        text += (
+            f"\nThis team already has the predefined member '{member['name']}'; "
+            "spawn_expert creates another instance of the same expert under a new member_name."
+        )
+    return text
+
+
+def _missing_member_error(name: str, location: PackageLocation, card: AgentGroupCard) -> str:
+    names = ", ".join(item.name for item in card.members)
+    return f"Member '{name}' is not in expert group '{location.name}' (members: {names})"
+
+
 def _is_spawnable(member: AgentGroupMemberCard, declared_cli_kinds: frozenset[str]) -> bool:
     """Whether ``spawn_expert`` can run this member: native, or an external runtime the team declared."""
     from openjiuwen.agent_teams.external.manifest import cli_agent_for_provider
@@ -253,10 +323,42 @@ def _is_spawnable(member: AgentGroupMemberCard, declared_cli_kinds: frozenset[st
 class ViewExpertsTool(TeamTool):
     """List / inspect the single experts (``agent_template`` packages) installed on this machine."""
 
-    def __init__(self, catalog: ExpertCatalog, t: Translator, *, language: str):
-        super().__init__(ToolCard(id="team.view_experts", name="view_experts", description=t("view_experts")))
+    def __init__(
+        self,
+        catalog: ExpertCatalog,
+        t: Translator,
+        *,
+        language: str,
+        bound_group: BoundAgentGroup | None = None,
+        dispatch_mode: str = "autonomous",
+        declared_cli_kinds: frozenset[str] = frozenset(),
+    ):
+        """Build the view_experts tool.
+
+        Args:
+            catalog: Host catalog that locates the installed packages.
+            t: Locale-bound translator.
+            language: Language the card texts are rendered in.
+            bound_group: The AgentGroup this team was assembled from, if any.
+            dispatch_mode: The team's dispatch mode. Under ``scheduled`` with a
+                bound group, a call without ``group`` is scoped to that group;
+                the description slot documenting it is gated on the same signal.
+            declared_cli_kinds: External CLI kinds this team declared (the
+                ``spawnable`` flag of external-runtime group members).
+        """
+        scoped = dispatch_mode == "scheduled" and bound_group is not None
+        super().__init__(
+            ToolCard(
+                id="team.view_experts",
+                name="view_experts",
+                description=t("view_experts", omit=None if scoped else frozenset({_BOUND_SCOPE_SLOT})),
+            )
+        )
         self._catalog = catalog
         self._language = language
+        self._bound_group = bound_group
+        self._declared_cli_kinds = declared_cli_kinds
+        self._default_group = bound_group.name if scoped else None
         self.card.input_params = {
             "type": "object",
             "properties": {
@@ -267,22 +369,89 @@ class ViewExpertsTool(TeamTool):
                     "description": t("view_experts", "action"),
                 },
                 "query": {"type": "string", "description": t("view_experts", "query")},
+                "group": {"type": "string", "description": t("view_experts", "group")},
                 "name": {"type": "string", "description": t("view_experts", "name")},
             },
             "required": [],
         }
 
+    def _scope(self, group: str | None) -> str | None:
+        """The AgentGroup a call browses, or ``None`` for the single experts.
+
+        ``group="*"`` always means the single experts; an omitted ``group``
+        falls back to the bound group when this team scopes to it.
+        """
+        if group == STANDALONE_EXPERTS:
+            return None
+        return group or self._default_group
+
     async def invoke(self, inputs: dict[str, Any], **kwargs) -> ToolOutput:
         action = inputs.get("action") or "list"
+        group = self._scope(_optional_text(inputs.get("group")))
         try:
             if action == "list":
-                return await self._list(_optional_text(inputs.get("query")))
+                query = _optional_text(inputs.get("query"))
+                return await (self._list(query) if group is None else self._list_group(group, query))
             if action == "get":
-                return await self._get(_optional_text(inputs.get("name")))
+                name = _optional_text(inputs.get("name"))
+                return await (self._get(name) if group is None else self._get_group_member(group, name))
         except Exception as exc:
             team_logger.error("view_experts failed: {}", exc)
             return ToolOutput(success=False, error=f"Internal error: {exc}")
         return ToolOutput(success=False, error=f"Unknown action '{action}'; expected 'list' or 'get'")
+
+    async def _list_group(self, group: str, query: str | None) -> ToolOutput:
+        try:
+            location, card = await _read_installed_group(self._catalog, group)
+        except ValueError as exc:
+            return ToolOutput(success=False, error=str(exc))
+        members = [entry for entry in card.members if not entry.is_leader]
+        order = _rank_by_query(
+            query,
+            [entry.name for entry in members],
+            [_expert_document(entry.name, entry.card) for entry in members],
+        )
+        ranked = [members[index] for index in order]
+        language = self._language
+        items = [
+            {
+                "name": entry.name,
+                "display_name": entry.display_label(language),
+                "category": entry.card.category,
+                "runtime": _runtime_label(entry.card),
+                "description": _first_line(entry.card.display_text(language)),
+                "spawnable": _is_spawnable(entry, self._declared_cli_kinds),
+                "predefined": _is_predefined_member(location.name, entry.name, self._bound_group),
+            }
+            for entry in ranked
+        ]
+        bound = self._bound_group is not None and self._bound_group.name == location.name
+        return ToolOutput(
+            success=True,
+            data={"action": "list", "query": query, "group": location.name, "bound": bound, "experts": items},
+        )
+
+    async def _get_group_member(self, group: str, name: str | None) -> ToolOutput:
+        if name is None:
+            return ToolOutput(success=False, error="'name' is required for action 'get'")
+        try:
+            location, card = await _read_installed_group(self._catalog, group)
+        except ValueError as exc:
+            return ToolOutput(success=False, error=str(exc))
+        entry = card.member(name)
+        if entry is None:
+            error = _missing_member_error(name, location, card)
+            if group == self._default_group:
+                error += f"; pass group='{STANDALONE_EXPERTS}' to view a single expert outside the group"
+            return ToolOutput(success=False, error=error)
+        detail = _group_member_detail(
+            location,
+            entry,
+            self._language,
+            bound_group=self._bound_group,
+            declared_cli_kinds=self._declared_cli_kinds,
+        )
+        return ToolOutput(success=True, data={"action": "get", "member": detail})
 
     async def _list(self, query: str | None) -> ToolOutput:
         cards = await _read_cards(await self._catalog.list_expert_packages(), _expert_card, kind="expert")
@@ -303,7 +472,7 @@ class ViewExpertsTool(TeamTool):
             }
             for location, card in ranked
         ]
-        return ToolOutput(success=True, data={"action": "list", "query": query, "experts": items})
+        return ToolOutput(success=True, data={"action": "list", "query": query, "group": None, "experts": items})
 
     async def _get(self, name: str | None) -> ToolOutput:
         if name is None:
@@ -328,8 +497,12 @@ class ViewExpertsTool(TeamTool):
         if not output.success:
             return output.error or "Failed to view experts"
         data = output.data
+        if data["action"] == "get" and "member" in data:
+            return _render_group_member_detail(data["member"])
         if data["action"] == "get":
             return _render_expert_detail(data["expert"], header="Expert:")
+        if data["group"] is not None:
+            return self._render_group_list(data)
         experts = data["experts"]
         if not experts:
             return f"No installed expert matches '{data['query']}'" if data["query"] else "No experts installed"
@@ -338,6 +511,28 @@ class ViewExpertsTool(TeamTool):
             f"runtime={item['runtime']} — {item['description']}"
             for item in experts
         )
+
+    @staticmethod
+    def _render_group_list(data: dict[str, Any]) -> str:
+        """One line per member of the browsed AgentGroup, headed by the group and how to spawn from it."""
+        group = data["group"]
+        experts = data["experts"]
+        if not experts:
+            if data["query"]:
+                return f"No expert in expert group '{group}' matches '{data['query']}'"
+            return f"Expert group '{group}' has no spawnable members"
+        bound = " (the group this team was assembled from)" if data["bound"] else ""
+        lines = [
+            f"Experts in expert group '{group}'{bound}; "
+            f"spawn one with spawn_expert(expert=<name>, group='{group}'):"
+        ]
+        for item in experts:
+            note = " predefined=true" if item["predefined"] else ""
+            lines.append(
+                f"name={item['name']} display_name={item['display_name']} category={item['category'] or '-'} "
+                f"runtime={item['runtime']} spawnable={str(item['spawnable']).lower()}{note} — {item['description']}"
+            )
+        return "\n".join(lines)
 
 
 class ViewExpertGroupsTool(TeamTool):
@@ -429,36 +624,21 @@ class ViewExpertGroupsTool(TeamTool):
         if name is None:
             return ToolOutput(success=False, error="'name' is required for action 'get'")
         try:
-            location = await self._catalog.locate_group(name)
-        except ValueError:
-            installed = [item.name for item in await self._catalog.list_group_packages()]
-            return ToolOutput(
-                success=False,
-                error=f"Expert group '{name}' is not installed (installed: {', '.join(installed) or '<none>'})",
-            )
-        try:
-            card = await _group_card(location)
+            location, card = await _read_installed_group(self._catalog, name)
         except ValueError as exc:
-            team_logger.warning("[expert] unreadable expert group {!r} at {}: {}", name, location.path, exc)
-            return ToolOutput(success=False, error=f"Expert group '{name}' cannot be read: {exc}")
+            return ToolOutput(success=False, error=str(exc))
         language = self._language
         bound = location.name == self._bound_name()
         if member is not None:
             entry = card.member(member)
             if entry is None:
-                names = ", ".join(item.name for item in card.members)
-                return ToolOutput(
-                    success=False,
-                    error=f"Member '{member}' is not in expert group '{name}' (members: {names})",
-                )
-            detail = _expert_detail(entry.name, entry.card, language, source=None)
-            detail.update(
-                {
-                    "group": location.name,
-                    "display_name": entry.display_label(language),
-                    "spawnable": _is_spawnable(entry, self._declared_cli_kinds),
-                    "predefined": bound and self._is_predefined(entry.name),
-                }
+                return ToolOutput(success=False, error=_missing_member_error(member, location, card))
+            detail = _group_member_detail(
+                location,
+                entry,
+                language,
+                bound_group=self._bound_group,
+                declared_cli_kinds=self._declared_cli_kinds,
             )
             return ToolOutput(success=True, data={"action": "get", "member": detail})
         group = {
@@ -476,30 +656,19 @@ class ViewExpertGroupsTool(TeamTool):
                     "description": _first_line(entry.card.display_text(language)),
                     "runtime": _runtime_label(entry.card),
                     "spawnable": _is_spawnable(entry, self._declared_cli_kinds),
-                    "predefined": bound and self._is_predefined(entry.name),
+                    "predefined": _is_predefined_member(location.name, entry.name, self._bound_group),
                 }
                 for entry in card.members
             ],
         }
         return ToolOutput(success=True, data={"action": "get", "group": group})
 
-    def _is_predefined(self, member: str) -> bool:
-        return self._bound_group is not None and self._bound_group.member(member) is not None
-
     def render_for_llm(self, output: ToolOutput) -> str:
         if not output.success:
             return output.error or "Failed to view expert groups"
         data = output.data
         if data["action"] == "get" and "member" in data:
-            member = data["member"]
-            text = _render_expert_detail(member, header=f"Expert group member {member['group']}/{member['name']}:")
-            text += f"\nspawnable: {str(member['spawnable']).lower()}"
-            if member["predefined"]:
-                text += (
-                    f"\nThis team already has the predefined member '{member['name']}'; "
-                    "spawn_expert creates another instance of the same expert under a new member_name."
-                )
-            return text
+            return _render_group_member_detail(data["member"])
         if data["action"] == "get":
             group = data["group"]
             lines = [f"Expert group: {group['name']} ({group['display_name']})"]
@@ -561,9 +730,12 @@ class ExpertUnavailable(Exception):
 class ExpertTemplateResolver:
     """Resolves an expert template for a new member: ``spawn_expert`` and scheduled ``create_task``'s inline member.
 
-    The template comes from the team's own bound AgentGroup when ``group``
-    names it (no disk access, same snapshot and persona as the predefined
-    member), otherwise from the catalog + core loaders. Personas render in
+    A member of the team's bound AgentGroup that the host assembled into the
+    team spec is taken from that spec (no disk access, same snapshot and
+    persona as the predefined member). Every other template — including a
+    bound-group member left out of the spec, as in a scheduled team that
+    starts with an empty roster — is loaded on demand through the catalog +
+    core loaders. Personas render in
     ``persona_language`` (the base spec's, as ``compose_template_member``
     does); display names in the leader's ``language``.
     """
@@ -588,13 +760,12 @@ class ExpertTemplateResolver:
         if group is not None and expert == LEADER_MEMBER:
             raise ExpertUnavailable(f"The leader of expert group '{group}' cannot be spawned as a teammate")
         bound = self._bound_group
-        if group is not None and bound is not None and group == bound.name:
-            member = bound.member(expert)
-            if member is None:
-                raise ExpertUnavailable(
-                    f"'{expert}' is not a spawnable member of the bound expert group '{group}' "
-                    f"(members: {', '.join(bound.member_names()) or '<none>'})"
-                )
+        # A bound member the host assembled into the team spec is spawned from
+        # that spec, same-source as its predefined instance. A bound group
+        # whose members were left out of the spec (a scheduled team starts
+        # with an empty roster) is loaded on demand like any other group.
+        member = bound.member(expert) if group is not None and bound is not None and group == bound.name else None
+        if member is not None:
             return ExpertTemplate(
                 ref=ExpertRef(name=expert, group=group),
                 version="",

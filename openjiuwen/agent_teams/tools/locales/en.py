@@ -274,7 +274,14 @@ STRINGS: dict[str, str] = {
     "view_experts.query": (
         "list only: relevance search, most relevant first; an exact package-name match comes first"
     ),
-    "view_experts.name": "Required for get: the expert's package name (name in the list, not the display name)",
+    "view_experts.group": (
+        "Optional: search / show within this expert group (list returns its spawnable members, get takes a "
+        "member name); \"*\" shows only the single experts that belong to no group"
+    ),
+    "view_experts.name": (
+        "Required for get: the expert's package name (name in the list, not the display name); "
+        "the member name when viewing within an expert group"
+    ),
     # ===== view_expert_groups ==================================================
     # view_expert_groups._desc lives in descs/en/expert/view_expert_groups.md
     "view_expert_groups.action": (

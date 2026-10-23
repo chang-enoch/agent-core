@@ -60,6 +60,7 @@ class TeamSectionName:
 
     BOOTSTRAP = "team_bootstrap"
     PREBUILT = "team_prebuilt"
+    BOUND_GROUP = "team_bound_group"
     ROLE = "team_role"
     HITT = "team_hitt"
     BRIDGE = "team_bridge"
@@ -77,6 +78,7 @@ class TeamSectionName:
 # A-class md frontmatter, so there is no on-disk copy to drift from.
 SECTION_PRIORITY: dict[str, int] = {
     TeamSectionName.ROLE: 11,
+    TeamSectionName.BOUND_GROUP: 12,
     TeamSectionName.HITT: 12,
     TeamSectionName.BRIDGE: 12,
     TeamSectionName.WORKFLOW: 13,
@@ -181,6 +183,38 @@ def build_leader_bootstrap_section(
         name=TeamSectionName.BOOTSTRAP,
         content={language: f"{body}\n"},
         priority=11,
+    )
+
+
+def build_leader_bound_group_section(
+    *,
+    group: str,
+    language: str = "cn",
+    loader: TemplateLoader = load_template,
+) -> PromptSection:
+    """Build the leader section naming the AgentGroup the team is bound to.
+
+    Added only under scheduled dispatch with a bound group and the expert
+    tools wired — the same signal that scopes ``view_experts`` to the group —
+    so the prompt that says "look inside this group first" and the tool that
+    does it appear together. It names the group only: the members are found
+    with ``view_experts`` and spawned on demand, so nothing here reads the
+    package and the prefix stays byte-stable.
+
+    Args:
+        group: The bound AgentGroup's name.
+        language: Prompt language ('cn' or 'en').
+        loader: Template loader (the per-team workspace loader, or the
+            framework default).
+
+    Returns:
+        PromptSection naming the bound group.
+    """
+    body = loader("leader_bound_group", language).format({"group": group}).content.strip()
+    return PromptSection(
+        name=TeamSectionName.BOUND_GROUP,
+        content={language: f"{body}\n"},
+        priority=SECTION_PRIORITY[TeamSectionName.BOUND_GROUP],
     )
 
 
@@ -942,6 +976,7 @@ def build_team_member_system_prompt(
 __all__ = [
     "TeamSectionName",
     "build_leader_bootstrap_section",
+    "build_leader_bound_group_section",
     "build_leader_policy_disclosure",
     "build_leader_prebuilt_section",
     "build_team_bridge_section",

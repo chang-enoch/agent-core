@@ -361,6 +361,7 @@ def create_team_tools(
                 catalog=expert_catalog,
                 binding=expert_binding,
                 language=lang,
+                dispatch_mode=dispatch_mode,
                 model_config_allocator=model_config_allocator,
                 resolver=expert_resolver,
             )
@@ -477,6 +478,7 @@ def _expert_tools(
     catalog: "ExpertCatalog",
     binding: "ExpertBinding | None",
     language: str,
+    dispatch_mode: str,
     model_config_allocator: Any,
     resolver: Any,
 ) -> dict[str, Tool]:
@@ -485,7 +487,14 @@ def _expert_tools(
 
     bound_group = binding.bound_group if binding is not None else None
     return {
-        "view_experts": ViewExpertsTool(catalog, t, language=language),
+        "view_experts": ViewExpertsTool(
+            catalog,
+            t,
+            language=language,
+            bound_group=bound_group,
+            dispatch_mode=dispatch_mode,
+            declared_cli_kinds=agent_team.external_cli_kinds(),
+        ),
         "view_expert_groups": ViewExpertGroupsTool(
             catalog,
             t,
