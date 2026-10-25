@@ -352,12 +352,19 @@ class TestTeamDatabaseInit:
 
                 columns = {col["name"] for col in inspect(conn).get_columns("team_task_presubtask")}
                 row = (
-                    conn.exec_driver_sql("SELECT parent_task_id, created_by, resume_pending FROM team_task_presubtask")
+                    conn.exec_driver_sql(
+                        "SELECT parent_task_id, created_by, resume_pending, revision, observed_revision, "
+                        "parent_revision, change_notes FROM team_task_presubtask"
+                    )
                     .mappings()
                     .one()
                 )
 
             assert {"parent_task_id", "created_by", "resume_pending"} <= columns
+            # F_129: task versioning columns, zero for old rows ("unedited, seen").
+            assert {"revision", "observed_revision", "parent_revision", "change_notes"} <= columns
+            versions = (row["revision"], row["observed_revision"], row["parent_revision"], row["change_notes"])
+            assert versions == (0, 0, 0, None)
             assert row["parent_task_id"] is None
             assert row["created_by"] is None
             assert not row["resume_pending"]

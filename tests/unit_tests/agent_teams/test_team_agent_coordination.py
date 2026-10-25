@@ -1417,8 +1417,11 @@ async def test_task_claimed_for_self_uses_teammate_template():
 
     agent._configurator.task_manager = MagicMock()
     agent._configurator.task_manager.get = AsyncMock(
-        return_value=MagicMock(task_id="task-42", title="Fix bug", content="reproduce and fix", status="pending")
+        return_value=MagicMock(
+            task_id="task-42", title="Fix bug", content="reproduce and fix", status="pending", revision=0
+        )
     )
+    agent._configurator.task_manager.observe_revision = AsyncMock()
     agent._is_agent_running = lambda: False
     agent.deliver_input = AsyncMock()
 
