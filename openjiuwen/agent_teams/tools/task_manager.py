@@ -95,6 +95,16 @@ def _json_write(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _stale_against(task: TeamTaskBase, revisions: dict[str, int]) -> tuple[int, int] | None:
+    """``(parent revision, based-on revision)`` when an open subtask lags its parent (F_129)."""
+    if not task.parent_task_id or task.status in TASK_TERMINAL_STATUSES:
+        return None
+    parent_revision = revisions.get(task.parent_task_id)
+    if parent_revision is None or (task.parent_revision or 0) >= parent_revision:
+        return None
+    return parent_revision, task.parent_revision or 0
+
+
 class TeamTaskManager:
     """Manager for team tasks
 
@@ -240,6 +250,7 @@ class TeamTaskManager:
                     max_review_rounds=spec.max_review_rounds,
                     parent_task_id=spec.parent_task_id,
                     created_by=spec.created_by,
+                    parent_revision=spec.parent_revision,
                 )
             )
             edges.extend((task_id, dep_id) for dep_id in spec.depends_on)
@@ -357,6 +368,9 @@ class TeamTaskManager:
         for dep in all_deps:
             if not dep.resolved:
                 unresolved_by_task[dep.task_id].append(dep.depends_on_task_id)
+        # A filtered list may leave the parent out; its revision still decides staleness.
+        board = tasks if status is None else await self.list_tasks()
+        revisions = {task.task_id: task.revision or 0 for task in board}
         summaries = [
             TaskSummary(
                 task_id=task.task_id,
@@ -365,6 +379,7 @@ class TeamTaskManager:
                 assignee=task.assignee,
                 blocked_by=unresolved_by_task.get(task.task_id, []),
                 parent_task_id=task.parent_task_id,
+                stale_against=_stale_against(task, revisions),
                 updated_at=task.updated_at,
             )
             for task in tasks
@@ -391,7 +406,10 @@ class TeamTaskManager:
         blocked_by = [d.depends_on_task_id for d in deps if not d.resolved]
 
         blocks = await self.db.task.get_dependent_task_ids(task_id)
-        subtasks = [sub_id for sub_id, _status in await self.db.task.get_subtask_statuses(self.team_name, task_id)]
+        subtask_rows = await self.db.task.get_subtasks(self.team_name, task_id)
+        subtasks = [row.task_id for row in subtask_rows]
+        revisions = {task.task_id: task.revision or 0}
+        stale_subtasks = [row.task_id for row in subtask_rows if _stale_against(row, revisions) is not None]
 
         return TaskDetail(
             task_id=task.task_id,
@@ -408,6 +426,8 @@ class TeamTaskManager:
             blocks=blocks,
             parent_task_id=task.parent_task_id,
             subtasks=subtasks,
+            stale_subtasks=stale_subtasks,
+            revision=task.revision or 0,
             updated_at=task.updated_at,
         )
 
@@ -1556,27 +1576,42 @@ class TeamTaskManager:
         task_id: str,
         title: Optional[str] = None,
         content: Optional[str] = None,
+        *,
+        change_note: Optional[str] = None,
+        parent_revision: Optional[int] = None,
     ) -> TaskOpResult:
-        """Update task title / content.
+        """Update task title / content, bumping its revision (F_129).
 
-        Publishes ``TASK_UPDATED`` on success, carrying the post-write
-        status so a consumer whose view missed a transition can resync
-        from the event itself. Does not bump the task's ``updated_at``
-        column — that timestamp tracks status transitions only.
+        Publishes ``TASK_UPDATED`` when the edit actually changed the task,
+        carrying the post-write status and revision so a consumer whose view
+        missed a transition can resync from the event itself. Does not bump
+        the task's ``updated_at`` column — that timestamp tracks status
+        transitions only.
 
         Args:
             task_id: Task identifier.
             title: Optional new title.
             content: Optional new content.
+            change_note: What changed and why, stored against the new
+                revision and shown to the assignee with the revision (D8).
+            parent_revision: Re-align a subtask with its parent's revision
+                (the subtask owner's review, D5).
 
         Returns:
-            ``TaskOpResult`` describing the outcome.
+            ``TaskOpResult``; ``data`` carries ``revision`` and ``revised``.
         """
         task = await self.get(task_id)
         if not task:
             return TaskOpResult.fail(f"Task {task_id} not found")
 
-        updated = await self.db.task.update_task(task_id, title=title, content=content)
+        updated = await self.db.task.update_task(
+            task_id,
+            title=title,
+            content=content,
+            change_note=change_note,
+            changed_by=self.member_name,
+            parent_revision=parent_revision,
+        )
         if updated is None:
             return TaskOpResult.fail(
                 f"Task {task_id} cannot be edited while in status '{task.status}'; "
@@ -1584,13 +1619,16 @@ class TeamTaskManager:
                 f"(in-review tasks are locked)"
             )
 
-        team_logger.info(f"Task {task_id} updated")
+        revised = (updated.revision or 0) != (task.revision or 0)
+        if not revised:
+            return TaskOpResult.success({"revision": updated.revision, "revised": False})
+        team_logger.info(f"Task {task_id} updated to revision {updated.revision}")
 
-        # A claimed task stays claimed on edit; carry the assignee so its
-        # dispatcher tells it to re-read the revised content (on_task_updated)
-        # instead of the old reset-to-pending + cancel_member. The status rides
-        # the post-write row read inside the DAO's write transaction, so it is
-        # the committed state at update time rather than a re-query.
+        # Carry the assignee and the post-write status / revision. The status
+        # rides the post-write row read inside the DAO's write transaction, so
+        # it is the committed state at update time rather than a re-query.
+        # Whether and how the assignee is told is the consumer's: under
+        # scheduled dispatch the scheduler pushes the revision (F_129).
         try:
             await self.messager.publish(
                 topic_id=TeamTopic.TASK.build(get_session_id(), self.team_name),
@@ -1600,6 +1638,7 @@ class TeamTaskManager:
                         task_id=task_id,
                         member_name=updated.assignee,
                         status=updated.status,
+                        revision=updated.revision,
                     )
                 ),
             )
@@ -1607,7 +1646,7 @@ class TeamTaskManager:
         except Exception as e:
             team_logger.error(f"Failed to publish task updated event for {task_id}: {e}")
 
-        return TaskOpResult.success()
+        return TaskOpResult.success({"revision": updated.revision, "revised": True})
 
     async def set_reviewer(self, task_id: str, reviewer_entries: list[dict]) -> TaskOpResult:
         """Set a task's verify-gate reviewers (Leader only).
@@ -1685,6 +1724,23 @@ class TeamTaskManager:
             error_label=f"Task released event for {task_id}",
         )
         return TaskOpResult.success()
+
+    async def observe_revision(self, task_id: str, revision: int) -> None:
+        """Record that this member, the task's assignee, was shown ``revision`` (F_129).
+
+        Called where the framework hands the assignee the task content: a
+        templated handoff delivery, the self claim notice, the assignee's own
+        ``view_task(get)``. Best-effort: a failure only means the assignee is
+        told about the revision once more.
+        """
+        try:
+            await self.db.task.observe_revision(task_id, self.member_name, revision)
+        except Exception as e:
+            team_logger.error(f"Failed to record observed revision {revision} of task {task_id}: {e}")
+
+    async def unseen_revisions(self) -> list[tuple[str, str, str, bool, int]]:
+        """Assigned, unfinished tasks whose assignee has not seen the current revision (F_129)."""
+        return await self.db.task.get_unseen_revisions(self.team_name)
 
     async def open_subtask_ids(self, task_id: str) -> list[str]:
         """Return the non-terminal direct subtasks of a task (F_128)."""

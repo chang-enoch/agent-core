@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 _TASK_START = "scheduler_task_start"
 _TASK_START_PLAN = "scheduler_task_start_plan"
 _TASK_RESUME = "scheduler_task_resume"
+_TASK_REVISED = "scheduler_task_revised"
+_SUBTASK_REVIEW = "scheduler_subtask_review"
 _REVIEW_REQUEST = "scheduler_review_request"
 _REVIEW_PREVIOUS_FEEDBACK = "scheduler_review_previous_feedback"
 _REVIEW_SUBMISSION_NOTE = "scheduler_review_submission_note"
@@ -63,6 +65,16 @@ def meta_task_start(task, *, resume: bool = False) -> dict:
     else:
         template = _TASK_START
     return build_meta(template, refs={"task": task.task_id})
+
+
+def meta_task_revised(task_id: str) -> dict:
+    """Delivery payload pushing an edited task's latest content to its executor (F_129)."""
+    return build_meta(_TASK_REVISED, refs={"task": task_id})
+
+
+def meta_subtask_review(task_id: str) -> dict:
+    """Delivery payload asking a suspended parent's owner to review its subtasks (F_129)."""
+    return build_meta(_SUBTASK_REVIEW, refs={"task": task_id})
 
 
 def is_task_start_meta(meta: dict | None, task_id: str) -> bool:

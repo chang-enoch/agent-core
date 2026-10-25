@@ -131,6 +131,10 @@ class TeamScheduler:
         # active task on every wake; after a restart each pair costs exactly
         # one query to re-learn.
         self._handoff_known: set[tuple[str, str]] = set()
+        # (task_id, revision) pairs whose revision mail this process sent
+        # (F_129). The mailbox delivery records the revision as seen, which
+        # ends the condition; this only stops a re-send before that delivery.
+        self._revision_pushed: set[tuple[str, int]] = set()
         self._all_done_announced = False
         self._review_feedback_dispatched: set[tuple[str, int]] = set()
         self._review_feedback_tasks: set[asyncio.Task[Any]] = set()
@@ -210,7 +214,7 @@ class TeamScheduler:
     # ------------------------------------------------------------------
 
     async def _scan(self) -> None:
-        """Run the four reconcile passes to a bounded fixpoint."""
+        """Run the five reconcile passes to a bounded fixpoint."""
         task_manager = self._infra.task_manager
         if task_manager is None:
             return
@@ -219,8 +223,38 @@ class TeamScheduler:
             acted = await self._reconcile_handoffs(task_manager) or acted
             acted = await self._reconcile_reviews(task_manager) or acted
             acted = await self._reconcile_retirements(task_manager) or acted
+            acted = await self._reconcile_revisions(task_manager) or acted
             if not acted:
                 return
+
+    async def _reconcile_revisions(self, task_manager) -> bool:
+        """Push an edited task's latest content to an executor that has not seen it (F_129).
+
+        Level-triggered off the board: a task whose ``revision`` is ahead of
+        the revision its assignee was shown gets one mail, whatever happened
+        to the edit event. An executing task gets the revision itself; a
+        parent suspended on its subtasks gets a review request, since its
+        owner must check the subtasks against the new content rather than
+        resume the parent. A task not started yet gets nothing — its start
+        handoff renders the current revision. The mail is a durable mailbox
+        row that also starts an offline owner, and delivering it records the
+        revision as seen, which ends the condition.
+        """
+        acted = False
+        for task_id, status, owner, resume_pending, revision in await task_manager.unseen_revisions():
+            if (task_id, revision) in self._revision_pushed:
+                continue
+            if status in (TaskStatus.PLANNING.value, TaskStatus.IN_PROGRESS.value):
+                meta = render.meta_task_revised(task_id)
+            elif status == TaskStatus.BLOCKED.value and resume_pending:
+                meta = render.meta_subtask_review(task_id)
+            else:
+                continue
+            if await self._send_as_leader(owner, meta):
+                self._revision_pushed.add((task_id, revision))
+                team_logger.info("[scheduler] pushed revision %s of task %s to %s", revision, task_id, owner)
+                acted = True
+        return acted
 
     async def _reconcile_retirements(self, task_manager) -> bool:
         """Request retirement of task-scoped members whose board is empty (F_118).
@@ -381,6 +415,9 @@ class TeamScheduler:
         sent = await self._send_as_leader(owner, render.meta_task_start(task, resume=resume))
         if sent:
             self._handoff_known.add((task.task_id, owner))
+            # The handoff renders the task as it stands at delivery, so it
+            # already carries this revision: no separate revision mail (F_129).
+            self._revision_pushed.add((task.task_id, int(getattr(task, "revision", 0) or 0)))
         return sent
 
     async def _reconcile_reviews(self, task_manager) -> bool:

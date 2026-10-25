@@ -101,6 +101,9 @@ class TaskSummary(BaseModel):
     assignee: Optional[str] = None
     blocked_by: list[str] = Field(default_factory=list)
     parent_task_id: Optional[str] = None
+    # Set when this subtask was derived from an older revision of its parent
+    # (F_129): ``(parent revision now, revision it was based on)``.
+    stale_against: Optional[tuple[int, int]] = None
     updated_at: Optional[int] = None
 
 
@@ -127,6 +130,9 @@ class TaskDetail(BaseModel):
     blocks: list[str] = Field(default_factory=list)
     parent_task_id: Optional[str] = None
     subtasks: list[str] = Field(default_factory=list)
+    # Subtasks derived from an older revision of this task (F_129).
+    stale_subtasks: list[str] = Field(default_factory=list)
+    revision: int = 0
     updated_at: Optional[int] = None
 
 
@@ -135,6 +141,12 @@ class TaskListResult(BaseModel):
 
     tasks: list[TaskSummary]
     count: int
+
+
+# Task bodies at or above this length get a line diff next to the full text
+# when a revision is pushed (F_129 / D9), and keep a snapshot of the revision
+# their assignee last saw. Short bodies are re-read whole at no real cost.
+REVISION_DIFF_MIN_CHARS = 2000
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +186,8 @@ class TaskGraphSpec:
     # Set by the member ``create_task`` variant only; None for leader tasks.
     parent_task_id: str | None = None
     created_by: str | None = None
+    # The parent's revision the subtask was derived from (F_129).
+    parent_revision: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +245,7 @@ class NewTaskSpec:
     # Member subtasks (F_128); written verbatim to the matching columns.
     parent_task_id: str | None = None
     created_by: str | None = None
+    parent_revision: int = 0
 
 
 @dataclass(frozen=True, slots=True)

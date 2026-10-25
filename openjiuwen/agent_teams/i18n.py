@@ -382,6 +382,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "team_context.task_verified_intro": (
             "你此前提交的以下任务已通过验收并完成，无需再做任何事，也不要为此联系 leader："
         ),
+        # team_context.py TaskRevisionTracker (F_129): an edit the member was
+        # down for rides its next input.
+        "team_context.task_revised_intro": (
+            "你名下的以下任务在你上次查看后被修改过。提交前先用 view_task(action='get', task_id=...) "
+            "查看最新要求，按需调整："
+        ),
         # agent/coordination/handlers/workflow.py — swarmflow spectator broadcast
         "workflow.started": "编排 [{run_id}]「{name}」已启动，我将在每个阶段向你汇报进展。",
         "workflow.phase": "编排 [{run_id}] 进入阶段：{phase}",
@@ -849,6 +855,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "team_context.task_verified_intro": (
             "These tasks you submitted earlier have passed review and are completed. "
             "Nothing more is needed — do not contact the leader about them:"
+        ),
+        "team_context.task_revised_intro": (
+            "These tasks of yours were edited after you last read them. Before submitting, read the latest "
+            "requirements with view_task(action='get', task_id=...) and adjust as needed:"
         ),
         # agent/coordination/handlers/workflow.py — swarmflow spectator broadcast
         "workflow.started": (

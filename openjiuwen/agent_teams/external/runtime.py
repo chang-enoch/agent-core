@@ -49,7 +49,7 @@ from openjiuwen.agent_teams.external.cli_agent.transport.base import ProcessLike
 from openjiuwen.agent_teams.harness.outputs import _END, _OutputIterator
 from openjiuwen.agent_teams.harness.state import HarnessState
 from openjiuwen.agent_teams.inbound_render import render_clock
-from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TeamContextTracker
+from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker, TeamContextTracker
 from openjiuwen.agent_teams.timefmt import format_absolute_time
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -151,7 +151,7 @@ class CliRuntimeBase(ABC):
         self._team_context_tracker = team_context_tracker
         # Scheduled dispatch only (F_119): review passes folded into the next
         # message. Bound after construction, like the team-context tracker.
-        self._task_outcome_tracker: "TaskOutcomeTracker | None" = None
+        self._task_outcome_tracker: "TaskOutcomeTracker | TaskRevisionTracker | None" = None
         self._member_session: Any = None
         # Lifecycle phase mapped onto the team's HarnessState vocabulary so the
         # StreamController treats a CLI runtime exactly like a NativeHarness.
@@ -199,8 +199,8 @@ class CliRuntimeBase(ABC):
         """Bind the tracker that injects pending team state into outbound messages."""
         self._team_context_tracker = tracker
 
-    def bind_task_outcome_tracker(self, tracker: "TaskOutcomeTracker | None") -> None:
-        """Bind the tracker that folds untold review passes into the next message."""
+    def bind_task_outcome_tracker(self, tracker: "TaskOutcomeTracker | TaskRevisionTracker | None") -> None:
+        """Bind the tracker that folds untold task facts (review passes / missed edits) into the next message."""
         self._task_outcome_tracker = tracker
 
     def bind_reliability_context(

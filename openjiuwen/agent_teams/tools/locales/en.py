@@ -514,6 +514,16 @@ STRINGS: dict[str, str] = {
     "update_task.status": "Set to 'cancelled' to cancel the task",
     "update_task.title": "New task title",
     "update_task.content": "New task content",
+    "update_task.change_note": (
+        "Optional: one or two sentences on what changed and why, pushed to the executor with the edit; "
+        "only together with title / content"
+    ),
+    "update_task_subtask.task_id": "ID of the subtask to handle (must be a subtask of a task you hold)",
+    "update_task_subtask.confirm": (
+        "true confirms, after review, that the subtask still holds under its parent's new revision — "
+        "no content change, its executor is not disturbed"
+    ),
+    "update_task_subtask.status": "Pass cancelled to cancel the subtask; its own subtasks are cancelled with it",
     "update_task.assignee": (
         "member_name to assign or reassign this task to; the target must already exist and must not be the leader. "
         "A notification is sent to the assignee"

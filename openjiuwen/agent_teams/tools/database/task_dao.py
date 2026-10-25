@@ -14,6 +14,7 @@ The module is organised in two layers:
   transaction shells over the helpers above.
 """
 
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
@@ -31,6 +32,7 @@ from openjiuwen.agent_teams.schema.status import (
     is_valid_transition,
 )
 from openjiuwen.agent_teams.schema.task import (
+    REVISION_DIFF_MIN_CHARS,
     GraphMutationResult,
     NewTaskSpec,
 )
@@ -282,10 +284,22 @@ async def _stage_new_tasks(
                 max_review_rounds=spec.max_review_rounds,
                 parent_task_id=spec.parent_task_id,
                 created_by=spec.created_by,
+                parent_revision=spec.parent_revision,
                 updated_at=now,
             )
         )
     await session.flush()
+
+
+def _load_change_notes(raw: Optional[str]) -> list[dict]:
+    """Parse the ``change_notes`` column (F_129 / D8); malformed values read as empty."""
+    if not raw:
+        return []
+    try:
+        notes = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return [note for note in notes if isinstance(note, dict)] if isinstance(notes, list) else []
 
 
 async def _suspend_parent_in_session(
@@ -666,6 +680,48 @@ class TaskDao:
             )
             return [(row[0], row[1]) for row in result.all()]
 
+    async def get_unseen_revisions(self, team_name: str) -> List[tuple[str, str, str, bool, int]]:
+        """``(task_id, status, assignee, resume_pending, revision)`` of every assigned,
+        unfinished task whose assignee has not seen its current revision (F_129).
+
+        Narrow projection for the scheduler's revision scan, which runs on
+        every board wake: no bodies are read.
+        """
+        team_task_model = _get_task_model()
+        terminal = [status for status in TASK_TERMINAL_STATUSES]
+        async with self._sessions.read() as session:
+            result = await session.execute(
+                select(
+                    team_task_model.task_id,
+                    team_task_model.status,
+                    team_task_model.assignee,
+                    team_task_model.resume_pending,
+                    team_task_model.revision,
+                ).where(
+                    team_task_model.team_name == team_name,
+                    team_task_model.assignee.is_not(None),
+                    team_task_model.status.not_in(terminal),
+                    team_task_model.revision > team_task_model.observed_revision,
+                )
+            )
+            return [(row[0], row[1], row[2], bool(row[3]), int(row[4])) for row in result.all()]
+
+    async def get_subtasks(self, team_name: str, parent_task_id: str) -> List[TeamTaskBase]:
+        """Return a task's direct subtask rows (F_129), bodies left unread.
+
+        For briefs that render id / title / assignee / status / revision only;
+        ``content`` may be a spill placeholder.
+        """
+        team_task_model = _get_task_model()
+        async with self._sessions.read() as session:
+            result = await session.execute(
+                select(team_task_model).where(
+                    team_task_model.team_name == team_name,
+                    team_task_model.parent_task_id == parent_task_id,
+                )
+            )
+            return list(result.scalars().all())
+
     async def get_parent_task_id(self, task_id: str) -> Optional[str]:
         """Return a task's ``parent_task_id`` alone (F_128), ``None`` for a top-level or missing task."""
         team_task_model = _get_task_model()
@@ -819,6 +875,9 @@ class TaskDao:
                 .values(
                     status=to_status.value,
                     assignee=member_name,
+                    # The claimant takes the task as it stands; the board it
+                    # claimed from showed this revision (F_129).
+                    observed_revision=team_task_model.revision,
                     updated_at=now,
                 )
             )
@@ -867,7 +926,15 @@ class TaskDao:
                 # The completion text describes the former owner's delivery;
                 # it is cleared atomically with the hand-over (F_119). So is a
                 # pending resume: the new owner never suspended it (F_128).
-                .values(assignee=to_assignee, summary=None, note=None, resume_pending=False, updated_at=now)
+                # The new owner's start handoff shows the current revision (F_129).
+                .values(
+                    assignee=to_assignee,
+                    summary=None,
+                    note=None,
+                    resume_pending=False,
+                    observed_revision=team_task_model.revision,
+                    updated_at=now,
+                )
             )
             await session.commit()
             swapped = result.rowcount == 1
@@ -927,6 +994,8 @@ class TaskDao:
             task.note = None
             # A reset task starts over; it is no longer a suspended owner's resume (F_128).
             task.resume_pending = False
+            # Whoever starts it next is shown the current revision (F_129).
+            task.observed_revision = task.revision
             task.updated_at = get_current_time()
             await session.commit()
             team_logger.info("Task %s reset from %s to PENDING", task_id, origin_task_status)
@@ -1207,12 +1276,24 @@ class TaskDao:
         task_id: str,
         title: Optional[str] = None,
         content: Optional[str] = None,
+        *,
+        change_note: Optional[str] = None,
+        changed_by: Optional[str] = None,
+        parent_revision: Optional[int] = None,
     ) -> Optional[TeamTaskBase]:
-        """Update task content (title, content, etc.).
+        """Update a task's title / content, bumping its revision (F_129).
+
+        A real change (title differs, or content differs from the current
+        body) bumps ``revision`` in the same write, and appends
+        ``change_note`` to ``change_notes`` against that revision. Before a
+        long body is overwritten, the revision its assignee last saw is kept
+        as a snapshot so a revision push can show a diff (D9); older
+        snapshots are dropped. ``parent_revision`` re-aligns a subtask to its
+        parent without touching its content (the subtask owner's confirm).
 
         Returns the post-write row — selected inside the same write
-        transaction, so its ``status`` is the committed state at update
-        time — or ``None`` when the task is missing or in-review locked.
+        transaction, so its ``status`` and ``revision`` are the committed
+        state — or ``None`` when the task is missing or in-review locked.
         The row is not hydrated: ``content`` may still be a spill
         placeholder; use :meth:`get_task` to read the body.
         """
@@ -1227,9 +1308,7 @@ class TaskDao:
             # IN_REVIEW stays locked: a task submitted for verification is
             # frozen so the reviewer evaluates against stable content. PLANNING
             # and IN_PROGRESS are editable — the leader revises a live task and
-            # the assignee is told to re-read via a targeted TASK_UPDATED notice
-            # (see TeamTaskManager.update_task), instead of the old
-            # reset-to-pending + cancel_member.
+            # its assignee learns of the new revision (F_129).
             if task.status == TaskStatus.IN_REVIEW.value:
                 team_logger.error(
                     "Cannot update task %s because it is currently %s",
@@ -1238,26 +1317,113 @@ class TaskDao:
                 )
                 return None
 
-            updated = False
+            revised = False
             if title is not None and task.title != title:
                 task.title = title
-                updated = True
+                revised = True
             if content is not None:
-                # Spill always overwrites the session file (task_id unchanged →
-                # same path), so the content path counts as a change regardless
-                # of the DB value. The DB row keeps the constant ``#file#`` on
-                # success; on IO failure ``_to_stored`` degrades to the raw
-                # text, which then must be persisted (design-v5 block B).
-                stored = self._to_stored(task.team_name, content, task_id=task_id)
-                if task.content != stored:
-                    task.content = stored
-                updated = True
+                previous = self._deref_row(task) if self._is_placeholder(task.content) else task.content
+                if previous != content:
+                    self._keep_seen_revision(task, previous, content)
+                    # Spill overwrites the session file (task_id unchanged →
+                    # same path). The DB row keeps the constant ``#file#`` on
+                    # success; on IO failure ``_to_stored`` degrades to the raw
+                    # text, which then must be persisted (design-v5 block B).
+                    task.content = self._to_stored(task.team_name, content, task_id=task_id)
+                    revised = True
+            if revised:
+                task.revision = (task.revision or 0) + 1
+                if change_note:
+                    notes = _load_change_notes(task.change_notes)
+                    notes.append({"revision": task.revision, "note": change_note, "by": changed_by or ""})
+                    task.change_notes = json.dumps(notes, ensure_ascii=False)
+            realigned = parent_revision is not None and task.parent_revision != parent_revision
+            if realigned:
+                task.parent_revision = parent_revision
 
-            if updated:
+            if revised or realigned:
                 await session.commit()
-                team_logger.info("Task %s updated", task_id)
+                team_logger.info("Task %s updated (revision %s)", task_id, task.revision)
 
             return task
+
+    def _keep_seen_revision(self, task: TeamTaskBase, previous: str, content: str) -> None:
+        """Snapshot the body the assignee last saw before it is overwritten (F_129 / D9).
+
+        Only the assignee's observed revision is a diff baseline, so only it
+        is kept: it is written the first time it is about to be overwritten
+        (when it is still the current body) and every older snapshot goes.
+        Short bodies are not snapshotted. IO failures only cost the diff.
+        """
+        if not task.assignee or self._file_store is None:
+            return
+        if max(len(previous), len(content)) < REVISION_DIFF_MIN_CHARS:
+            return
+        session_id = self._session_id()
+        if not session_id:
+            return
+        from openjiuwen.agent_teams.team_workspace.session_file_store import KIND_TASK_REVISION, FileAddress
+
+        try:
+            if task.observed_revision == task.revision:
+                self._file_store.put(
+                    previous,
+                    FileAddress(
+                        team_name=task.team_name,
+                        session_id=session_id,
+                        kind=KIND_TASK_REVISION,
+                        object_id=task.task_id,
+                        revision=task.revision,
+                    ),
+                )
+            self._file_store.remove_task_revisions(
+                team_name=task.team_name,
+                session_id=session_id,
+                task_id=task.task_id,
+                below=task.observed_revision,
+            )
+        except (ValueError, OSError) as exc:
+            team_logger.warning("revision snapshot of task %s failed: %s", task.task_id, exc)
+
+    def get_revision_snapshot(self, team_name: str, task_id: str, revision: int) -> Optional[str]:
+        """Return a task body snapshot at ``revision`` (F_129 / D9), ``None`` when absent."""
+        session_id = self._session_id()
+        if self._file_store is None or not session_id:
+            return None
+        from openjiuwen.agent_teams.team_workspace.session_file_store import KIND_TASK_REVISION, FileAddress
+
+        try:
+            return self._file_store.get(
+                FileAddress(
+                    team_name=team_name,
+                    session_id=session_id,
+                    kind=KIND_TASK_REVISION,
+                    object_id=task_id,
+                    revision=revision,
+                )
+            )
+        except (ValueError, OSError):
+            return None
+
+    async def observe_revision(self, task_id: str, member_name: str, revision: int) -> bool:
+        """Record that ``member_name``, the task's assignee, was shown ``revision`` (F_129).
+
+        Monotonic (never moves back) and owner-bound: a delivery to someone
+        who no longer holds the task records nothing.
+        """
+        team_task_model = _get_task_model()
+        async with self._sessions.write() as session:
+            result = await session.execute(
+                update(team_task_model)
+                .where(
+                    team_task_model.task_id == task_id,
+                    team_task_model.assignee == member_name,
+                    team_task_model.observed_revision < revision,
+                )
+                .values(observed_revision=revision)
+            )
+            await session.commit()
+            return (result.rowcount or 0) == 1
 
     async def mutate_dependency_graph(
         self,

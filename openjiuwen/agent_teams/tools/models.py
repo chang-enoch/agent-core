@@ -174,6 +174,18 @@ class TeamTaskBase(SQLModel):
     # consumed by the next start (which resumes instead of beginning) and
     # cleared by reassign / reset, after which a start is a fresh one.
     resume_pending: bool = Field(default=False, nullable=False)
+    # Task versioning (F_129). ``revision`` bumps on every title / content
+    # edit; ``observed_revision`` is the revision the current assignee was
+    # actually shown (advanced only where the framework hands it the
+    # content); ``parent_revision`` is the parent's revision a subtask was
+    # derived from. A difference is the standing "not yet seen" / "stale"
+    # signal — no separate notification flag exists.
+    revision: int = Field(default=0, nullable=False)
+    observed_revision: int = Field(default=0, nullable=False)
+    parent_revision: int = Field(default=0, nullable=False)
+    # Edit notes (F_129 / D8): JSON list of ``{"revision", "note", "by"}``,
+    # appended with the revision bump they describe. Kept as audit history.
+    change_notes: Optional[str] = Field(default=None, nullable=True)
     updated_at: Optional[int] = Field(default=None, sa_type=BigInteger, nullable=True)
 
     def brief(self) -> dict:

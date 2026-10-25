@@ -499,6 +499,17 @@ def _ensure_dynamic_table_indexes(
                 )
                 team_logger.info("Migrated task table %s: added resume_pending column", table_name)
 
+            # F_129: task versioning + edit notes.
+            for column in ("revision", "observed_revision", "parent_revision"):
+                if column not in task_columns:
+                    sync_conn.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0'
+                    )
+                    team_logger.info("Migrated task table %s: added %s column", table_name, column)
+            if "change_notes" not in task_columns:
+                sync_conn.exec_driver_sql(f'ALTER TABLE "{table_name}" ADD COLUMN change_notes TEXT')
+                team_logger.info("Migrated task table %s: added change_notes column", table_name)
+
             # F_59: fold the legacy execution states into the condition-named
             # IN_PROGRESS. claimed / started / plan_approved were all "a member
             # is executing it"; map them uniformly. Distinguishing an unapproved

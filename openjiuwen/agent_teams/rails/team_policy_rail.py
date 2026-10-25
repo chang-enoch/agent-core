@@ -61,7 +61,12 @@ from openjiuwen.agent_teams.prompts import (
 )
 from openjiuwen.agent_teams.prompts.loader import TemplateLoader, load_template
 from openjiuwen.agent_teams.schema.team import TeamRole
-from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TeamContextTracker
+from openjiuwen.agent_teams.team_context import (
+    TaskOutcomeTracker,
+    TaskRevisionTracker,
+    TeamContextTracker,
+    build_task_event_tracker,
+)
 from openjiuwen.agent_teams.timefmt import format_absolute_time
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.logging import team_logger
@@ -226,12 +231,13 @@ class TeamPolicyRail(DeepAgentRail):
             fork_source=fork_source,
             policy_text=policy_text,
         )
-        # Scheduled dispatch only (F_119): a passed review does not wake the
-        # author, so the outcome rides its next admitted input instead.
-        # Autonomous dispatch keeps its live verified notice.
-        self._outcome_tracker: TaskOutcomeTracker | None = (
-            TaskOutcomeTracker(team_backend=team_backend, member_name=member_name)
-            if dispatch_mode == "scheduled" and team_backend is not None and role != TeamRole.LEADER
+        # A task fact the member may have missed rides its next admitted
+        # input: under scheduled dispatch a passed review, which does not wake
+        # the author (F_119); under autonomous dispatch an edit made while it
+        # was down (F_129). The leader needs neither.
+        self._outcome_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = (
+            build_task_event_tracker(dispatch_mode, team_backend=team_backend, member_name=member_name)
+            if role != TeamRole.LEADER
             else None
         )
 
@@ -308,7 +314,7 @@ class TeamPolicyRail(DeepAgentRail):
         await self._tracker.commit(session)
 
     async def _fold_task_outcomes(self, parts: list[str], session: Any) -> None:
-        """Prepend review passes not yet told to the member onto its input."""
+        """Prepend the task facts not yet told to the member onto its input."""
         if self._outcome_tracker is None:
             return
         text = await self._outcome_tracker.pending_text(session)

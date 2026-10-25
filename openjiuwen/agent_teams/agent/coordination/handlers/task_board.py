@@ -205,6 +205,9 @@ class TaskBoardHandler(BaseCoordinationHandler):
             is_self_human,
         )
         await self._round.deliver_input(content)
+        if not is_self_human:
+            # The notice carried the task body: that revision is now seen (F_129).
+            await self._infra.task_manager.observe_revision(task.task_id, int(task.revision or 0))
 
     async def _notify_passive_assignment(self, payload) -> None:
         """Relay a foreign claim targeting a passive human member as a bus message.
@@ -689,9 +692,10 @@ class ScheduledTaskBoardHandler(TaskBoardHandler):
     event-driven side is therefore only:
 
     * the targeted ownership steers inherited from the base class
-      (``TASK_CLAIMED`` / ``TASK_REVOKED`` / ``TASK_CANCELLED`` /
-      ``TASK_UPDATED`` — the leader's ``update_task`` works the same in both
-      modes), and
+      (``TASK_CLAIMED`` / ``TASK_REVOKED`` / ``TASK_CANCELLED`` — the
+      leader's ``update_task`` works the same in both modes; an edit, in
+      contrast, reaches the assignee as the scheduler's revision mail,
+      F_129), and
     * keeping periodic polling alive on board churn.
 
     The verify-gate self-steers and the idle-agent board surveys of the base
@@ -710,6 +714,11 @@ class ScheduledTaskBoardHandler(TaskBoardHandler):
         TeamEvent.TASK_SUBMITTED_FOR_REVIEW: "on_task_board_event",
         TeamEvent.TASK_VERIFIED: "on_task_board_event",
         TeamEvent.TASK_REVISION_REQUESTED: "on_task_board_event",
+        # An edited task reaches its assignee as the scheduler's revision mail
+        # carrying the new content (F_129); a "re-read and continue" steer next
+        # to it would double-deliver, and would send a suspended parent's
+        # owner back to work on the parent.
+        TeamEvent.TASK_UPDATED: "on_task_board_event",
     }
 
     # No claimable pool here: a member that loses a task waits for the next

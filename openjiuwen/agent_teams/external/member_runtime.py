@@ -33,7 +33,7 @@ from typing import (
 from openjiuwen.agent_teams.external.cli_agent import TEAM_MCP_SERVER_NAME
 from openjiuwen.agent_teams.harness.turn import MemberTurn, resolve_member_turn
 from openjiuwen.agent_teams.inbound_render import render_clock
-from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TeamContextTracker
+from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker, TeamContextTracker
 from openjiuwen.agent_teams.timefmt import format_absolute_time
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.logging import team_logger
@@ -238,7 +238,7 @@ class ExternalHarnessMemberRuntime:
         self._team_context_tracker = team_context_tracker
         # Scheduled dispatch only (F_119): review passes folded into the next
         # message. Bound after construction, like the team-context tracker.
-        self._task_outcome_tracker: TaskOutcomeTracker | None = None
+        self._task_outcome_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = None
         self._resume_external_backend = resume_external_backend
         self._require_checkpoint = require_checkpoint
         self._seed_checkpoint = seed_checkpoint
@@ -339,8 +339,8 @@ class ExternalHarnessMemberRuntime:
     def bind_team_context_tracker(self, tracker: TeamContextTracker | None) -> None:
         self._team_context_tracker = tracker
 
-    def bind_task_outcome_tracker(self, tracker: TaskOutcomeTracker | None) -> None:
-        """Bind the tracker that folds untold review passes into the next message."""
+    def bind_task_outcome_tracker(self, tracker: TaskOutcomeTracker | TaskRevisionTracker | None) -> None:
+        """Bind the tracker that folds untold task facts (review passes / missed edits) into the next message."""
         self._task_outcome_tracker = tracker
 
     def bind_mcp_servers(self, servers: Sequence[McpServerConfig]) -> None:

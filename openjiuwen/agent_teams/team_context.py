@@ -645,6 +645,9 @@ TASK_OUTCOME_STATE_KEY = "task_outcome_announced"
 
 # Stable contract token for the <team-event> ``kind`` attribute.
 TASK_VERIFIED_EVENT_KIND = "task-verified"
+# Session-state key and event kind of the autonomous edit notice (F_129).
+TASK_REVISION_STATE_KEY = "task_revision_announced"
+TASK_REVISED_EVENT_KIND = "task-revised"
 
 
 class TaskOutcomeTracker:
@@ -739,12 +742,122 @@ class TaskOutcomeTracker:
             )
 
 
-def _read_announced(session: Any) -> list[str]:
-    """Read the ids of verified tasks already announced to this member."""
-    state = session.get_state(TASK_OUTCOME_STATE_KEY)
+def _read_announced(session: Any, key: str = TASK_OUTCOME_STATE_KEY) -> list[str]:
+    """Read the entries already announced to this member under ``key``."""
+    state = session.get_state(key)
     if not isinstance(state, list):
         return []
-    return [str(task_id) for task_id in state]
+    return [str(entry) for entry in state]
+
+
+class TaskRevisionTracker:
+    """Tell an autonomous member, on its next input, which of its tasks were edited (F_129).
+
+    The edit's ``TASK_UPDATED`` steer reaches a member that is up; one that
+    was down when the leader edited never hears it. The edit still stands on
+    the task row as ``revision > observed_revision``, so whatever wakes the
+    member next carries a ``<team-event kind="task-revised">`` naming each
+    edited task, the revisions it missed and the edit notes, and asking it to
+    re-read the task. Scheduled dispatch has no use for it: the scheduler
+    pushes the latest content as a durable mail.
+
+    The notice does not count as seeing the revision — it carries no body.
+    "Seen" stays the DB's ``observed_revision``; the session-state baseline
+    (``task_id@revision`` entries) only stops the same revision being
+    announced twice. Same ``pending_text`` → deliver → ``commit`` contract as
+    :class:`TaskOutcomeTracker`, so both bind to the same input hooks.
+
+    Args:
+        team_backend: Backend whose task manager answers the board query.
+            ``None`` disables the tracker.
+        member_name: This member's semantic identifier.
+    """
+
+    def __init__(
+        self,
+        *,
+        team_backend: "TeamBackend | None",
+        member_name: str | None,
+    ) -> None:
+        self._team_backend = team_backend
+        self._member_name = member_name
+        self._uncommitted: list[str] | None = None
+
+    async def pending_text(self, session: Any) -> str | None:
+        """Render this member's edited tasks it has not been told about yet.
+
+        Args:
+            session: The member's own child ``AgentSession``. ``None`` disables
+                the tracker.
+
+        Returns:
+            A ``<team-event kind="task-revised">`` block, or ``None``.
+        """
+        from openjiuwen.agent_teams.message_template import change_notes_lines
+
+        self._uncommitted = None
+        if session is None or self._team_backend is None or not self._member_name:
+            return None
+        task_manager = getattr(self._team_backend, "task_manager", None)
+        if task_manager is None:
+            return None
+        announced = set(_read_announced(session, TASK_REVISION_STATE_KEY))
+        owned = await task_manager.get_tasks_by_assignee(self._member_name)
+        fresh = [task for task in owned if _unseen_edit(task) and f"{task.task_id}@{task.revision}" not in announced]
+        if not fresh:
+            return None
+        self._uncommitted = [f"{task.task_id}@{task.revision}" for task in fresh]
+        lines = [t("team_context.task_revised_intro")]
+        for task in fresh:
+            lines.append(f"- {task.task_id} · {task.title or ''} · r{task.observed_revision or 0} → r{task.revision}")
+            lines.extend(f"  {line}" for line in change_notes_lines(task))
+        return render_event(kind=TASK_REVISED_EVENT_KIND, body="\n".join(lines))
+
+    async def commit(self, session: Any) -> None:
+        """Record the revisions the caller just delivered as announced."""
+        pending = self._uncommitted
+        self._uncommitted = None
+        if pending is None or session is None:
+            return
+        announced = list(_read_announced(session, TASK_REVISION_STATE_KEY))
+        announced.extend(entry for entry in pending if entry not in announced)
+        try:
+            session.update_state({TASK_REVISION_STATE_KEY: announced})
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 - never break a model call over a checkpoint write
+            team_logger.warning(
+                "[{}] failed to persist task revision baseline: {}",
+                self._member_name or "?",
+                exc,
+            )
+
+
+def _unseen_edit(task: Any) -> bool:
+    """Whether an owned, unfinished task carries a revision its assignee has not seen (F_129)."""
+    from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES
+
+    if getattr(task, "status", None) in TASK_TERMINAL_STATUSES:
+        return False
+    return (getattr(task, "revision", 0) or 0) > (getattr(task, "observed_revision", 0) or 0)
+
+
+def build_task_event_tracker(
+    dispatch_mode: str,
+    *,
+    team_backend: "TeamBackend | None",
+    member_name: str | None,
+) -> "TaskOutcomeTracker | TaskRevisionTracker | None":
+    """The next-input task notice a non-leader member needs under ``dispatch_mode``.
+
+    Scheduled members are told late about passed reviews (F_119); autonomous
+    members are told late about edits they missed (F_129). Each mode needs
+    exactly one; the other mode covers that case on its own channel.
+    """
+    if team_backend is None:
+        return None
+    if dispatch_mode == "scheduled":
+        return TaskOutcomeTracker(team_backend=team_backend, member_name=member_name)
+    return TaskRevisionTracker(team_backend=team_backend, member_name=member_name)
 
 
 __all__ = [
@@ -752,8 +865,12 @@ __all__ = [
     "ROSTER_EVENT_KIND",
     "ROSTER_NOTE_KIND",
     "TASK_OUTCOME_STATE_KEY",
+    "TASK_REVISED_EVENT_KIND",
+    "TASK_REVISION_STATE_KEY",
     "TASK_VERIFIED_EVENT_KIND",
     "TEAM_CONTEXT_STATE_KEY",
     "TaskOutcomeTracker",
+    "TaskRevisionTracker",
     "TeamContextTracker",
+    "build_task_event_tracker",
 ]

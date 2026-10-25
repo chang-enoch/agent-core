@@ -383,6 +383,12 @@ STRINGS: dict[str, str] = {
     "update_task.status": "设为 'cancelled' 取消任务",
     "update_task.title": "新任务标题",
     "update_task.content": "新任务内容",
+    "update_task.change_note": (
+        "可选：一两句话说明改了什么、为什么改，随修改一并推送给执行者；只能和 title / content 一起使用"
+    ),
+    "update_task_subtask.task_id": "要处理的子任务 ID（必须是你名下任务的子任务）",
+    "update_task_subtask.confirm": "true 表示复核后确认该子任务在父任务新版本下仍然有效，不修改内容、不打扰其执行者",
+    "update_task_subtask.status": "传 cancelled 取消该子任务，它下面的子任务会一起取消",
     "update_task.assignee": "指派任务的目标 member_name（仅当任务当前无 assignee 时生效）。系统会向被指派成员发送通知",
     "update_task.reviewer": (
         "设置该任务的验证者列表（传空列表清除验证），每一项为包含 type/instruction "

@@ -343,6 +343,7 @@ class TaskUpdatedEvent(BaseEventMessage):
         description="Task status at edit time; content edits never change it, "
         "but carrying it lets consumers resync a stale view from this event",
     )
+    revision: Optional[int] = Field(default=None, description="Task revision after the edit (F_129)")
 
 
 class TaskClaimedEvent(BaseEventMessage):

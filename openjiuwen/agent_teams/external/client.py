@@ -26,7 +26,7 @@ from openjiuwen.agent_teams.external.descriptor import TeamJoinDescriptor
 from openjiuwen.agent_teams.external.format import render_messages, render_task_board
 from openjiuwen.agent_teams.i18n import set_language
 from openjiuwen.agent_teams.inbound_render import render_clock
-from openjiuwen.agent_teams.message_template import expand_message, task_links
+from openjiuwen.agent_teams.message_template import expand_message, revision_getters, task_links
 from openjiuwen.agent_teams.messager.base import create_messager
 from openjiuwen.agent_teams.messager.messager import Messager
 from openjiuwen.agent_teams.schema.events import EventMessage, TeamTopic
@@ -497,6 +497,7 @@ class ExternalTeamClient:
         async def _get_links(task_id: str) -> tuple[list[Any], list[Any]]:
             return await task_links(db, task_id)
 
+        snapshot_getter, subtasks_getter = revision_getters(db, self.team_name)
         bodies: dict[str, str] = {}
         for msg in messages:
             expanded = await expand_message(
@@ -505,9 +506,15 @@ class ExternalTeamClient:
                 member_getter=_get_member,
                 language=self._descriptor.language or "cn",
                 task_links_getter=_get_links,
+                revision_snapshot_getter=snapshot_getter,
+                subtasks_getter=subtasks_getter,
             )
             if expanded.is_template:
                 bodies[msg.message_id] = expanded.body
+            # The pulled inbox is what the member reads; a handoff that showed
+            # its task's content counts as seen (F_129).
+            if expanded.shown_revision is not None and self._tasks is not None:
+                await self._tasks.observe_revision(*expanded.shown_revision)
         return bodies
 
     @_bind_client_session

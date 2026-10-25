@@ -34,7 +34,12 @@ from openjiuwen.agent_teams.inbound_render import (
     render_event,
     render_inbound,
 )
-from openjiuwen.agent_teams.message_template import ExpandedMessage, expand_message, task_links
+from openjiuwen.agent_teams.message_template import (
+    ExpandedMessage,
+    expand_message,
+    revision_getters,
+    task_links,
+)
 from openjiuwen.agent_teams.prompts.loader import TemplateLoader, bind_template_loader
 from openjiuwen.agent_teams.schema.events import EventMessage, MessageEvent, TeamEvent
 from openjiuwen.agent_teams.schema.external_runtime_reliability import ExternalRuntimeFailure
@@ -296,11 +301,26 @@ class MessageHandler(BaseCoordinationHandler):
 
                     await self._round.deliver_input(text, use_steer=use_steer)
                     delivered.append(msg)
+                    await self._observe_shown_revision(expanded)
             finally:
                 if delivered:
                     await self._infra.message_manager.mark_messages_read(delivered, member_name)
             if interrupted:
                 return
+
+    async def _observe_shown_revision(self, expanded: ExpandedMessage) -> None:
+        """Record the task revision a delivered handoff showed as seen (F_129).
+
+        The handoff rendered the task row as it stood at delivery, so its
+        revision is exactly what the assignee now has in front of it. The DAO
+        records it only for the task's current assignee.
+        """
+        task_manager = getattr(self._infra, "task_manager", None)
+        shown = getattr(expanded, "shown_revision", None)
+        if shown is None or task_manager is None:
+            return
+        task_id, revision = shown
+        await task_manager.observe_revision(task_id, revision)
 
     def _language(self) -> str:
         """Team language for delivery-time template rendering."""
@@ -344,6 +364,7 @@ class MessageHandler(BaseCoordinationHandler):
         async def _get_links(task_id: str) -> tuple[list[Any], list[Any]]:
             return await task_links(db, task_id) if db is not None else ([], [])
 
+        snapshot_getter, subtasks_getter = revision_getters(db, backend.team_name) if db is not None else (None, None)
         return await expand_message(
             msg,
             task_getter=_get_task,
@@ -351,6 +372,8 @@ class MessageHandler(BaseCoordinationHandler):
             language=self._language(),
             loader=self._template_loader,
             task_links_getter=_get_links,
+            revision_snapshot_getter=snapshot_getter,
+            subtasks_getter=subtasks_getter,
         )
 
     async def _bridge_deliverable_for(self, member_name: str, msg: Any, *, expanded: ExpandedMessage) -> str:
