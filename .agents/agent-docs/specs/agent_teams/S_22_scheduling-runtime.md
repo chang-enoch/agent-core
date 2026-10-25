@@ -21,7 +21,7 @@ author_email: chengshuo5@huawei.com
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/agent/scheduling/` |
 | 最近一次修订日期 | 2026-10-25 |
-| 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接） |
+| 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接）、`F_129_task-revision-and-staleness.md`（第五个幂等扫描：把修改后的最新内容推给没看到的执行者、挂起父任务的子任务复核；调度模式编辑不再走事件 steer） |
 
 ## 范围 / 边界
 
@@ -45,7 +45,7 @@ author_email: chengshuo5@huawei.com
 1. **调度器只在 `spec.dispatch_mode == "scheduled"` 的 leader kernel 上存在**：`CoordinationKernel.setup` 构造（休眠态）；其余 kernel（teammate、autonomous leader）的 `scheduler` 恒为 None。
 2. **激活条件 = team 已建成**。两个激活点：`kernel.notify_team_built()`（`build_team` 成功回调内，先于任何 teammate spawn / create_task——`build_team` 工具调用与 `bootstrap_mode="framework"` 下 `kernel.start()` 的框架建队共用这条回调，见 F_122）与 `kernel.start()`（team 行已存在——warm resume / 冷恢复）。`bootstrap_mode="framework"` 的 leader `start()` 返回时团队行必然存在（新建或已存在）、调度器必然已激活。`pause()` / `stop()` 即 `deactivate()`。
 3. **dispatch_mode 是静态 spec 配置**（F_62 评审定稿）：`TeamAgentSpec.dispatch_mode` 在构建期决定一切——rails/工具形态/提示词按模式装配、每套一份互不混写；`TeamSpec.dispatch_mode` 镜像它随 spawn 载荷到达成员进程；`build_team` **不选择协调模式**（`team_info.dispatch_mode` 列只是记录，spec 是运行时真相）；运行期没有任何模式切换路径。
-4. **调度器不理解事件，只理解看板**：任何触发（`task_*` / `member_*` transport 事件、`POLL_TASK`、`SCHEDULER_SCAN`、激活）都跑同一组四个幂等扫描（开工 / 交接补发 / 验票 / 退场）到有界不动点（`_MAX_SCAN_PASSES`）。恢复没有独立路径——激活扫描就是恢复。成员拆出子任务后父任务的"继续"同样没有独立路径（F_128）：子任务全部终态 → 依赖刷新把父任务放回 `PENDING` → 开工扫描照常 `start_task`。事件仅承担两个扫描推不出的职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次）。
+4. **调度器不理解事件，只理解看板**：任何触发（`task_*` / `member_*` transport 事件、`POLL_TASK`、`SCHEDULER_SCAN`、激活）都跑同一组五个幂等扫描（开工 / 交接补发 / 验票 / 退场 / 修改推送）到有界不动点（`_MAX_SCAN_PASSES`）。恢复没有独立路径——激活扫描就是恢复。成员拆出子任务后父任务的"继续"同样没有独立路径（F_128）：子任务全部终态 → 依赖刷新把父任务放回 `PENDING` → 开工扫描照常 `start_task`。事件仅承担两个扫描推不出的职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次）。
 5. **交接 = leader 身份邮箱消息，投递即启动**：`_send_as_leader` 先写邮箱行（持久）再 `host.auto_start_member`（`UNSTARTED→STARTING` 拉起、`ERROR→RESTARTING` 复活、`DORMANT→RESTARTING` 唤醒，三条都是 CAS、幂等；给休眠成员派新任务即把它叫醒，F_118）。成员在线与否不是开工前置条件；成员侧零新代码（走既有 `MessageHandler`）。行里存的是**投递载荷不是文案**（`content=""` + `meta`），文案在投递时按模板渲染——见「消息面」段与 `S_12` 的 meta 三铁律。
 6. **`SchedulerHost.deliver_input` 只准注入 leader 自身**（终态摘要 / 升级 / 收尾）。对成员的输入永远走邮箱。**终态摘要只发顶层任务**（`parent_task_id` 为空）：成员的子任务（F_128）结果经父任务的恢复交接回到父任务执行者，leader 只在父任务完成时听到一次；子任务仍计入全部完成的判定。
 7. **开工规则**：成员无活跃任务（`{PLANNING, IN_PROGRESS, IN_REVIEW}`）时，取其名下 `PENDING(assignee)` 任务 `start_task`（DAO CAS；plan_mode 成员落 `PLANNING`）：**`resume_pending` 为真的任务（等着恢复的父任务，F_128）排在前面**，其余按 `updated_at` 最早——父任务挂起期间成员可能接了别的活，做了一半的任务不该排在新任务后面。标记就在候选行上，不额外查询；开工前读出、交给交接选模板，`start_task` 在同一条 CAS 里把它清掉。待恢复的任务跳过计划闸直落 `IN_PROGRESS`（判断在 `TeamTaskManager.start_task`）。并发/重复触发由 CAS 与一活跃探针消歧。
@@ -54,7 +54,7 @@ author_email: chengshuo5@huawei.com
 10. **投票判定策略在调度器，票据事实在 DB**：`verify_task`（scheduled 团队）只追加票行 + 发 `TASK_REVIEW_VOTE`，不翻转状态；autonomous 团队维持首裁即决。工具描述随语义分离（desc_key：`verify_task` / `verify_task_scheduled`）。策略更换 = 替换 `verdict.judge`，不碰票表与状态机。
 11. **leader 自发事件经 `SCHEDULER_SCAN` 回声可见**：`kernel._filter_self` 丢弃 self 事件时，若调度器激活且事件是 `task_*`，改投 `InnerEventType.SCHEDULER_SCAN`。coordination 无 handler 监听该 inner 事件；调度器视其为纯扫描提示。
 12. **异常语义**：`TeamScheduler.on_event` 吞普通异常（log + 下次触发重试幂等扫描），绝不让 bus loop 挂掉——与 `AsyncCallbackFramework.trigger` 的 swallow 语义对齐。
-13. **内存记账不持久化**：送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对（`_handoff_known`）都是进程内状态；leader 重启最坏重发一次送审或升级、每个活跃任务多读一次邮箱。看板真相只在 DB，交接真相在邮箱。
+13. **内存记账不持久化**：送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对（`_handoff_known`）/ 已推送版本（`_revision_pushed`）都是进程内状态；leader 重启最坏重发一次送审或升级、每个活跃任务多读一次邮箱。看板真相只在 DB，交接真相在邮箱。
 14. **各分发模式拥有自己的 task-board / stale handler 类，选择只发生在装配点**：
     `ScheduledTaskBoardHandler` / `ScheduledStaleTaskHandler` 是调度模式的 task-board / stale
     handler（verify 闸三事件与 `TASK_REVIEW_VOTE` 一律路由到 resume_polls-only 的
@@ -103,6 +103,16 @@ author_email: chengshuo5@huawei.com
     幂等由邮箱行本身保证，进程内 `_handoff_known`（`(task_id, owner)`）只是省查询；
     `_send_as_leader` 返回邮箱行是否落下，落下才记账，失败留给下次扫描重试。调度器仍不消费
     "改派"事件：`TASK_REVOKED` / `TASK_CLAIMED` 的 self 回声只是一次扫描提示（不变量 11）。
+
+19. **修改推送扫描：执行者一定能拿到任务的最新版本**（F_129）。任务每次改标题 / 内容 `revision` 加一，
+    `observed_revision` 是当前执行者**确实被展示过**的版本（邮件投递渲染时推进，见 `S_12`）。
+    `_reconcile_revisions` 与其余四个扫描并列，只读一次窄投影 `unseen_revisions()`（有执行者、未终态、
+    `revision > observed_revision`）：`PLANNING` / `IN_PROGRESS` → `_send_as_leader(owner, meta_task_revised)`
+    推送最新完整内容；`BLOCKED` 且 `resume_pending`（挂起中的父任务）→ `meta_subtask_review` 请它复核过期子任务；
+    其余（`PENDING` / 普通 `BLOCKED`）不发——开工交接投递时本来就渲染最新版本。投递即推进 `observed_revision`，
+    条件随之消失，连改多次只发一封、内容是最终版本。进程内 `_revision_pushed`（`(task_id, revision)`）只防投递前
+    重发；开工 / 恢复交接发出时同样记账，避免同一扫描里再补一封修改推送。邮件持久、懒启动收件人，离线成员与
+    整队重启都由既有机制覆盖。调度器不消费 `TASK_UPDATED` 本身：编辑的 self 回声只是一次扫描提示。
 
 ## 接口契约
 
@@ -187,6 +197,8 @@ kernel 侧：
 |---|---|---|
 | 开工（build / plan 闸）；改派活跃任务后给新 owner 的补发交接是同一条（不变量 18） | assignee | `scheduler_task_start` / `scheduler_task_start_plan` |
 | 恢复（父任务的子任务全部终态后再次开工，F_128；开工扫描按候选行开工前的 `resume_pending` 选择，交接补发扫描一律用开工模板，上游简述即子任务结果） | 挂起它的那个 assignee | `scheduler_task_resume` |
+| 修改推送（执行中任务被修改、执行者没看到，F_129；修改说明 + 最新完整内容 + 长内容的差异） | 当前 assignee | `scheduler_task_revised` |
+| 子任务复核（挂起中的父任务被修改，F_129；修改说明 + 最新内容 + 子任务列表，过期标出） | 父任务当前 assignee | `scheduler_subtask_review` |
 | 送审派发 / 催办 | 每个 reviewer / 未投票 reviewer | `scheduler_review_request` / `scheduler_review_renudge` |
 | 打回返工（`params`: 聚合 fail feedback + 解析后轮数上限） | author | `scheduler_rework` |
 
@@ -196,7 +208,7 @@ kernel 侧：
 
 | 命名空间 | 数据源 | 时机 | 白名单 |
 |---|---|---|---|
-| `task.*` | 任务行（`refs.task`） | 投递时现查 | `task_id` `title` `content` `status` `assignee` `reviewer` `review_round` `max_review_rounds` + 两个计算字段 `upstream_brief` / `downstream_brief`（F_118 / D7、F_119：经可选 `task_links_getter` 多查一次依赖表与相关任务行，只取**直接依赖**（一跳）；上游每条 `task_id · title · assignee · <完成摘要>`（`message_template.completion_summary`：优先 `summary`，否则 `note` 首个非空行，压单行、渲染截断到 `SUMMARY_RENDER_LIMIT`），非空时末尾追加一行 `view_task(action='note', task_id=...)` 取全文提示；下游每条 `task_id · title · assignee`，空集渲染为语言固定短句"无"/"none"；两个投递点共用 `message_template.task_links` 绑定该 getter，缺 getter 时渲染为空集短句） |
+| `task.*` | 任务行（`refs.task`） | 投递时现查 | `task_id` `title` `content` `status` `assignee` `reviewer` `review_round` `max_review_rounds` `revision` + F_129 三个计算字段（只在模板用到时才计算，各自渲染整段含标题、无内容时为空串，渲染后折叠多余空行）：`change_notes`（`observed_revision < r ≤ revision` 区间内的修改说明，按版本排序）、`revision_diff`（正文或基线快照不短于 `REVISION_DIFF_MIN_CHARS` 时，以 `observed_revision` 版本快照为基线的 `unified_diff`，经可选 `revision_snapshot_getter` 读快照）、`subtask_brief`（每个子任务一行 `id · title · assignee · status`，相对父任务过期的标出，经可选 `subtasks_getter`）；以及两个计算字段 `upstream_brief` / `downstream_brief`（F_118 / D7、F_119：经可选 `task_links_getter` 多查一次依赖表与相关任务行，只取**直接依赖**（一跳）；上游每条 `task_id · title · assignee · <完成摘要>`（`message_template.completion_summary`：优先 `summary`，否则 `note` 首个非空行，压单行、渲染截断到 `SUMMARY_RENDER_LIMIT`），非空时末尾追加一行 `view_task(action='note', task_id=...)` 取全文提示；下游每条 `task_id · title · assignee`，空集渲染为语言固定短句"无"/"none"；两个投递点共用 `message_template.task_links` 绑定该 getter，缺 getter 时渲染为空集短句） |
 | `member.*` | 成员行（`refs.member`） | 投递时现查 | `member_name` `display_name` `desc` |
 | `param.*` | `meta.params` | 发送时定格 | 键即字段（标量）；只放表答不出的瞬时值 |
 
@@ -207,7 +219,7 @@ kernel 侧：
 `summary` / `note` 是任务行列、**不进事件**：`TASK_COMPLETED` / `TASK_SUBMITTED_FOR_REVIEW` 仍只是唤醒信号，
 正文从行里现查——与"能表查的一律现查"同一原则。
 
-**展开点共四处**（缺一处即漏投空消息）：`handlers/message.py` 的
+**展开点共四处**（缺一处即漏投空消息）。渲染了 `task.content` 的展开回报 `ExpandedMessage.shown_revision`，进程内邮箱投递（`handlers/message.py`）与外部拉取（`external/client.py`）据此为执行者记下已看到的版本（F_129）：`handlers/message.py` 的
 `_format_message`（进程内邮箱）与 `_notify_human_agent_inbound`（HITT 人类成员回调——
 人类可以是 assignee/reviewer）、`_bridge_deliverable_for`（bridge relay 必须转发**展开后**
 文本，远程执行者无 DB）、`external/format.py` + `client.read_inbox`（外部成员 pull）。

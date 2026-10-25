@@ -6,7 +6,7 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 
 | 文件 | 职责 |
 |---|---|
-| `scheduler.py` | `TeamScheduler`：事件粗筛 + 四个幂等扫描（开工 / 交接补发 / 验票 / 退场）+ `SchedulerHost` 窄协议 + 已挂载 `TeamSkillEvolutionRail` 的 reviewer feedback 旁路（F_73） |
+| `scheduler.py` | `TeamScheduler`：事件粗筛 + 五个幂等扫描（开工 / 交接补发 / 验票 / 退场 / 修改推送）+ `SchedulerHost` 窄协议 + 已挂载 `TeamSkillEvolutionRail` 的 reviewer feedback 旁路（F_73） |
 | `review_feedback_evolution.py` | `ReviewFeedbackEvolutionCoordinator`：与产品无关的逐 Task Feedback 归因、团队终态汇总演进与新 Skill 候选路由；由 `TeamSkillEvolutionRail` 持有，复用其标准 host-event 队列 |
 | `reviewer_spec.py` | `build_reviewer_agent_spec`：把成员 spec 收窄为临时 reviewer 的基础 spec——框架级裁剪（文件工具只读、关 todo 规划、不挂子代理）恒生效，宿主可再传 rail / 内置工具类型白名单；宿主组装好的放 `TeamAgentSpec.reviewer_agent`，缺省时调度器用 teammate spec 回退 |
 | `verdict.py` | 纯函数投票判定（`settle_review_tally`：二元票池（verifier+challenger）一票否决 + 检视者分数池平均≥0.85）——策略可整体替换，不碰票据存储与状态机 |
@@ -14,7 +14,7 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 
 ## 核心不变量
 
-1. **调度器不理解事件，只理解看板。** 任何触发（task/member transport 事件、`POLL_TASK`、`SCHEDULER_SCAN` 回声、激活）都跑同一组四个幂等扫描；恢复 = 激活扫描本身，无独立恢复路径。事件仅有两个例外职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次，扫描推不出"刚刚发生"）。
+1. **调度器不理解事件，只理解看板。** 任何触发（task/member transport 事件、`POLL_TASK`、`SCHEDULER_SCAN` 回声、激活）都跑同一组五个幂等扫描；恢复 = 激活扫描本身，无独立恢复路径。事件仅有两个例外职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次，扫描推不出"刚刚发生"）。
 2. **交接 = leader 身份邮箱消息，投递即启动。** `_send_as_leader` 先落邮箱行（持久，离线成员首次 sweep 补投）再 `host.auto_start_member`（复用 `UNSTARTED→STARTING` CAS，幂等）。成员在线与否**不是**开工前置条件，调度器不做在线过滤。
 3. **发送存意图，投递才成文（F_63）。** 邮箱行的 `content` 恒空，`meta` 带模板 key + `refs`；文案由 `message_template.expand_message` 在**投递时刻**按收件人语言渲染，`{{task.*}}` 取的是**当时**的任务行——所以队列里躺了很久的交接不会投出过期的任务简报，leader 中途 `update_task` 也立刻对未投递消息生效。能表查的一律进 `refs` 现查；`params` 只放表答不出的瞬时值（某轮 fail feedback 聚合、解析后的轮数上限）。**不要**为了"省一次查询"把任务正文快照进消息。
 4. **`SchedulerHost.deliver_input` 只准注入 leader 自身**（终态摘要 / 升级 / 收尾），对成员永不直投。
@@ -29,12 +29,14 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 10. **退场由调度器请求、成员自落**（F_118）：`_reconcile_retirements` 对 `options.lifetime` 非空且 `READY`（不含 `BUSY`——round 中途请求会搁浅它正在等的回复）的成员，在"名下无非终态任务 + 无未读消息"同时成立时调普通 `shutdown_member`（休眠类不发告别通知）；终态（`SHUTDOWN` / `DORMANT`）由成员按 `retire_target` 自落（S_03 机制 18）。调度器**不直写** `DORMANT`、不拆 handle。给休眠成员派新任务时交接经 `auto_start_member` 唤醒它（`DORMANT→RESTARTING`）。
 11. **交接以邮箱为真相，改派不漏人**（B_06）：开工扫描只在任务离开 `PENDING` 的那一刻发交接；leader `update_task(assignee=...)` 改派一个已活跃的任务（`TASK_REASSIGNABLE_STATUSES` 保留状态）不经过那一刻，新 owner 只收到瞬时 `TASK_CLAIMED`——runtime 未起则无人接收，且调度模式无首启板巡视。`_reconcile_handoffs` 对每个活跃任务（`PLANNING` / `IN_PROGRESS`）核对**当前** owner 的邮箱里是否有 leader 身份、`refs.task` 绑定该任务的 `scheduler_task_start*` / `scheduler_task_resume` 行（已读未读皆可），没有就补发同一条开工交接（同样懒启动 owner）。幂等性来自邮箱本身加进程内 `_handoff_known` 记账（`(task_id, owner)`，本进程发过或查到过即记），重启后每对至多一次邮箱读。调度器仍不理解"刚刚改派"这个事件，只看板 + 邮箱两张表。
 
+12. **修改以版本差为真相，调度器推送最新内容**（F_129）：`_reconcile_revisions` 读窄投影 `unseen_revisions()`（有执行者、未终态、`revision > observed_revision`），执行中任务发 `scheduler_task_revised`（修改说明 + 最新完整内容 + 长内容差异），挂起中的父任务发 `scheduler_subtask_review`（加子任务列表，过期标出），没开工的不发——开工交接本来就带最新版本。投递渲染即推进 `observed_revision`，条件自然消失；`_revision_pushed` 只防投递前重发，开工 / 恢复交接发出时也记一笔。调度器不消费 `TASK_UPDATED` 本身。
+
 ## 生命周期（kernel 接线）
 
 - `CoordinationKernel.setup` 仅在 `spec.dispatch_mode == "scheduled"` 的 leader 上构造（休眠态）；其余 kernel 不构造。
 - 激活点两个：`notify_team_built()`（build_team 成功回调，先于任何 spawn / create_task）与 `kernel.start()`（team 行已存在——warm resume / 冷恢复）。
 - wake 路径：`kernel._build_wake_callback()` 组合 "coordination dispatch → scheduler.on_event"。
-- `pause()` / `stop()` 即 `deactivate()`；内存记账（送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对）不持久化——重启后最坏重发一次送审或升级、每个活跃任务多读一次邮箱，board 真相在 DB。
+- `pause()` / `stop()` 即 `deactivate()`；内存记账（送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对 / 已推送版本）不持久化——重启后最坏重发一次送审或升级、每个活跃任务多读一次邮箱，board 真相在 DB。
 - task review feedback callback 不进入状态机关键路径；团队终态 callback 是旁路汇总边界，不改变
   all-done 摘要与 pause/stop 决策。
 

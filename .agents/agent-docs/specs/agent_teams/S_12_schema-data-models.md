@@ -27,7 +27,7 @@ does not.
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/schema/blueprint.py`、`openjiuwen/agent_teams/schema/deep_agent_spec.py`、`openjiuwen/agent_teams/schema/team.py`、`openjiuwen/agent_teams/schema/events.py`、`openjiuwen/agent_teams/schema/status.py`、`openjiuwen/agent_teams/schema/stream.py`、`openjiuwen/agent_teams/schema/task.py` |
 | 最近一次修订日期 | 2026-10-25 |
-| 关联 feature | `F_05_lifecycle-finalize-relocation.md`（`MemberStatus.STOPPED` 新增）、`F_24_agent-time-awareness.md`（`TaskSummary.updated_at` 新增）、`F_38_team-teammate-worktree-isolation-agenttool.md`（`TeamRuntimeContext.worktree_path`）、`F_59_condition-named-task-state-machine-with-verify-gate.md`（条件命名 `TaskStatus` 状态机 + verify 闸）、`F_62_scheduled-dispatch-runtime-and-review-voting.md`（票表 + 轮数列 + `TASK_REVIEW_VOTE` + dispatch 能力上限）、`F_63_scheduler-message-templating-and-delivery-render.md`（消息表 `meta` 投递载荷列）、`F_65_runtime-idle-clock-stall-nudge.md`（`TeamAgentState.idle_since` 运行时 idle 时钟 + 两个停滞阈值 spec 字段）、`F_69_cwd-workspace-project-root-separation.md`（`DeepAgentSpec.cwd` / `project_root` 与 workspace 分离）、`F_78_steering-batch-quota-hook.md`（`TeamAgentSpec.steer_batch_size`）、`F_79_team-scoped-skill-library-and-visibility.md`（team 成员的 `skills` / `enable_skill_discovery` 落 build_spec 前被清空）、`F_118_task-scoped-member-lifetime.md`（`MemberStatus.DORMANT` + `retire_target`）、`F_119_scheduled-completion-handoff-via-note.md`（任务行 `summary` 列与改派 / 重置清空）、`F_128_scheduled-member-subtasks.md`（任务行 `parent_task_id` / `created_by` 列、`IN_PROGRESS → BLOCKED` 挂起、`max_subtask_depth`）。其余条目见 `docs/features/` |
+| 关联 feature | `F_05_lifecycle-finalize-relocation.md`（`MemberStatus.STOPPED` 新增）、`F_24_agent-time-awareness.md`（`TaskSummary.updated_at` 新增）、`F_38_team-teammate-worktree-isolation-agenttool.md`（`TeamRuntimeContext.worktree_path`）、`F_59_condition-named-task-state-machine-with-verify-gate.md`（条件命名 `TaskStatus` 状态机 + verify 闸）、`F_62_scheduled-dispatch-runtime-and-review-voting.md`（票表 + 轮数列 + `TASK_REVIEW_VOTE` + dispatch 能力上限）、`F_63_scheduler-message-templating-and-delivery-render.md`（消息表 `meta` 投递载荷列）、`F_65_runtime-idle-clock-stall-nudge.md`（`TeamAgentState.idle_since` 运行时 idle 时钟 + 两个停滞阈值 spec 字段）、`F_69_cwd-workspace-project-root-separation.md`（`DeepAgentSpec.cwd` / `project_root` 与 workspace 分离）、`F_78_steering-batch-quota-hook.md`（`TeamAgentSpec.steer_batch_size`）、`F_79_team-scoped-skill-library-and-visibility.md`（team 成员的 `skills` / `enable_skill_discovery` 落 build_spec 前被清空）、`F_118_task-scoped-member-lifetime.md`（`MemberStatus.DORMANT` + `retire_target`）、`F_119_scheduled-completion-handoff-via-note.md`（任务行 `summary` 列与改派 / 重置清空）、`F_128_scheduled-member-subtasks.md`（任务行 `parent_task_id` / `created_by` 列、`IN_PROGRESS → BLOCKED` 挂起、`max_subtask_depth`）。其余条目见 `docs/features/`、`F_129_task-revision-and-staleness.md`（任务行 `revision` / `observed_revision` / `parent_revision` / `change_notes`、`TaskUpdatedEvent.revision`、版本快照） |
 
 ## 范围 / 边界
 
@@ -830,6 +830,25 @@ CANCELLED    -> (terminal)
   `IN_PROGRESS → BLOCKED` 同一条 CAS 置真；DAO `start_task` 在开工 CAS 里清掉（恢复只被消费一次）；`reassign_task` /
   `reset_task` 也清掉——换了人或重来的任务，下一次开工是普通开工，要走计划闸、收普通开工交接。不从"有没有子任务"
   推断：子任务关系是永久的，恢复只属于挂起它的那一次。同样随迁移补列。
+
+### 任务版本 `revision` / `observed_revision` / `parent_revision` / `change_notes`（F_129）
+
+- `revision`（int，默认 0）：标题或内容**真的变了**才在 `TaskDao.update_task` 的同一次写里加一（内容与当前正文相同不算；
+  改派 / 验收人 / 依赖不算）。`TeamTaskManager.update_task` 只在加一时发 `TASK_UPDATED`，事件新增 `revision` 字段。
+- `observed_revision`（int，默认 0）：**当前执行者确实被展示过的版本**，单调不回退、只对当前 assignee 生效
+  （`TaskDao.observe_revision` 的 CAS 带 `assignee ==` 与 `observed < revision`）。推进点：调度模式模板邮件投递（渲染出的版本）、
+  自主模式指派通知送达、执行者自己 `view_task(get)`；`claim_task` / `reassign_task` / `reset_task` 对齐为当前 `revision`
+  （认领者取走的就是当时的版本、换人后新执行者的开工交接会展示当前版本）。派生判断"执行者有没看到的修改"
+  = 有 assignee、未终态、`revision > observed_revision`，没有单独的通知标记列。
+- `parent_revision`（int，默认 0）：子任务派生时父任务的 `revision`（成员 `create_task` 写入）。派生判断"相对父任务过期"
+  = 未终态且 `父.revision > parent_revision`；父任务执行者用成员版 `update_task` 修改（顺带对齐）或 `confirm=true`（只对齐）。
+- `change_notes`（text，JSON 列表 `[{revision, note, by}]`）：`update_task(change_note=...)` 随版本加一追加，保留为审计历史；
+  推送只渲染执行者没看到的那段区间。
+- **版本快照**（`SessionFileStore` 的 `KIND_TASK_REVISION`，路径 `tasks/<task_id>.r<N>.md`）：正文或新内容不短于
+  `REVISION_DIFF_MIN_CHARS`（`schema/task.py`，2000 字符）、任务有执行者且它看到的就是当前版本时，覆写前把旧正文存为该版本快照，
+  并删掉比 `observed_revision` 更旧的快照——只保留"执行者已看到的那一版"作差异基线。IO 失败只丢差异，不影响正确性。
+- 四列随迁移补齐，老数据全为 0 / NULL，即"未修改、已看到"。`TaskSummary.stale_against`、`TaskDetail.revision` /
+  `stale_subtasks` 回带给 `view_task`。
 
 ### 任务行 `summary` / `note` 列与成员 `options.lifetime`（F_118 / F_119）
 

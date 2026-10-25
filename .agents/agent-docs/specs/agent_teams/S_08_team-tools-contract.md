@@ -38,7 +38,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
 | 最近一次修订日期 | 2026-10-25 |
-| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md |
+| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md、F_129_task-revision-and-staleness.md |
 
 ## 范围 / 边界
 
@@ -114,8 +114,8 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
       工具*名字*不随 dispatch mode 变，`create_task` 只是换了形态）
     - teammate = `MEMBER_TOOLS_BY_DISPATCH[dispatch_mode]`，即
       `autonomous → MEMBER_ONLY_TOOLS ∪ SHARED_TOOLS`、
-      `scheduled → MEMBER_ONLY_TOOLS_SCHEDULED ∪ SHARED_TOOLS`（其中 `create_task` 只在
-      `member_subtasks_enabled()` 时保留，见不变量 30）。未知 dispatch
+      `scheduled → MEMBER_ONLY_TOOLS_SCHEDULED ∪ SHARED_TOOLS`（其中 `create_task` / `update_task` 只在
+      `member_subtasks_enabled()` 时保留，见不变量 30 / 31）。未知 dispatch
       值直接 `KeyError`（下标而非 `.get`）——静默回退会把自主认领路径交给一个
       调度模式的成员。
     - human_agent = 显式枚举的 `HUMAN_AGENT_TOOLS`，**不沿用** `SHARED_TOOLS`。
@@ -507,8 +507,21 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
       DAO 环检测拒绝。结果尾附"本轮立即结束"的提示。
     - 子任务全部终态后由调度器恢复父任务（见 `S_22` 不变量 4 / 6 / 7）。leader 侧：`TeamTaskManager.cancel` 取消一个
       任务后**先父后子**依次取消其未终态子任务（整个级联结束后只检查一次任务板是否清空，`TASK_LIST_DRAINED` 至多一次）；`TeamTaskManager.reassign` 拒绝改派有未终态子任务的 `BLOCKED` 父任务
-      （不变量 16 里"`BLOCKED` = 有主没开工"的前提对它不成立）。成员没有 `update_task`，不能改 / 取消自己建的子任务。
+      （不变量 16 里"`BLOCKED` = 有主没开工"的前提对它不成立）。成员改 / 确认 / 取消子任务走不变量 31 的成员版 `update_task`。
     - `view_task` 的 list 行带 `[subtask of #父]`，get 带 `Subtask of:` / `Subtasks:`。
+31. **任务版本：修改一定被执行者看到，完成前必须看过最新版本**（F_129，两种调度模式）。
+    - leader `update_task` 新增可选 `change_note`（只能与 `title` / `content` 同传，单独传报错），随版本加一落进
+      `change_notes`；结果回带新版本号、调度模式下的推送对象，以及会因此过期的未完成子任务。
+    - **完成闸**：`member_complete_task` 与 `claim_task(status=completed)` 在任务 `revision > observed_revision` 时拒绝并给出
+      版本差（`r{observed} -> r{revision}`），提示先 `view_task(action=get)`；执行者自己 `view_task(get)` 即推进
+      `observed_revision`。别人的 `view_task` 不推进。
+    - **成员版 `update_task`**（`MemberSubtaskUpdateTool`，`_UPDATE_TASK_CLASS[("scheduled", "member")]`，与成员 `create_task`
+      同一门控 `member_subtasks_enabled()`）：`task_id` + `title?` / `content?` / `change_note?` / `confirm?` / `status?`（仅
+      `"cancelled"`）。只能处理**父任务当前执行者是调用者**的未结束子任务（不看 `created_by`、不要求调用者有活跃任务）；
+      修改顺带把 `parent_revision` 对齐父任务，`confirm=true` 只对齐不改内容，取消走 `TeamTaskManager.cancel` 的级联。
+      `assignee` / `reviewer` / `max_review_rounds` / `add_blocked_by` 按"给了值即拒绝"处理。
+    - `view_task`：list 行对相对父任务过期的子任务带 `[stale: parent r{父} / based on r{子}]`；get 带 `Revision:`，
+      `Subtasks:` 里过期的标 `[stale]`。
 
 ## 接口契约
 
@@ -620,7 +633,7 @@ openjiuwen/agent_teams/tools/locales/
 | `LEADER_ONLY_TOOLS` | `build_team`, `clean_team`, `spawn_teammate`, `spawn_human_agent`, `spawn_passive_human`, `spawn_bridge_agent`, `set_member_model`（gate `builtin_models_enabled()`）, `spawn_expert` / `view_experts` / `view_expert_groups`（`EXPERT_TOOLS`，gate 宿主注入的 `ExpertCatalog`）, `shutdown_member`, `approve_plan`, `approve_tool`, `list_checkpoints`（gate `fork_enabled()`，同 `checkpoint`）, `create_task`, `update_task`, `swarmflow`, `async_tasks_list`, `async_task_output`, `async_task_cancel`，以及组织工具 `org_*`（gate 组织运行时，见 S_29） |
 | `EXPERT_TOOLS` | `view_experts`, `view_expert_groups`, `spawn_expert`——`LEADER_ONLY_TOOLS` 的子集，未注入目录时整体减掉 |
 | `MEMBER_ONLY_TOOLS` | `claim_task`, `submit_plan`, `verify_task` |
-| `MEMBER_ONLY_TOOLS_SCHEDULED` | `member_complete_task`, `submit_plan`, `verify_task`, `create_task`（gate `member_subtasks_enabled()`，F_128） |
+| `MEMBER_ONLY_TOOLS_SCHEDULED` | `member_complete_task`, `submit_plan`, `verify_task`, `create_task` / `update_task`（gate `member_subtasks_enabled()`，F_128 / F_129） |
 | `SHARED_TOOLS` | `view_task`, `send_message`, `checkpoint`（gate `fork_enabled()`），`workspace_meta`（后者是死条目——不在 `all_tools`，由 `TeamToolRail.init` 单独 append） |
 | `HUMAN_AGENT_TOOLS` | `view_task`, `member_complete_task`, `send_message` |
 | `LEADER_TOOLS` | `LEADER_ONLY_TOOLS ∪ SHARED_TOOLS`（dispatch-invariant） |
