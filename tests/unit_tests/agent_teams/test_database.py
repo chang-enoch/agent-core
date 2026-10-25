@@ -352,12 +352,15 @@ class TestTeamDatabaseInit:
 
                 columns = {col["name"] for col in inspect(conn).get_columns("team_task_presubtask")}
                 row = (
-                    conn.exec_driver_sql("SELECT parent_task_id, created_by FROM team_task_presubtask").mappings().one()
+                    conn.exec_driver_sql("SELECT parent_task_id, created_by, resume_pending FROM team_task_presubtask")
+                    .mappings()
+                    .one()
                 )
 
-            assert {"parent_task_id", "created_by"} <= columns
+            assert {"parent_task_id", "created_by", "resume_pending"} <= columns
             assert row["parent_task_id"] is None
             assert row["created_by"] is None
+            assert not row["resume_pending"]
         finally:
             engine.dispose()
 

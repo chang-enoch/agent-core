@@ -170,6 +170,10 @@ class TeamTaskBase(SQLModel):
     # Member that created the task (F_128). Audit / display only — no
     # permission or routing decision reads it. NULL means the leader.
     created_by: Optional[str] = Field(default=None, nullable=True)
+    # Set when the owner parks this task to wait on its subtasks (F_128);
+    # consumed by the next start (which resumes instead of beginning) and
+    # cleared by reassign / reset, after which a start is a fresh one.
+    resume_pending: bool = Field(default=False, nullable=False)
     updated_at: Optional[int] = Field(default=None, sa_type=BigInteger, nullable=True)
 
     def brief(self) -> dict:

@@ -26,7 +26,7 @@ does not.
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/schema/blueprint.py`、`openjiuwen/agent_teams/schema/deep_agent_spec.py`、`openjiuwen/agent_teams/schema/team.py`、`openjiuwen/agent_teams/schema/events.py`、`openjiuwen/agent_teams/schema/status.py`、`openjiuwen/agent_teams/schema/stream.py`、`openjiuwen/agent_teams/schema/task.py` |
-| 最近一次修订日期 | 2026-10-24 |
+| 最近一次修订日期 | 2026-10-25 |
 | 关联 feature | `F_05_lifecycle-finalize-relocation.md`（`MemberStatus.STOPPED` 新增）、`F_24_agent-time-awareness.md`（`TaskSummary.updated_at` 新增）、`F_38_team-teammate-worktree-isolation-agenttool.md`（`TeamRuntimeContext.worktree_path`）、`F_59_condition-named-task-state-machine-with-verify-gate.md`（条件命名 `TaskStatus` 状态机 + verify 闸）、`F_62_scheduled-dispatch-runtime-and-review-voting.md`（票表 + 轮数列 + `TASK_REVIEW_VOTE` + dispatch 能力上限）、`F_63_scheduler-message-templating-and-delivery-render.md`（消息表 `meta` 投递载荷列）、`F_65_runtime-idle-clock-stall-nudge.md`（`TeamAgentState.idle_since` 运行时 idle 时钟 + 两个停滞阈值 spec 字段）、`F_69_cwd-workspace-project-root-separation.md`（`DeepAgentSpec.cwd` / `project_root` 与 workspace 分离）、`F_78_steering-batch-quota-hook.md`（`TeamAgentSpec.steer_batch_size`）、`F_79_team-scoped-skill-library-and-visibility.md`（team 成员的 `skills` / `enable_skill_discovery` 落 build_spec 前被清空）、`F_118_task-scoped-member-lifetime.md`（`MemberStatus.DORMANT` + `retire_target`）、`F_119_scheduled-completion-handoff-via-note.md`（任务行 `summary` 列与改派 / 重置清空）、`F_128_scheduled-member-subtasks.md`（任务行 `parent_task_id` / `created_by` 列、`IN_PROGRESS → BLOCKED` 挂起、`max_subtask_depth`）。其余条目见 `docs/features/` |
 
 ## 范围 / 边界
@@ -820,12 +820,16 @@ CANCELLED    -> (terminal)
   任务推出、写入，**不是模型参数**。NULL = 顶层任务（leader 创建）。深度 `depth(t)` = 沿父链的层数，顶层为 0，由
   `TeamTaskManager.task_depth` 计算并对照 `TeamAgentSpec.max_subtask_depth`。不建索引：子任务查询扫小看板，索引每次
   INSERT 都要付一次写放大。读点：`get_subtask_statuses`（单父任务的 `(task_id, status)` 投影，用于"是否有子任务 / 未终态
-  子任务 / 级联取消"）、`get_parent_task_ids`（全看板的父任务 id 集合，一次查询，调度器排序用）。
+  子任务 / 级联取消"）、`get_parent_task_id`（单任务的父任务 id 投影，`task_depth` 沿父链逐层调用，不读整行）。
 - `TeamTaskBase.created_by`（nullable text）：创建子任务的成员名。**只用于审计与展示**，任何权限、路由判断都不读它——
   leader 改派父任务后，结果应回到父任务的当前执行者，而不是创建者。NULL = leader。
 - 两列随 `TaskGraphSpec` → `NewTaskSpec` 进 `mutate_dependency_graph`；`TaskSummary.parent_task_id` 与
   `TaskDetail.parent_task_id` / `subtasks` 回带给 `view_task`。老 session 的任务表由
   `engine._ensure_dynamic_table_indexes` 补列。
+- `TeamTaskBase.resume_pending`（bool，非空，默认 false）：**挂起它的执行者还没恢复它**。成员拆子任务时与
+  `IN_PROGRESS → BLOCKED` 同一条 CAS 置真；DAO `start_task` 在开工 CAS 里清掉（恢复只被消费一次）；`reassign_task` /
+  `reset_task` 也清掉——换了人或重来的任务，下一次开工是普通开工，要走计划闸、收普通开工交接。不从"有没有子任务"
+  推断：子任务关系是永久的，恢复只属于挂起它的那一次。同样随迁移补列。
 
 ### 任务行 `summary` / `note` 列与成员 `options.lifetime`（F_118 / F_119）
 
@@ -877,7 +881,7 @@ CANCELLED    -> (terminal)
   覆盖、不落 `team_info`）：scheduled 成员是否可直接互发消息。`TeamSpec` 与
   `TeamJoinDescriptor` 各有同名镜像字段，供外部 CLI 成员的提示词与工具装配读取；autonomous 下忽略。
 - **`max_subtask_depth: int = 0`**（F_128，`TeamAgentSpec` 静态开关，无 `build_team` 覆盖、不落 `team_info`）：
-  scheduled 成员能否拆子任务、以及子任务最多嵌套几层（≥0，`_validate_review_settings` 拒绝负数；0 = 关闭）。
+  scheduled 成员能否拆子任务、以及子任务最多嵌套几层（字段约束 `Field(ge=0)` 拒绝负数；0 = 关闭）。
   `TeamSpec` 与 `TeamJoinDescriptor` 各有同名镜像字段，理由同 `enable_member_messaging`；autonomous 下忽略。
 - **新事件** `TASK_REVIEW_VOTE`（`TaskReviewVoteEvent`）：`member_name`=author、`reviewer`=
   投票人、`decision`、`review_round`、`pass_count`/`fail_count`/`reviewer_count` 票数快照。

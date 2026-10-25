@@ -7,7 +7,7 @@
 | 日期 | 2026-10-23 |
 | 状态 | 已实现 |
 | 适用范围 | **仅 `dispatch_mode == "scheduled"` 的非 leader、非人类成员**，且团队开启 `max_subtask_depth > 0`。默认关闭，关闭时行为与改动前逐字一致 |
-| 范围 | `schema/blueprint.py` / `schema/team.py`（`max_subtask_depth`）、`schema/task.py`（`TaskGraphSpec` / `NewTaskSpec` / `TaskSummary` / `TaskDetail` 的父子字段）、`tools/models.py`（任务表 `parent_task_id` / `created_by` 两列）、`tools/database/engine.py`（加列迁移）、`tools/database/task_dao.py`（`mutate_dependency_graph(suspend_parent=)`、`get_subtask_statuses` / `get_parent_task_ids` 投影）、`tools/task_manager.py`（`add_graph(suspend_parent=)`、恢复不走计划闸、挂起父任务拒绝改派、取消级联、`task_depth`）、`tools/team.py`（`subtask_depth_limit` / `member_subtasks_enabled`）、`tools/tool_permissions.py`、`tools/tool_factory.py`（`_CREATE_TASK_CLASS` 加 role 维度）、`tools/tool_task.py`（`MemberSubtaskCreateTool`、`view_task` 显示父子关系）、`tools/locales/{cn,en}.py` 与 `descs/*/task/create_task_subtask.md`、`agent/scheduling/{scheduler,render}.py`、`prompts/*/scheduler_task_resume.md`、`prompts/*/dispatch_scheduled_{leader,teammate}.md` 及 `*_subtasks.md` 片段、`prompts/sections.py`、`rails/team_policy_rail.py`、`tools/tool_team.py`、`spawn/external_cli_spawn.py`、`external/{descriptor,client}.py`、`external/cli_agent/spawn.py`；文档：`docs/specs/{S_08,S_12,S_22}`、`prompts/AGENTS.md`、`tools/AGENTS.md`、`agent/scheduling/AGENTS.md` |
+| 范围 | `schema/blueprint.py` / `schema/team.py`（`max_subtask_depth`）、`schema/task.py`（`TaskGraphSpec` / `NewTaskSpec` / `TaskSummary` / `TaskDetail` 的父子字段）、`tools/models.py`（任务表 `parent_task_id` / `created_by` / `resume_pending` 三列）、`tools/database/engine.py`（加列迁移）、`tools/database/task_dao.py`（`mutate_dependency_graph(suspend_parent=)`、`get_subtask_statuses` / `get_parent_task_id` 投影、`resume_pending` 的置位与清除）、`tools/task_manager.py`（`add_graph(suspend_parent=)`、恢复不走计划闸、挂起父任务拒绝改派、取消级联、`task_depth`）、`tools/team.py`（`subtask_depth_limit` / `member_subtasks_enabled`）、`tools/tool_permissions.py`、`tools/tool_factory.py`（`_CREATE_TASK_CLASS` 加 role 维度）、`tools/tool_task.py`（`MemberSubtaskCreateTool`、`view_task` 显示父子关系）、`tools/locales/{cn,en}.py` 与 `descs/*/task/create_task_subtask.md`、`agent/scheduling/{scheduler,render}.py`、`prompts/*/scheduler_task_resume.md`、`prompts/*/dispatch_scheduled_{leader,teammate}.md` 及 `*_subtasks.md` 片段、`prompts/sections.py`、`rails/team_policy_rail.py`、`tools/tool_team.py`、`spawn/external_cli_spawn.py`、`external/{descriptor,client}.py`、`external/cli_agent/spawn.py`；文档：`docs/specs/{S_08,S_12,S_22}`、`prompts/AGENTS.md`、`tools/AGENTS.md`、`agent/scheduling/AGENTS.md` |
 | 测试基线 | `pytest tests/unit_tests/agent_teams/ --ignore=cli --ignore=observability` → 3901 passed / 36 skipped / 2 xfailed；`cli/` + `observability/` + `test_database.py` → 234 passed。其中新增 `tools/test_member_subtasks.py` 35 例、`test_database.py` 加列迁移 1 例 |
 | Refs | #1435 |
 
@@ -107,17 +107,17 @@
 
 ### D4：调度器——恢复交接、恢复优先、摘要只给顶层任务
 
-- **"是否恢复"只问一件事：这个任务有没有子任务**（`TeamTaskManager.has_subtasks`）。子任务只能在父任务执行中创建，
-  所以一个被再次开工、且有子任务的任务必然是在恢复。不新增状态、不加标记列。
-- **恢复交接用独立模板** `scheduler_task_resume`（cn / en）：`_send_task_start` 用 `has_subtasks` 决定
-  `render.meta_task_start(task, resume=True)`，正文说明"你拆出的子任务已全部结束（含被取消的），继续完成本任务"，
+- **"是否恢复"看父任务行上的 `resume_pending` 标记**：挂起时置真，下一次开工消费，改派 / 重置清掉（初版按"有没有子任务"
+  推断，审查后改掉，见文末「审查后修复」）。
+- **恢复交接用独立模板** `scheduler_task_resume`（cn / en）：开工扫描在 `start_task` 之前读出候选行的 `resume_pending`，
+  传给 `_send_task_start(task, resume=...)` → `render.meta_task_start(task, resume=True)`；交接补发扫描一律发开工模板。正文说明"你拆出的子任务已全部结束（含被取消的），继续完成本任务"，
   复用 `{{task.upstream_brief}}` 列出子任务完成摘要（子任务就是父任务的直接上游）。`is_task_start_meta` 的模板集合
   同步加入它，B_06 的交接补发扫描照常工作。
-- **恢复不重走计划闸**：`TeamTaskManager.start_task` 对有子任务的任务一律落 `IN_PROGRESS`，计划已在首次开工时批过。
+- **恢复不重走计划闸**：`TeamTaskManager.start_task` 对 `resume_pending` 为真的任务一律落 `IN_PROGRESS`，计划已在首次开工时批过。
   判断放在 manager 而不是调度器传参：开工落点是 manager 的规则，调度器之外的开工路径也应一致。
 - **恢复优先**：父任务挂起期间名额空出，调度器可能给该成员开工别的任务，父任务恢复会被推迟到那个任务结束。
-  `_reconcile_starts` 每次扫描用一次投影查询（`parent_task_ids`）取出所有父任务 id，选候选时有子任务的 `PENDING`
-  任务排在普通任务前（再按 `updated_at` / `task_id`）。这只缩短延迟，不影响正确性。
+  `_reconcile_starts` 选候选时 `resume_pending` 为真的 `PENDING` 任务排在普通任务前（再按 `updated_at` / `task_id`），
+  标记就在候选行上，不额外查询。这只缩短延迟，不影响正确性。
 - **终态摘要只给顶层任务**：`_digest_task_done` 对 `parent_task_id` 非空的任务不给 leader 发摘要；子任务的结果经
   恢复交接回到父任务执行者。收尾摘要（`render_leader_all_done`）照常统计全部任务。
 - **挂起本身不发新事件**：子任务的 `TASK_CREATED` 已经足以唤醒调度器扫描；不复用 `TASK_UPDATED`——它会触发成员
@@ -126,7 +126,7 @@
 ### D5：leader 对父子任务的操作
 
 - **取消级联**：`TeamTaskManager.cancel` 取消一个任务后，依次取消它所有未终态的子任务（递归，深度受
-  `max_subtask_depth` 约束），每个被取消的任务照常发 `TASK_CANCELLED`。**先父后子**是正确性要求：先取消子任务会解开
+  `max_subtask_depth` 约束），每个被取消的任务照常发 `TASK_CANCELLED`；整个级联结束后才检查一次任务板是否清空。**先父后子**是正确性要求：先取消子任务会解开
   父任务最后一条依赖边，调度器可能抢先把一个马上要被取消的父任务恢复开工。级联不在同一事务里——每一步都是已有的
   单任务取消，中途失败留下的只是"父已取消、部分子未取消"，子任务仍可被 leader 单独取消，不会出现卡死。
 - **挂起中的父任务拒绝改派**：父任务 `BLOCKED` 且有未终态子任务时，`TeamTaskManager.reassign` 拒绝（工具与其他
@@ -137,7 +137,7 @@
 
 ### D6：开关与提示词
 
-- 静态 spec 开关 `TeamAgentSpec.max_subtask_depth: int = 0`，一个字段同时是门控（0 = 关闭）与深度上限；不进
+- 静态 spec 开关 `TeamAgentSpec.max_subtask_depth: int = Field(default=0, ge=0)`，一个字段同时是门控（0 = 关闭）与深度上限；不进
   `build_team` 覆盖（成员工具在 spawn 时装配，理由同 F_126 决策 1）。`TeamSpec` 镜像该字段随 spawn 载荷到达成员
   进程；外部 CLI 成员经 `TeamJoinDescriptor` 透传。门控信号只有一个：`TeamBackend.member_subtasks_enabled()`
   （`max_subtask_depth > 0`），工具工厂、`TeamPolicyRail`、`build_team` 准则披露三处都读它（同 F_126 决策 2）；深度
@@ -201,3 +201,28 @@
   `update_task` 形态，权限按父任务当前执行者判断。
 - 单次调用可建子任务的数量暂不设上限，只靠深度控制扩散；评审时确认是否需要。
 - swarm 侧开关（实验特性「调度模式」下的子项）需在 swarm 仓库单独落地，依赖本改动合入后 bump core `rev`。
+
+## 审查后修复（2026-10-25）
+
+代码审查（high）提出的 9 条里，7 条以一个 `fix(swarm)` 提交修掉；"编辑挂起中的父任务会唤醒执行者"改成按需逐层调整子任务，
+另起一份特性文档；测试代码的规范性不再检查，那一条不改。
+
+1. **恢复判定改为显式标记 `resume_pending`**。初版用"这个任务有没有子任务"判断是否恢复，但子任务关系是永久的：父任务恢复后
+   被改派，交接补发扫描会给新执行者发"你拆出的子任务都结束了，继续吧"；重置后再指派给计划审批模式的成员，会绕过计划闸。
+   恢复只属于挂起它的那一次，所以改成父任务行上的布尔列：挂起 CAS 置真、开工 CAS 消费、`reassign_task` / `reset_task` 清掉。
+   `has_subtasks`、`parent_task_ids` / `get_parent_task_ids` 随之删除（`parent_task_id` 列保留，父子关系仍靠它）。
+   - 拒绝"按 `created_by` 是否等于当前执行者判断"：重置后再指派回原执行者时仍会误判为恢复。
+2. **级联取消只发一次 `TASK_LIST_DRAINED`**：单任务取消（含递归进子任务）抽成 `_cancel_with_subtasks`，不再检查任务板；
+   公开的 `cancel()` 在整个级联结束后检查一次。
+3. **禁传字段按"有没有给值"判断**：`spec.get(name) is not None`，只有显式 `null` 视为没传，`member: {}`、`reviewer: {}`、
+   `max_review_rounds: False` 都会被拒绝。
+4. **`task_depth` 沿父链只读 `parent_task_id` 一列**（`TaskDao.get_parent_task_id`），不再读整行、不再还原溢出到文件的正文。
+5. **调度器不再为每次交接查询子任务**：随第 1 条，恢复标记就在候选行上。
+6. **承担者校验整批三次读取**：leader 名、名册投影（`list_member_roster`，补上调用者自己）、`live_human_agent_names`，
+   替代每个子任务一次 `member_exists` 加一次 `is_live_human_agent`。错误文案不变。
+7. **深度校验改为字段约束** `Field(default=0, ge=0)`，从验收参数的校验函数里移走。
+
+验证：`test_member_subtasks.py` 补了恢复后改派得到普通开工交接、待恢复时改派给计划审批成员仍走计划闸、重置后重新开始、
+级联取消只发一次清空事件，以及 `{}` / `False` 两种禁传值；`test_database.py` 的迁移用例补上 `resume_pending`。
+`pytest tests/unit_tests/agent_teams/` → 4022 passed / 36 skipped / 2 xfailed。
+

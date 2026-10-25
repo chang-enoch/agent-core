@@ -309,7 +309,7 @@ async def _suspend_parent_in_session(
             team_task_model.status == TaskStatus.IN_PROGRESS.value,
             team_task_model.assignee == owner,
         )
-        .values(status=TaskStatus.BLOCKED.value, updated_at=now)
+        .values(status=TaskStatus.BLOCKED.value, resume_pending=True, updated_at=now)
     )
     if (result.rowcount or 0) == 0:
         raise _MutationFailure(
@@ -666,19 +666,14 @@ class TaskDao:
             )
             return [(row[0], row[1]) for row in result.all()]
 
-    async def get_parent_task_ids(self, team_name: str) -> set[str]:
-        """Return the ids of every task that has at least one subtask (F_128)."""
+    async def get_parent_task_id(self, task_id: str) -> Optional[str]:
+        """Return a task's ``parent_task_id`` alone (F_128), ``None`` for a top-level or missing task."""
         team_task_model = _get_task_model()
         async with self._sessions.read() as session:
             result = await session.execute(
-                select(team_task_model.parent_task_id)
-                .where(
-                    team_task_model.team_name == team_name,
-                    team_task_model.parent_task_id.is_not(None),
-                )
-                .distinct()
+                select(team_task_model.parent_task_id).where(team_task_model.task_id == task_id)
             )
-            return set(result.scalars().all())
+            return result.scalar_one_or_none()
 
     async def get_tasks_by_assignee(
         self, team_name: str, assignee_id: str, status: Optional[str] = None
@@ -762,7 +757,8 @@ class TaskDao:
                     team_task_model.assignee == member_name,
                     team_task_model.status == TaskStatus.PENDING.value,
                 )
-                .values(status=to_status.value, updated_at=now)
+                # A resume is consumed by the start it marks (F_128).
+                .values(status=to_status.value, resume_pending=False, updated_at=now)
             )
             await session.commit()
             started = result.rowcount == 1
@@ -869,8 +865,9 @@ class TaskDao:
                     team_task_model.status.in_(reassignable),
                 )
                 # The completion text describes the former owner's delivery;
-                # it is cleared atomically with the hand-over (F_119).
-                .values(assignee=to_assignee, summary=None, note=None, updated_at=now)
+                # it is cleared atomically with the hand-over (F_119). So is a
+                # pending resume: the new owner never suspended it (F_128).
+                .values(assignee=to_assignee, summary=None, note=None, resume_pending=False, updated_at=now)
             )
             await session.commit()
             swapped = result.rowcount == 1
@@ -928,6 +925,8 @@ class TaskDao:
             # The completion text belongs to the released owner's delivery (F_119).
             task.summary = None
             task.note = None
+            # A reset task starts over; it is no longer a suspended owner's resume (F_128).
+            task.resume_pending = False
             task.updated_at = get_current_time()
             await session.commit()
             team_logger.info("Task %s reset from %s to PENDING", task_id, origin_task_status)

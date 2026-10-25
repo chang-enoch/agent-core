@@ -1058,13 +1058,31 @@ class MemberSubtaskCreateTool(TeamTool):
         }
 
     async def _validate_owners(self, tasks: list[dict]) -> str | None:
-        """Existing non-leader owners, and no live human — the leader cannot cancel their tasks."""
-        error = await _validate_assignees(self.agent_team, tasks, required=True)
-        if error:
-            return error
+        """Existing non-leader owners, and no live human — the leader cannot cancel their tasks.
+
+        Three reads for the whole batch (leader name, roster, live humans)
+        instead of two per subtask; the roster projection leaves out the
+        caller, who is a valid owner of its own subtasks.
+        """
+        leader_member_name = await self.agent_team.resolve_leader_member_name()
+        roster = {entry.member_name for entry in await self.agent_team.list_member_roster()}
+        roster.add(self.agent_team.member_name)
+        humans = await self.agent_team.live_human_agent_names()
         for spec in tasks:
-            assignee = spec["assignee"].strip()
-            if await self.agent_team.is_live_human_agent(assignee):
+            assignee = (spec.get("assignee") or "").strip()
+            if not assignee:
+                return (
+                    f"Task {_spec_label(spec)!r} missing required 'assignee' — "
+                    f"assigned tasks must name a non-leader team member"
+                )
+            if leader_member_name and assignee == leader_member_name:
+                return (
+                    f"Task {_spec_label(spec)!r}: assignee {assignee!r} is the team leader; "
+                    f"assign the task to a non-leader member"
+                )
+            if assignee not in roster:
+                return f"Task {_spec_label(spec)!r}: member {assignee!r} not found in the team"
+            if assignee in humans:
                 return (
                     f"Task {_spec_label(spec)!r}: {assignee!r} is a human member; subtasks go to "
                     f"agent members only — ask the leader to involve a human"
@@ -1080,7 +1098,10 @@ class MemberSubtaskCreateTool(TeamTool):
         if error:
             return ToolOutput(success=False, error=error)
         for spec in tasks:
-            stray = [name for name in _SUBTASK_FORBIDDEN_FIELDS if spec.get(name) not in (None, "", [], ())]
+            # Presence, not truthiness: an empty ``member: {}`` is still an
+            # argument this form does not take. Only an explicit null counts
+            # as absent.
+            stray = [name for name in _SUBTASK_FORBIDDEN_FIELDS if spec.get(name) is not None]
             if stray:
                 return ToolOutput(
                     success=False,

@@ -37,7 +37,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
-| 最近一次修订日期 | 2026-10-24 |
+| 最近一次修订日期 | 2026-10-25 |
 | 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md |
 
 ## 范围 / 边界
@@ -497,13 +497,16 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
       它就是父任务；`depth(父) + 1 <= subtask_depth_limit()`，否则拒绝。
     - schema 每项 `title` / `content` / `task_id?` / `depends_on?` / `assignee`（必填）。`assignee` 必须是已存在的非
       leader 成员，可以是调用者自己，**不能是在队人类成员**（leader 取消不了人类的任务，与取消级联冲突）。**不提供**
-      `member`、`reviewer`、`max_review_rounds`、`depended_by`、`parent_task_id`、`created_by`；偷传任一在写库前报错拒绝。
+      `member`、`reviewer`、`max_review_rounds`、`depended_by`、`parent_task_id`、`created_by`；偷传任一（按键是否给了值判断，
+      只有显式 `null` 视为没传，`{}` / `False` 同样拒绝）在写库前报错拒绝。承担者校验整批三次读取（leader 名、名册投影、
+      `live_human_agent_names`），不逐个子任务查库。
     - 一次 `add_graph(..., suspend_parent=父)` = 一次 `mutate_dependency_graph`：子任务落库（`parent_task_id` /
-      `created_by` 由工具写）、父任务 `depends_on` 每个子任务、父任务 CAS `IN_PROGRESS → BLOCKED`；任何一步失败整批回滚。
+      `created_by` 由工具写）、父任务 `depends_on` 每个子任务、父任务 CAS `IN_PROGRESS → BLOCKED` 并置 `resume_pending`；
+      任何一步失败整批回滚。
       挂起的父任务不占活跃名额（不变量 16 的活跃集不含 `BLOCKED`），所以自锁与成员间的名额等待环都不存在；依赖环由
       DAO 环检测拒绝。结果尾附"本轮立即结束"的提示。
     - 子任务全部终态后由调度器恢复父任务（见 `S_22` 不变量 4 / 6 / 7）。leader 侧：`TeamTaskManager.cancel` 取消一个
-      任务后**先父后子**依次取消其未终态子任务；`TeamTaskManager.reassign` 拒绝改派有未终态子任务的 `BLOCKED` 父任务
+      任务后**先父后子**依次取消其未终态子任务（整个级联结束后只检查一次任务板是否清空，`TASK_LIST_DRAINED` 至多一次）；`TeamTaskManager.reassign` 拒绝改派有未终态子任务的 `BLOCKED` 父任务
       （不变量 16 里"`BLOCKED` = 有主没开工"的前提对它不成立）。成员没有 `update_task`，不能改 / 取消自己建的子任务。
     - `view_task` 的 list 行带 `[subtask of #父]`，get 带 `Subtask of:` / `Subtasks:`。
 

@@ -493,6 +493,11 @@ def _ensure_dynamic_table_indexes(
             if "created_by" not in task_columns:
                 sync_conn.exec_driver_sql(f'ALTER TABLE "{table_name}" ADD COLUMN created_by TEXT')
                 team_logger.info("Migrated task table %s: added created_by column", table_name)
+            if "resume_pending" not in task_columns:
+                sync_conn.exec_driver_sql(
+                    f'ALTER TABLE "{table_name}" ADD COLUMN resume_pending BOOLEAN NOT NULL DEFAULT 0'
+                )
+                team_logger.info("Migrated task table %s: added resume_pending column", table_name)
 
             # F_59: fold the legacy execution states into the condition-named
             # IN_PROGRESS. claimed / started / plan_approved were all "a member

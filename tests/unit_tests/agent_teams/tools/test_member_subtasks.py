@@ -30,6 +30,7 @@ from openjiuwen.agent_teams.prompts.sections import (
     build_team_dispatch_section,
 )
 from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
+from openjiuwen.agent_teams.schema.events import TeamEvent
 from openjiuwen.agent_teams.schema.status import MemberMode, TaskStatus
 from openjiuwen.agent_teams.schema.task import TaskGraphSpec
 from openjiuwen.agent_teams.schema.team import TeamRole
@@ -258,6 +259,9 @@ async def test_split_without_an_executing_task_is_rejected(db, bus):
         {"max_review_rounds": 2},
         {"depended_by": ["parent"]},
         {"parent_task_id": "other"},
+        {"member": {}},
+        {"reviewer": {}},
+        {"max_review_rounds": False},
     ],
 )
 async def test_split_rejects_leader_only_fields(db, bus, extra):
@@ -448,6 +452,68 @@ async def test_leader_hears_about_the_parent_only(db, bus):
     assert any("parent" in text for text in host.leader_inputs)
 
 
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_resumed_parent_reassigned_hands_the_new_owner_a_fresh_start(db, bus):
+    """The resume belongs to the owner that suspended the task, not to the task."""
+    scheduler, _host, mm, tm = _scheduler(db, bus)
+    await _start_parent(db, bus, scheduler)
+    assert (await _create_tool(db, bus).invoke({"tasks": [_subtask("s1", DEV_2)]})).success
+    await _scan(scheduler)
+    assert (await _member_mgr(db, bus, DEV_2).complete("s1")).ok
+    await _scan(scheduler)
+    assert (await tm.get("parent")).status == TaskStatus.IN_PROGRESS.value
+
+    assert (await tm.reassign("parent", DEV_2)).ok
+    await _scan(scheduler)
+
+    assert (DEV_2, "scheduler_task_start", "parent") in _handoffs(mm)
+    assert (DEV_2, "scheduler_task_resume", "parent") not in _handoffs(mm)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_parent_reassigned_before_resuming_goes_through_the_plan_gate(db, bus):
+    """A pending resume handed to someone else is cleared: the new owner plans first."""
+    scheduler, _host, mm, tm = _scheduler(db, bus)
+    await _start_parent(db, bus, scheduler)
+    assert (await _create_tool(db, bus).invoke({"tasks": [_subtask("s1", DEV_2)]})).success
+    await _scan(scheduler)
+    # dev-1 is busy with fresh work, so the unblocked parent waits at PENDING.
+    leader_tm = _member_mgr(db, bus, LEADER)
+    assert (await leader_tm.add_graph([TaskGraphSpec(title="f", content="c", task_id="fresh", assignee=DEV_1)])).ok
+    await _scan(scheduler)
+    assert (await _member_mgr(db, bus, DEV_2).complete("s1")).ok
+    await _scan(scheduler)
+    parent = await tm.get("parent")
+    assert parent.status == TaskStatus.PENDING.value and parent.resume_pending
+
+    assert (await tm.reassign("parent", PLANNER)).ok
+    assert not (await tm.get("parent")).resume_pending
+    await _scan(scheduler)
+
+    assert (await tm.get("parent")).status == TaskStatus.PLANNING.value
+    assert (PLANNER, "scheduler_task_start_plan", "parent") in _handoffs(mm)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_reset_parent_starts_over_for_its_next_owner(db, bus):
+    scheduler, _host, mm, tm = _scheduler(db, bus)
+    await _start_parent(db, bus, scheduler)
+    assert (await _create_tool(db, bus).invoke({"tasks": [_subtask("s1", DEV_2)]})).success
+    await _scan(scheduler)
+    assert (await _member_mgr(db, bus, DEV_2).complete("s1")).ok
+    await _scan(scheduler)
+
+    assert (await tm.reset("parent")).ok
+    assert (await tm.assign("parent", PLANNER)).ok
+    await _scan(scheduler)
+
+    assert (await tm.get("parent")).status == TaskStatus.PLANNING.value
+    assert (PLANNER, "scheduler_task_resume", "parent") not in _handoffs(mm)
+
+
 # ---------------------------------------------------------------------------
 # Leader operations on parents
 # ---------------------------------------------------------------------------
@@ -467,6 +533,22 @@ async def test_cancelling_a_parent_cancels_its_open_subtasks(db, bus):
     assert (await tm.get("parent")).status == TaskStatus.CANCELLED.value
     assert (await tm.get("s1")).status == TaskStatus.COMPLETED.value
     assert (await tm.get("s2")).status == TaskStatus.CANCELLED.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_cascade_cancel_reports_the_drained_board_once(db, bus):
+    scheduler, _host, _mm, tm = _scheduler(db, bus)
+    await _start_parent(db, bus, scheduler)
+    assert (await _create_tool(db, bus).invoke({"tasks": [_subtask("s1", DEV_2), _subtask("s2", DEV_1)]})).success
+    bus.publish.reset_mock()
+
+    assert await tm.cancel("parent") is not None
+
+    drained = [
+        call for call in bus.publish.await_args_list if call.kwargs["message"].event_type == TeamEvent.TASK_LIST_DRAINED
+    ]
+    assert len(drained) == 1
 
 
 @pytest.mark.asyncio

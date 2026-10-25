@@ -20,7 +20,7 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/agent/scheduling/` |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-25 |
 | 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接） |
 
 ## 范围 / 边界
@@ -48,7 +48,7 @@ author_email: chengshuo5@huawei.com
 4. **调度器不理解事件，只理解看板**：任何触发（`task_*` / `member_*` transport 事件、`POLL_TASK`、`SCHEDULER_SCAN`、激活）都跑同一组四个幂等扫描（开工 / 交接补发 / 验票 / 退场）到有界不动点（`_MAX_SCAN_PASSES`）。恢复没有独立路径——激活扫描就是恢复。成员拆出子任务后父任务的"继续"同样没有独立路径（F_128）：子任务全部终态 → 依赖刷新把父任务放回 `PENDING` → 开工扫描照常 `start_task`。事件仅承担两个扫描推不出的职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次）。
 5. **交接 = leader 身份邮箱消息，投递即启动**：`_send_as_leader` 先写邮箱行（持久）再 `host.auto_start_member`（`UNSTARTED→STARTING` 拉起、`ERROR→RESTARTING` 复活、`DORMANT→RESTARTING` 唤醒，三条都是 CAS、幂等；给休眠成员派新任务即把它叫醒，F_118）。成员在线与否不是开工前置条件；成员侧零新代码（走既有 `MessageHandler`）。行里存的是**投递载荷不是文案**（`content=""` + `meta`），文案在投递时按模板渲染——见「消息面」段与 `S_12` 的 meta 三铁律。
 6. **`SchedulerHost.deliver_input` 只准注入 leader 自身**（终态摘要 / 升级 / 收尾）。对成员的输入永远走邮箱。**终态摘要只发顶层任务**（`parent_task_id` 为空）：成员的子任务（F_128）结果经父任务的恢复交接回到父任务执行者，leader 只在父任务完成时听到一次；子任务仍计入全部完成的判定。
-7. **开工规则**：成员无活跃任务（`{PLANNING, IN_PROGRESS, IN_REVIEW}`）时，取其名下 `PENDING(assignee)` 任务 `start_task`（DAO CAS；plan_mode 成员落 `PLANNING`）：**有子任务的任务（恢复中的父任务，F_128）排在前面**，其余按 `updated_at` 最早——父任务挂起期间成员可能接了别的活，做了一半的任务不该排在新任务后面。父任务 id 集合每次扫描一次投影查询取得（`parent_task_ids`）。恢复的父任务跳过计划闸直落 `IN_PROGRESS`（判断在 `TeamTaskManager.start_task`）。并发/重复触发由 CAS 与一活跃探针消歧。
+7. **开工规则**：成员无活跃任务（`{PLANNING, IN_PROGRESS, IN_REVIEW}`）时，取其名下 `PENDING(assignee)` 任务 `start_task`（DAO CAS；plan_mode 成员落 `PLANNING`）：**`resume_pending` 为真的任务（等着恢复的父任务，F_128）排在前面**，其余按 `updated_at` 最早——父任务挂起期间成员可能接了别的活，做了一半的任务不该排在新任务后面。标记就在候选行上，不额外查询；开工前读出、交给交接选模板，`start_task` 在同一条 CAS 里把它清掉。待恢复的任务跳过计划闸直落 `IN_PROGRESS`（判断在 `TeamTaskManager.start_task`）。并发/重复触发由 CAS 与一活跃探针消歧。
 8. **验票规则**：每轮 `(task_id, review_round)` 送审派发一次（内存去重，崩溃后至多重发一轮）；`verdict.judge` 三值判定——`pass ≥ ceil(threshold×n)` 过、fail 票使配额不可达即败、否则未定；settle 经 `task_manager.settle_review` 的 `IN_REVIEW` 源态 CAS，单判定者 + CAS 保证不双结算。
 9. **升级规则**：败局且 `review_round ≥ max_review_rounds`（任务列，NULL → `spec.default_max_review_rounds`）→ 不再自动打回，任务**留 `IN_REVIEW`**，升级注入 leader；未定且本轮开启超 `spec.review_stall_timeout` → 停摆升级（附已投/未投名单）。两类升级共用 `(task_id, review_round)` 去重；升级后决定性迟票仍可正常 settle。软催办（600s，包内常量 `_REVIEW_RENUDGE_SECONDS`）只发给未投票 reviewer、每轮每窗一次。
 10. **投票判定策略在调度器，票据事实在 DB**：`verify_task`（scheduled 团队）只追加票行 + 发 `TASK_REVIEW_VOTE`，不翻转状态；autonomous 团队维持首裁即决。工具描述随语义分离（desc_key：`verify_task` / `verify_task_scheduled`）。策略更换 = 替换 `verdict.judge`，不碰票表与状态机。
@@ -186,7 +186,7 @@ kernel 侧：
 | 场景 | 收件人 | template key |
 |---|---|---|
 | 开工（build / plan 闸）；改派活跃任务后给新 owner 的补发交接是同一条（不变量 18） | assignee | `scheduler_task_start` / `scheduler_task_start_plan` |
-| 恢复（父任务的子任务全部终态后再次开工，F_128；`_send_task_start` 按 `has_subtasks` 选择，上游简述即子任务结果） | 父任务当前 assignee | `scheduler_task_resume` |
+| 恢复（父任务的子任务全部终态后再次开工，F_128；开工扫描按候选行开工前的 `resume_pending` 选择，交接补发扫描一律用开工模板，上游简述即子任务结果） | 挂起它的那个 assignee | `scheduler_task_resume` |
 | 送审派发 / 催办 | 每个 reviewer / 未投票 reviewer | `scheduler_review_request` / `scheduler_review_renudge` |
 | 打回返工（`params`: 聚合 fail feedback + 解析后轮数上限） | author | `scheduler_rework` |
 

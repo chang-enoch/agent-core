@@ -382,7 +382,7 @@ class TeamAgentSpec(BaseModel):
     configuration; ignored under ``dispatch_mode="autonomous"``, where
     members already reach each other. See F_126.
     """
-    max_subtask_depth: int = 0
+    max_subtask_depth: int = Field(default=0, ge=0)
     """Let scheduled-dispatch members split their task into subtasks.
 
     ``0`` (default) keeps ``create_task`` leader-only. A positive value gives
@@ -752,10 +752,6 @@ class TeamAgentSpec(BaseModel):
         if self.review_stall_timeout <= 0:
             raise ValueError(
                 f"review_stall_timeout must be > 0 seconds, got {self.review_stall_timeout}",
-            )
-        if self.max_subtask_depth < 0:
-            raise ValueError(
-                f"max_subtask_depth must be >= 0, got {self.max_subtask_depth}",
             )
         return self
 

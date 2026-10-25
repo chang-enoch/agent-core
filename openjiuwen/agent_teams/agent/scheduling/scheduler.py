@@ -283,16 +283,16 @@ class TeamScheduler:
                 queue_by_member.setdefault(task.assignee, []).append(task)
 
         acted = False
-        parents = await task_manager.parent_task_ids() if queue_by_member else set()
         for member_name, queue in queue_by_member.items():
             # A parent back from its subtasks (F_128) goes first: its owner
             # may have picked up other work while it was parked, and the
             # half-done task should not queue behind fresh ones.
-            resumable = [task for task in queue if task.task_id in parents]
+            resumable = [task for task in queue if task.resume_pending]
             candidate = min(resumable or queue, key=lambda task: (task.updated_at or 0, task.task_id))
             busy_task_id = await task_manager.get_other_active_task_id(member_name, candidate.task_id)
             if busy_task_id:
                 continue
+            resume = bool(candidate.resume_pending)
             result = await task_manager.start_task(candidate.task_id)
             if not result.ok:
                 # Lost a race or the member turned busy — the next wake retries.
@@ -306,7 +306,7 @@ class TeamScheduler:
             started = await task_manager.get(candidate.task_id)
             if started is None:
                 continue
-            await self._send_task_start(started)
+            await self._send_task_start(started, resume=resume)
             acted = True
         return acted
 
@@ -370,11 +370,14 @@ class TeamScheduler:
                 return True
         return False
 
-    async def _send_task_start(self, task) -> bool:
-        """Send the owner its start handoff and remember that it is in the mailbox."""
+    async def _send_task_start(self, task, *, resume: bool = False) -> bool:
+        """Send the owner its start handoff and remember that it is in the mailbox.
+
+        ``resume`` is read off the row before ``start_task`` consumes it
+        (F_128). The handoff backstop never passes it: an active task missing
+        its handoff has a new owner, who begins the task rather than resumes.
+        """
         owner = task.assignee
-        task_manager = self._infra.task_manager
-        resume = task_manager is not None and await task_manager.has_subtasks(task.task_id)
         sent = await self._send_as_leader(owner, render.meta_task_start(task, resume=resume))
         if sent:
             self._handoff_known.add((task.task_id, owner))

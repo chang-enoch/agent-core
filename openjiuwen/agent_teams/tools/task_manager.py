@@ -1340,7 +1340,11 @@ class TeamTaskManager:
         }
 
     async def cancel(self, task_id: str) -> Optional[TeamTaskBase]:
-        """Cancel a task and notify any tasks unblocked as a side effect.
+        """Cancel a task, and its unfinished subtasks after it (F_128).
+
+        Notifies any tasks unblocked as a side effect. The drained check runs
+        once, after the whole cascade, so cancelling the last parent on the
+        board publishes ``TASK_LIST_DRAINED`` a single time.
 
         Args:
             task_id: Task identifier.
@@ -1349,6 +1353,13 @@ class TeamTaskManager:
             The cancelled task, or ``None`` if the task is missing or
             the transition is invalid.
         """
+        task = await self._cancel_with_subtasks(task_id)
+        if task is not None:
+            await self._maybe_publish_task_list_drained()
+        return task
+
+    async def _cancel_with_subtasks(self, task_id: str) -> Optional[TeamTaskBase]:
+        """Cancel one task, then recurse into its unfinished subtasks; no drained check."""
         result = await self.db.task.cancel_task(task_id)
         if result is None:
             return None
@@ -1369,8 +1380,7 @@ class TeamTaskManager:
         # parent's last edge and let the scheduler resume a task that is
         # about to be cancelled.
         for subtask_id in await self.open_subtask_ids(task_id):
-            await self.cancel(subtask_id)
-        await self._maybe_publish_task_list_drained()
+            await self._cancel_with_subtasks(subtask_id)
         return task
 
     async def cancel_all_tasks(
@@ -1681,18 +1691,6 @@ class TeamTaskManager:
         rows = await self.db.task.get_subtask_statuses(self.team_name, task_id)
         return [sub_id for sub_id, status in rows if status not in TASK_TERMINAL_STATUSES]
 
-    async def has_subtasks(self, task_id: str) -> bool:
-        """Whether a task was ever split into subtasks (F_128).
-
-        Subtasks are only created while their parent is executing, so a
-        parent that is being started again is necessarily resuming.
-        """
-        return bool(await self.db.task.get_subtask_statuses(self.team_name, task_id))
-
-    async def parent_task_ids(self) -> set[str]:
-        """Ids of every task that was split into subtasks (F_128), in one query."""
-        return await self.db.task.get_parent_task_ids(self.team_name)
-
     async def task_depth(self, task: TeamTaskBase) -> int:
         """Subtask nesting depth: 0 for a top-level task, parent's + 1 otherwise (F_128)."""
         depth = 0
@@ -1701,8 +1699,7 @@ class TeamTaskManager:
         while parent_id and parent_id not in seen:
             depth += 1
             seen.add(parent_id)
-            parent = await self.get(parent_id)
-            parent_id = parent.parent_task_id if parent is not None else None
+            parent_id = await self.db.task.get_parent_task_id(parent_id)
         return depth
 
     async def get_other_active_task_id(self, member_name: str, exclude_task_id: str) -> str | None:
@@ -1762,11 +1759,8 @@ class TeamTaskManager:
         # gate and must get approval before executing. A parent resuming
         # after its subtasks (F_128) had its plan approved on first start.
         member = await self.db.member.get_member(member_name, self.team_name)
-        entry_status = (
-            TaskStatus.PLANNING
-            if member is not None and member.mode == MemberMode.PLAN_MODE.value and not await self.has_subtasks(task_id)
-            else TaskStatus.IN_PROGRESS
-        )
+        plan_gate = member is not None and member.mode == MemberMode.PLAN_MODE.value and not task.resume_pending
+        entry_status = TaskStatus.PLANNING if plan_gate else TaskStatus.IN_PROGRESS
 
         # Idempotent re-start: already at its entry gate for its owner -> no-op.
         if task.status == entry_status.value:
