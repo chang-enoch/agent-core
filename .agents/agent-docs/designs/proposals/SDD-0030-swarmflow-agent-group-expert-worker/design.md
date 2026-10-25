@@ -554,5 +554,5 @@ agent-core issue #2003；jiuwenswarm issue #4729。
 - SDD-0020：options 键白名单机制（`agent_template` 经 `KNOWN_OPTIONS` 加入）。
 - SDD-0021：`agent_type` 路由分叉点、`call_signature` 并入方式、事件四层透传、`agent_session` 首锁——本设计逐一复用其结构。
 - SDD-0013 / SDD-0018：运行态控制与 Team 生命周期，专家 worker 不改变其语义。
-- 专家团（`agent_group`）加载设计：`archive/SDD-0010-jiuwen-expert-team-disign/team_expert_group_manifest_design.md`（无 frontmatter、与 SDD-0010 撞号、INDEX 未收录；本设计以 jiuwenswarm `agents/swarm/agent_group.py` 与 `assembly.py` 的代码事实为准）。
+- 专家团（`agent_group`）加载设计：`archive/team_expert_group_manifest_design.md`（旧格式资料，无 frontmatter、INDEX 未收录；本设计以 jiuwenswarm `agents/swarm/agent_group.py` 与 `assembly.py` 的代码事实为准）。
 - 需求方资料（jiuwenswarm 本地 `docs/local/jiuwen_design/`）：执行图 Schema、F04 页面 API 契约、视频节点 worker manifest 样例、`designer` 专家团包需求清单。

@@ -1,5 +1,5 @@
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-10-21T17:15+08:00 -->
+<!-- generated-at: 2026-10-25T20:11+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -170,7 +170,3 @@
 | ID | 标题 | 状态 | 负责人 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [SDD-0001](proposals/SDD-0001-sample-design/design.md) | 示例设计文档（脚手架自带，可删除） | draft | @your-handle | core | 2026-06-15 |
-
-## ⚠ 无法解析（已跳过，请运行 validate 修复）
-
-- `archive/SDD-0010-jiuwen-expert-team-disign/design.md` — 文件夹缺少 design.md
