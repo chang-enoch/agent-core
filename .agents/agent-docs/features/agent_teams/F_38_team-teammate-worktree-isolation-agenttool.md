@@ -7,7 +7,7 @@
 | 日期 | 2026-06-17 |
 | 范围 | `openjiuwen/agent_teams/agent/{spawn_manager,agent_configurator}.py`、`openjiuwen/agent_teams/worktree/{lifecycle,naming}.py`、`openjiuwen/agent_teams/tools/{models,member_options,memory_database}.py`、`openjiuwen/agent_teams/tools/database/{engine,member_dao}.py`、`openjiuwen/agent_teams/schema/team.py`、`openjiuwen/agent_teams/rails/{elements,team_context,team_tool_rail}.py`、`openjiuwen/agent_teams/docs/specs/` |
 | 测试基线 | `uv run pytest -q tests/unit_tests/agent_teams/test_worktree_naming.py tests/unit_tests/agent_teams/test_spawn_manager_worktree.py tests/unit_tests/agent_teams/agent/test_worktree_event_bridge.py` → `13 passed` |
-| Refs | `docs/designs/team_worktree_isolation_agenttool_cn.md` |
+| Refs | [team_worktree_isolation_agenttool_cn.md](../../../../../jiuwenclaw/.agents/agent-docs/designs/archive/team_worktree_isolation_agenttool_cn.md) |
 
 ## 背景
 

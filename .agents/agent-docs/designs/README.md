@@ -1,6 +1,6 @@
 # 设计资产
 
-本目录保存 core 各模块及跨仓设计。设计规则与模板由
+本目录保存 core 各模块及跨仓设计。JiuwenSwarm 应用设计已迁出，当前维护位置见 [迁移说明](migration-20261026.md)。设计规则与模板由
 [`jw-design`](../../skills/jw-design/SKILL.md) 提供，开发记忆与交付生命周期由
 [`jw-dev`](../../skills/jw-dev/SKILL.md) 维护。
 
