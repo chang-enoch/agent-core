@@ -23,18 +23,30 @@ main；`git fetch origin main` 可成功但仅更新 FETCH_HEAD，不受 develop
 
 ## 决策
 
-1. 验证 origin/HEAD；回退识别当前已跟踪分支及 main/master/develop。
-2. fetch 后再次确认引用，未生成则使用既有本地 HEAD 回退，不使用 FETCH_HEAD 偷换基线。
+1. 本机 worktree 改为**本地优先**：当前本地分支 → 本地 main/master/develop → 已存在的
+   origin/main/master/develop → 游离 HEAD，不读 origin/HEAD、不 fetch。worktree 是给
+   本机成员隔离写入用的，基线就该是用户手上的代码（含未推送提交）；远端默认分支既可能
+   不存在（本故障），也可能落后于本地，二者都不是成员该接手的起点。
+2. 远程 worktree 节点保持远端优先（`GitBackend(remote_base=True)`，由
+   `WorktreeRemoteHandler` 置位）：节点上的克隆从不推进本地分支，本地优先会永久钉在
+   克隆时的提交。该路径验证 origin/HEAD，回退依次识别 main/master/develop、最后才是
+   当前分支；fetch 后再次确认引用，未生成则回退本地 HEAD，不使用 FETCH_HEAD 偷换基线。
 3. 创建时固定已解析 SHA，避免引用在解析和 checkout 间移动。
-4. 保留注册/启动分离和 CAS 回滚；真实启动异常以双语通知交给 Leader，同错误去重，
-   成功后解除抑制。通知失败不破坏原 best-effort 启动/对账路径。
+4. 保留注册/启动分离和 CAS 回滚；真实启动异常以双语通知交给 Leader。上报点在
+   Leader 的 spawn / 重启回调里，通知带具体成员名，覆盖全部启动入口与 ERROR/DORMANT
+   恢复。按失败周期去重（不按错误文本，避免通知唤醒 → 对账重试 → 新文本再通知的循环），
+   成功后解除抑制；Leader runtime 缺失时不记为已通知。通知失败不破坏原 best-effort
+   启动/对账路径。
 
 ## 拒绝的方案与边界
 
 - 不伪造 origin/main，不强制 fetch 全分支，也不修改用户 remote 配置。
 - 不关闭独立 worktree 或改成共享写入，不调整心跳时限。
 - 不把每个 auto_start_member 返回 False 都当故障：已启动/并发抢占同样可返回 False。
-- 不将远端默认基线策略全局替换为最新 HEAD；成员后续同步已发布候选仍依工程协议执行。
+- 不把本地优先推到远程 worktree 节点，也不为此额外更新节点克隆的本地分支；Leader
+  未推送的提交本就到不了远程节点。成员后续同步已发布候选仍依工程协议执行。
+- 不把游离 HEAD 排在本地默认分支之前：没有当前分支时，本地默认分支才是用户明确
+  维护的基线。
 - 不恢复、重启、清理原实验，不改迁移专家团/Skill/Query。
 
 ## 验证

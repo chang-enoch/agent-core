@@ -23,10 +23,8 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("missing_tracking_ref", [False, True])
-async def test_single_branch_clone_creates_worktree_without_origin_main(tmp_path, monkeypatch, missing_tracking_ref):
-    """A successful fetch may update only FETCH_HEAD under a narrow refspec."""
+def _develop_only_clone(tmp_path: Path) -> Path:
+    """Clone only develop, drop origin/HEAD, and add a local unpushed commit on a work branch."""
     remote = tmp_path / "local-remote"
     remote.mkdir()
     _git(remote, "init", "--initial-branch=main")
@@ -50,6 +48,29 @@ async def test_single_branch_clone_creates_worktree_without_origin_main(tmp_path
     (repo / "control.txt").write_text("local intake commit\n", encoding="utf-8")
     _git(repo, "add", "control.txt")
     _git(repo, "commit", "-m", "intake")
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_local_worktree_branches_from_current_local_branch(tmp_path):
+    """Local-first: the member sees the leader's unpushed commit, not origin/develop."""
+    repo = _develop_only_clone(tmp_path)
+    expected_sha = _git(repo, "rev-parse", "HEAD")
+
+    target = tmp_path / "member-worktree"
+    result = await GitBackend(WorktreeConfig(enabled=True)).create("researcher", str(repo), str(target))
+
+    assert result.base_branch == "experiment/migration"
+    assert result.head_commit == expected_sha == _git(target, "rev-parse", "HEAD")
+    assert (target / "source.txt").read_text(encoding="utf-8") == "frozen develop source\n"
+    assert (target / "control.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_tracking_ref", [False, True])
+async def test_remote_node_creates_worktree_without_origin_main(tmp_path, monkeypatch, missing_tracking_ref):
+    """Remote-first (remote nodes): a fetch may update only FETCH_HEAD under a narrow refspec."""
+    repo = _develop_only_clone(tmp_path)
     expected_ref = "HEAD" if missing_tracking_ref else "origin/develop"
     expected_sha = _git(repo, "rev-parse", expected_ref)
     if missing_tracking_ref:
@@ -58,7 +79,8 @@ async def test_single_branch_clone_creates_worktree_without_origin_main(tmp_path
         )
 
     target = tmp_path / "member-worktree"
-    result = await GitBackend(WorktreeConfig(enabled=True)).create("researcher", str(repo), str(target))
+    backend = GitBackend(WorktreeConfig(enabled=True), remote_base=True)
+    result = await backend.create("researcher", str(repo), str(target))
 
     assert result.base_branch == expected_ref
     assert result.head_commit == expected_sha == _git(target, "rev-parse", "HEAD")

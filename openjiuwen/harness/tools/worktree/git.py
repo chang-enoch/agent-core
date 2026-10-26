@@ -143,8 +143,11 @@ async def get_default_branch(cwd: str) -> str:
         # "origin/main" -> "main"
         return r.stdout.split("/", 1)[-1]
     # A single-branch clone need not have origin/HEAD or main/master refs.
+    # Conventional default names win over the checked-out branch: a repo that
+    # was pushed rather than cloned has no origin/HEAD either, and its feature
+    # branch must not become the team's worktree base.
     current = await get_current_branch(cwd)
-    candidates = dict.fromkeys(name for name in (current, "main", "master", "develop") if name)
+    candidates = dict.fromkeys(name for name in ("main", "master", "develop", current) if name)
     for name in candidates:
         check = await _run_git(
             ["rev-parse", "--verify", f"refs/remotes/origin/{name}^{{commit}}"],

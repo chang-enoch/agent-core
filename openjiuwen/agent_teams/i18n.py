@@ -63,7 +63,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "team.shutdown_request_content": "当前任务已全部完成，请结束流程",
         "team.cancel_request_content": "当前任务有变动，请停止执行当前任务，重新尝试认领合适任务",
         "team.member_startup_failed": (
-            "[成员启动失败] 成员 {member_name}（* 表示批量启动检查）未能成功启动。原因：{reason}。"
+            "[成员启动失败] 成员 {member_name} 未能成功启动。原因：{reason}。"
             "任务已分派或看板显示进行中不代表该成员正在执行；请核对真实成员状态并处理启动故障，"
             "不要仅等待其交付。本通知不代表任务完成、已取消或自动重试成功。"
         ),
@@ -529,7 +529,7 @@ STRINGS: dict[str, dict[str, str]] = {
             "The round stays open and member status is unchanged; awaiting the next SDK result. {summary}"
         ),
         "team.member_startup_failed": (
-            "[member startup failed] Member {member_name} (* denotes a batch startup check) could not start. "
+            "[member startup failed] Member {member_name} could not start."
             "Reason: {reason}. An assignment or in-progress board row does not prove execution. "
             "Check actual member state and address the startup failure rather than only waiting for delivery. "
             "This notification does not mean task completion, cancellation, or a successful retry."

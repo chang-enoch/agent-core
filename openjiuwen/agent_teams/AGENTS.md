@@ -204,7 +204,7 @@ Messager 是点对点 + broadcast 的统一抽象，**任何直接新建 socket 
 **注册与拉起是两件事**（细则见 `.agents/agent-docs/specs/agent_teams/S_05` 不变量 1）：
 
 - **注册**：各 `spawn_*` 工具与 `build_team` 的 predefined 成员都只落到 `TeamBackend.spawn_member`——**只写 DB 行（`UNSTARTED`），不启动任何东西**（该方法 docstring 即契约："does NOT start the member"）。
-- **拉起**：只有一条链 —— `TeamAgent.auto_start_member` / `auto_start_all` → `TeamBackend.startup_member` / `startup` → `MemberStatus.UNSTARTED→STARTING` 的 CAS guard（`try_transition_member_status`）→ `_spawn_and_publish` → `_on_teammate_created` → `SpawnManager.spawn_teammate`。
+- **拉起**：只有一条链 —— `TeamAgent.auto_start_member` / `auto_start_all` → `TeamBackend.startup_member` / `startup` → `MemberStatus.UNSTARTED→STARTING` 的 CAS guard（`try_transition_member_status`）→ `_spawn_and_publish` → `_start_teammate_runtime`（spawn 失败按成员通知 Leader，B_08）→ `_on_teammate_created` → `SpawnManager.spawn_teammate`。
 
 拉起漏斗有六个触发点，全是"活要交给一个还没起来的成员"：leader `send_message` 的 `_auto_start_members`、leader `create_task` 落库后拉起（**仅 autonomous**，F_84）、interact dispatch（`@member` / `@all` / operator 消息）、调度器投递（F_62）、成员间消息由 leader 的 `MessageHandler._wake_peer_recipients` 代为拉起收件人（单人版入口 `TeamBackend.wake_member`，F_126），外加 leader round-idle 对账兜底（`TeamAgent._reconcile_member_startup`，看板有非终态任务时才动，F_84）。前四个共用入口 `TeamBackend.autostart_unstarted()`——它持有构造期注入的 `on_member_started` 回调、自带 leader 门与回调门，调用方不各自捎带 spawn 回调。CAS 是这条链上唯一的并发闸——**不要在 spawn 工具里顺手把 agent 拉起来**，那会绕过注册与拉起的分离（走 `autostart_unstarted` 不算，它经同一条 CAS 链）。模式由 `TeamAgentSpec.spawn_mode` 决定。
 

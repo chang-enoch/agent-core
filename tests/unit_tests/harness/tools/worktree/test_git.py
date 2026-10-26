@@ -25,7 +25,8 @@ from tests.test_logger import logger
     [
         ("origin/release", "experiment", {"release"}, "release"),
         ("origin/main", "experiment", {"develop"}, "develop"),
-        (None, "feature", {"feature", "main"}, "feature"),
+        (None, "feature", {"feature", "main"}, "main"),
+        (None, "release", {"release"}, "release"),
         (None, "experiment", set(), "main"),
     ],
 )

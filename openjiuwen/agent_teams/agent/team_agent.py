@@ -182,9 +182,10 @@ class TeamAgent(BaseAgent):
         self._configurator = AgentConfigurator(card)
         self._state = TeamAgentState()
         self._named_checkpoints: dict[str, dict] = {}  # name → {count, description, created_by}
-        # Local startup diagnostics, not persisted task/member state. Suppress
-        # identical idle-edge failures until startup succeeds or the cause changes.
-        self._member_startup_failures: dict[str, str] = {}
+        # Local startup diagnostics, not persisted task/member state: members
+        # whose current startup failure the leader has already been told about.
+        # One notice per failure episode, cleared when the member starts.
+        self._member_startup_failures: set[str] = set()
 
         self._spawn_manager = SpawnManager(
             state=self._state,
@@ -703,7 +704,7 @@ class TeamAgent(BaseAgent):
         self._configurator.setup_infra(
             spec,
             ctx,
-            on_teammate_created=self._on_teammate_created,
+            on_teammate_created=self._start_teammate_runtime,
             on_teammate_restarted=self._restart_teammate_runtime,
             on_teammate_stopped=self._stop_teammate_runtime,
             on_before_team_cleaned=self._finalize_team_worktrees_before_clean,
@@ -1350,12 +1351,8 @@ class TeamAgent(BaseAgent):
                 e,
                 exc_info=True,
             )
-            await self._report_member_startup_failure("*", e)
             return
-        self._member_startup_failures.pop("*", None)
         if started:
-            for member_name in started:
-                self._member_startup_failures.pop(member_name, None)
             team_logger.info(
                 "[{}] round-idle reconcile started members: {}",
                 self._member_name() or "?",
@@ -1807,16 +1804,42 @@ class TeamAgent(BaseAgent):
         )
 
     async def _report_member_startup_failure(self, member_name: str, error: Exception) -> None:
-        """Notify the leader once per unchanged startup failure, without raising."""
-        reason = f"{type(error).__name__}: {error}"[:1200]
-        if self._member_startup_failures.get(member_name) == reason:
+        """Notify the leader once per failure episode of ``member_name``, without raising.
+
+        The episode, not the error text, is the dedup key: the notice wakes the
+        leader, and its round-idle reconcile retries the start. Keying on text
+        would let any error carrying a timestamp, path or duration re-notify on
+        every retry and keep the leader looping.
+        """
+        if member_name in self._member_startup_failures:
             return
-        self._member_startup_failures[member_name] = reason
+        if self.harness is None:
+            # deliver_input would drop the notice silently; leave the episode
+            # open so the next failure is reported once the runtime exists.
+            team_logger.warning("Leader runtime unavailable; startup failure of {} not notified", member_name)
+            return
+        reason = f"{type(error).__name__}: {error}"[:1200]
+        self._member_startup_failures.add(member_name)
         try:
             await self.deliver_input(t("team.member_startup_failed", member_name=member_name, reason=reason))
         except Exception:
-            self._member_startup_failures.pop(member_name, None)
+            self._member_startup_failures.discard(member_name)
             team_logger.error("Failed to notify leader of member startup failure: {}", member_name, exc_info=True)
+
+    async def _start_teammate_runtime(self, member_name: str) -> None:
+        """Spawn a teammate for the startup funnel, reporting a failed spawn to the leader.
+
+        Every startup path (send_message, create_task, interact, scheduler,
+        peer wake-up, round-idle reconcile) spawns through this callback, so
+        the notice names the member that actually failed. The error is
+        re-raised so ``startup_member`` rolls the CAS back.
+        """
+        try:
+            await self._on_teammate_created(member_name)
+        except Exception as exc:
+            await self._report_member_startup_failure(member_name, exc)
+            raise
+        self._member_startup_failures.discard(member_name)
 
     async def auto_start_member(self, member_name: str) -> bool:
         """Start an UNSTARTED member or recover an ERROR member.
@@ -1828,21 +1851,30 @@ class TeamAgent(BaseAgent):
         if backend is None or not backend.is_leader:
             return False
         try:
-            started = await backend.startup_member(member_name, on_created=self._on_teammate_created)
+            started = await backend.startup_member(member_name, on_created=self._start_teammate_runtime)
             if not started:
                 started = await backend.recover_member(member_name)
         except Exception as exc:
             team_logger.error("auto_start_member({}) failed: {}", member_name, exc)
-            await self._report_member_startup_failure(member_name, exc)
             return False
         if started:
-            self._member_startup_failures.pop(member_name, None)
             team_logger.info("Auto-started member via interact: {}", member_name)
         return started
 
     async def _restart_teammate_runtime(self, member_name: str) -> bool:
-        """Replace a failed teammate runtime without replaying its first prompt."""
-        return await self._spawn_manager.restart_teammate(member_name)
+        """Replace a failed teammate runtime without replaying its first prompt.
+
+        A restart that exhausts its retries is reported to the leader like a
+        failed first start; ``restart_teammate`` itself swallows the error.
+        """
+
+        async def report(error: Exception) -> None:
+            await self._report_member_startup_failure(member_name, error)
+
+        restarted = await self._spawn_manager.restart_teammate(member_name, on_failed=report)
+        if restarted:
+            self._member_startup_failures.discard(member_name)
+        return restarted
 
     async def _stop_teammate_runtime(self, member_name: str) -> None:
         """Remove a failed teammate's stale runtime handle."""
@@ -1876,16 +1908,12 @@ class TeamAgent(BaseAgent):
         if backend is None or not backend.is_leader:
             return []
         try:
-            started = await backend.startup(on_created=self._on_teammate_created)
-            self._member_startup_failures.pop("*", None)
+            started = await backend.startup(on_created=self._start_teammate_runtime)
             if started:
-                for member_name in started:
-                    self._member_startup_failures.pop(member_name, None)
                 team_logger.info("Auto-started members via interact broadcast: {}", started)
             return started
         except Exception as exc:
             team_logger.error("auto_start_all failed: {}", exc)
-            await self._report_member_startup_failure("*", exc)
             return []
 
     # ------------------------------------------------------------------

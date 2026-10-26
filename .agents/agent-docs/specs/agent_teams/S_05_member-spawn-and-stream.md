@@ -31,7 +31,7 @@ author_email: chengshuo5@huawei.com
 **管：**
 
 - 成员拉起的**单一漏斗**（`auto_start_member` / `auto_start_all` →
-  `startup_member` / `startup` → CAS → `_on_teammate_created` →
+  `startup_member` / `startup` → CAS → `_start_teammate_runtime` → `_on_teammate_created` →
   `SpawnManager.spawn_teammate`）与它的五个触发点；两种 spawn 模式
   （`process` / `inprocess`）的入口、handle 形态、清理顺序。
 - 子进程 spawn 的 wire 契约（`SpawnPayloadBuilder` 输出 ↔
@@ -95,10 +95,14 @@ author_email: chengshuo5@huawei.com
    成功，其余并发路径查到 `STARTING`/`READY` 直接返回 False。spawn 失败回滚
    `STARTING→UNSTARTED` 保证可重试。
 
-   best-effort 启动失败不能只留日志：`auto_start_member`、`auto_start_all` 与
-   round-idle 对账将真实异常通知 Leader，明确成员尚未成功启动、看板进行中不代表
-   实际执行。相同成员（批量路径为 `*`）的同一错误只通知一次，错误变化或成功后
-   再失败可重新通知；不伪造任务失败、不重复投递已落盘的启动消息，也不停止其他成员。
+   best-effort 启动失败不能只留日志：Leader 交给漏斗的 spawn 回调
+   （`TeamAgent._start_teammate_runtime`）与重启回调（`_restart_teammate_runtime`，
+   经 `restart_teammate(on_failed=)` 拿到重试耗尽后的最后一个异常）在失败处把真实异常
+   连同**具体成员名**通知 Leader，因此六个触发点与 ERROR/DORMANT 恢复都覆盖，明确
+   成员尚未成功启动、看板进行中不代表实际执行。去重按**失败周期**而非错误文本：同一
+   成员从首次失败到下次启动成功之间只通知一次（通知会唤醒 Leader、其 round-idle 对账
+   又会重试，按文本去重会被带时间戳 / 路径的错误拖进循环）；Leader runtime 不存在时
+   不计为已通知。不伪造任务失败、不重复投递已落盘的启动消息。
 
    漏斗有**六个触发点**，全都是"活要交给一个还没起来的成员"——前五个是交付那一刻
    的即时拉起，第六个是兜底对账：
@@ -113,7 +117,7 @@ author_email: chengshuo5@huawei.com
    | leader round-idle 对账（看板有非终态任务时，F_84）| `agent/team_agent.py::_reconcile_member_startup` |
 
    **前四个共用一个入口**：`TeamBackend.autostart_unstarted()`——它持有构造期注入的
-   `on_member_started` 回调（= `TeamAgent._on_teammate_created`），把角色门与回调门
+   `on_member_started` 回调（= `TeamAgent._start_teammate_runtime`，失败上报后转调 `_on_teammate_created`），把角色门与回调门
    收在一处，调用方只表达"确保名册起来了"的意图，不各自捎带一份 spawn 回调。
    第五个按收件人粒度走它的单人版 `TeamBackend.wake_member(name)`（同一回调、同一角色门；
    UNSTARTED 启动、ERROR / DORMANT 经 `recover_member` 唤醒、其余状态一次读后返回），广播仍走
