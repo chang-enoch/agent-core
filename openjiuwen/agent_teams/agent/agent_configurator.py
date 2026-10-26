@@ -918,9 +918,9 @@ class AgentConfigurator:
             if expert_catalog is not None:
                 expert_binding = _derive_expert_binding(spec)
 
-        # One task notice tracker per member, owned here and borrowed through
-        # extras by every rebuilt policy rail and by the TeamHarness, so the
-        # rail and the event-driven announcement share one baseline (F_129).
+        # One task notice tracker per member, owned here: every rebuilt policy
+        # rail borrows it through extras and the TeamHarness is handed it, so
+        # the rail and the event-driven announcement share one baseline (F_129).
         if ctx.role != TeamRole.LEADER and self._resources.task_event_tracker is None:
             from openjiuwen.agent_teams.team_context import build_task_event_tracker
 
@@ -1006,6 +1006,7 @@ class AgentConfigurator:
             member_name=member_name,
             initial_plan_mode=is_team_plan_leader,
             build_context=member_build_context,
+            task_event_tracker=self._resources.task_event_tracker,
         )
 
         # Leader's own model calls (decision / tool use / script generation) bill

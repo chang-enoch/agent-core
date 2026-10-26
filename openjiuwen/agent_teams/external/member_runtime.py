@@ -618,13 +618,16 @@ class ExternalHarnessMemberRuntime:
         """
         if self._task_outcome_tracker is None:
             return
+        sent: list[tuple[Any, str]] = []
 
         async def _send(text: str) -> None:
-            receipt = await self._adapter.send(text, immediate=True)
-            self._record_input(receipt, text)
+            # Delivery only: what is raised here gives the claim back.
+            sent.append((await self._adapter.send(text, immediate=True), text))
 
         async with self._context_delivery_lock:
             await self._task_outcome_tracker.announce(self._member_session, _send)
+            for receipt, text in sent:
+                self._record_input(receipt, text)
 
     async def abort(self, *, immediate: bool = False) -> None:
         await self._adapter.abort(immediate=immediate)

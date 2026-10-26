@@ -669,15 +669,23 @@ class _TaskNoticeTracker:
     delivers it; the others find nothing.
 
     The baseline is an in-memory ordered set of entries already announced,
-    bound to one member session: every call names the session it acts for, and
-    a session other than the bound one (a resume into a different team session)
-    resets the set and reloads it from that session's checkpointed state, so
-    one session's announcements never suppress another's. ``claim`` checks and
-    marks with no ``await`` in between, and every caller runs on the member's
-    one event loop, so two paths can never claim the same entry. All callers
-    of one member hand in the same live child session (the rail's
-    ``ctx.session`` is the runtime's current session), so persisting it never
-    overwrites anything. A crash between a claim and its persist can repeat
+    bound to one member session *object*: every call names the session it acts
+    for, and any other object resets the set and reloads it from that object's
+    state. Every run cycle, resume into another team session, restart and
+    checkpoint restore hands in a fresh child session, so the baseline is
+    always the one that session's history goes with — one session's
+    announcements never suppress another's, and a rolled-back state is never
+    overwritten with entries from after the rollback. Nothing claimed is lost
+    on the switch: every claim is persisted right after delivery, and the
+    runtime commits its child session when a cycle stops.
+
+    ``claim`` checks and marks with no ``await`` in between, and every caller
+    runs on the member's one event loop, so two paths can never claim the same
+    entry. All callers of one member hand in the same live child session (the
+    rail's ``ctx.session`` is the runtime's current session — the native passes
+    its session straight into the callback context), so persisting it never
+    overwrites anything; were they ever two objects, the reloads would show up
+    as repeated notices. A crash between a claim and its persist can repeat
     that notice after a restart.
 
     Claim before delivering, :meth:`release` the claim if delivery raises —
@@ -685,6 +693,9 @@ class _TaskNoticeTracker:
     """
 
     STATE_KEY: ClassVar[str] = ""
+    # Whether the notice may go out as an input of its own (waking an idle
+    # member). A passed review must not wake its author (F_119).
+    WAKES: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -695,17 +706,15 @@ class _TaskNoticeTracker:
         self._team_backend = team_backend
         self._member_name = member_name
         self._announced: dict[str, None] = {}
-        self._session_key: object = None
+        self._session: Any = None
         self._persisted: list[str] | None = None
 
     def _bind(self, session: Any) -> None:
-        """Make ``session``'s checkpointed baseline the current one, if it is not already."""
-        get_session_id = getattr(session, "get_session_id", None)
-        key = get_session_id() if callable(get_session_id) else id(session)
-        if self._session_key == key:
+        """Make ``session``'s stored baseline the current one, unless it is already bound."""
+        if session is self._session:
             return
         stored = _read_announced(session, self.STATE_KEY)
-        self._session_key = key
+        self._session = session
         self._announced = dict.fromkeys(stored)
         self._compact()
         self._persisted = list(stored)
@@ -765,11 +774,19 @@ class _TaskNoticeTracker:
         self._persisted = current
 
     async def announce(self, session: Any, send: Callable[[str], Awaitable[Any]]) -> bool:
-        """Claim, deliver through ``send`` and persist; give the claim back if ``send`` raises.
+        """Deliver the pending notice as an input of its own: claim, ``send``, persist.
+
+        ``send`` should do the delivery and nothing else: whatever it raises
+        gives the claim back. A cancelled delivery is given back too, since
+        it may or may not have gone out — a repeated notice is cheaper than
+        a lost one. A tracker whose notice must not wake the member
+        (``WAKES`` false) claims and sends nothing; the next input carries it.
 
         Returns:
             Whether a notice was sent.
         """
+        if not self.WAKES:
+            return False
         notice = await self.claim(session)
         if notice is None:
             return False
@@ -866,6 +883,7 @@ class TaskRevisionTracker(_TaskNoticeTracker):
     """
 
     STATE_KEY = TASK_REVISION_STATE_KEY
+    WAKES = True
 
     async def _candidates(self, task_manager: Any) -> list[Any]:
         return await task_manager.unseen_edits(self._member_name)

@@ -556,6 +556,47 @@ async def test_the_baseline_belongs_to_one_session(db, bus):
 
 @pytest.mark.asyncio
 @pytest.mark.level1
+async def test_a_rolled_back_session_state_is_reloaded(db, bus):
+    """Same session id, older state on a fresh session object: the rolled-back edit is told again."""
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    live = _Session()
+    await tm.update_task("t1", content="c1")
+    assert await tracker.claim(live) is not None
+    await tracker.persist(live)
+    restored = _Session()
+    restored.state = dict(live.state)
+    await tm.update_task("t1", content="c2")
+    assert await tracker.claim(live) is not None
+    await tracker.persist(live)
+
+    # The checkpoint taken before the r2 notice comes back on a new session object.
+    notice = await tracker.claim(restored)
+    assert notice is not None and notice.entries == ("t1@2",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_the_bound_session_is_not_reread(db, bus):
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    await tm.update_task("t1", content="c1")
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    session = _Session()
+
+    assert await tracker.claim(session) is not None
+    # A stale write to the same object is not read back: the in-memory baseline stays authoritative.
+    session.state[TASK_REVISION_STATE_KEY] = []
+    assert await tracker.claim(session) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
 async def test_only_the_newest_revision_of_a_task_is_kept(db, bus):
     tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
     assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok

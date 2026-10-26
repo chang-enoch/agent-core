@@ -2107,3 +2107,40 @@ def test_a_teammate_rail_without_an_injected_tracker_announces_nothing():
     )
 
     assert rail._outcome_tracker is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_the_inner_agent_gets_the_very_session_the_native_holds():
+    """The rail and the TeamHarness share one baseline only if both see one session object (F_129)."""
+    from openjiuwen.core.session.agent import create_agent_session
+    from openjiuwen.core.single_agent import AgentCard
+    from openjiuwen.harness.deep_agent import DeepAgent
+    from openjiuwen.harness.schema.config import DeepAgentConfig
+    from tests.unit_tests.harness.test_deep_agent import FakeReactAgent
+
+    agent = DeepAgent(AgentCard(name="deep", description="t")).configure(
+        DeepAgentConfig(enable_task_loop=False, language="cn")
+    )
+    fake = FakeReactAgent()
+    agent.set_react_agent(fake, initialized=True)
+    session = create_agent_session(card=agent.card)
+
+    await agent.invoke("hello", session)
+
+    assert fake.invoke_calls[0]["session"] is session
+
+
+@pytest.mark.level1
+def test_a_missing_task_tracker_is_warned_about_once_per_member(monkeypatch):
+    from openjiuwen.agent_teams.rails import team_policy_rail
+
+    warnings: list[tuple] = []
+    monkeypatch.setattr(team_policy_rail, "_MISSING_TASK_TRACKER_WARNED", set())
+    monkeypatch.setattr(team_policy_rail.team_logger, "warning", lambda *args: warnings.append(args))
+    backend = _FakeTeamBackend(self_member_name="dev1")
+
+    for _ in range(3):
+        TeamPolicyRail(role=TeamRole.TEAMMATE, member_name="dev1", language="cn", team_backend=backend)
+
+    assert len(warnings) == 1

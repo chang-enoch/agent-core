@@ -11,7 +11,7 @@ SESSION_SPAWN / rails / state）。`TeamHarness` 在其上做 team 适配。
 harness/
 ├── protocol.py        # HarnessProtocol（结构化契约，isinstance 校验）：send / abort / pause / resume / stop / outputs
 ├── native_harness.py  # NativeHarness(DeepAgent)：supervisor + round 驱动 + send/steer/follow_up；run_once 非流式单次 invoke（不开 supervisor，返回 Runner.run_agent 格式 dict）
-├── team_harness.py    # TeamHarness：在 NativeHarness 上做 team 适配（build / role）；run_once 转发（单轮 worker 入口）；实现 TaskNoticeAwareRuntime：运行周期内用当前子 session 经 build context 借来的任务告知 tracker 发修改告知（F_129）
+├── team_harness.py    # TeamHarness：在 NativeHarness 上做 team 适配（build / role）；run_once 转发（单轮 worker 入口）；实现 TaskNoticeAwareRuntime：运行周期内用当前子 session 与 configurator 经 `build(task_event_tracker=...)` 交给它的任务告知 tracker 发修改告知（F_129）
 ├── control.py         # _CmdSend / _CmdAbort / _CmdPause / _CmdResume / _CmdRoundFinished / _CmdStop
 ├── state.py           # HarnessInternalState / InboxMessage / ActiveRound / HarnessState / RoundPhase
 ├── turn.py            # MemberTurn + resolve_member_turn：成员轨迹 turn 身份（持久化在 session state，无 OTel 依赖）

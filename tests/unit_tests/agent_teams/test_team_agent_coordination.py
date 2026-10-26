@@ -29,7 +29,6 @@ from openjiuwen.agent_teams.agent.team_agent import (
 from openjiuwen.agent_teams.external.runtime import CliRuntimeBase
 from openjiuwen.agent_teams.harness.team_harness import TeamHarness
 from openjiuwen.agent_teams.message_template import ExpandedMessage
-from openjiuwen.agent_teams.rails.team_context import inject_team_handles
 from openjiuwen.agent_teams.schema.blueprint import (
     DeepAgentSpec,
     LeaderSpec,
@@ -1561,17 +1560,16 @@ class _ChildSession:
 
 
 def _harness_with_tracker(edited: list, *, send: AsyncMock) -> tuple[TeamHarness, TaskRevisionTracker]:
-    """A TeamHarness over a stub native, borrowing a task notice tracker from its build context."""
+    """A TeamHarness over a stub native, handed the member's task notice tracker."""
     backend = SimpleNamespace(task_manager=SimpleNamespace(unseen_edits=AsyncMock(return_value=edited)))
     tracker = TaskRevisionTracker(team_backend=backend, member_name="dev-1")
-    build_context = SimpleNamespace(extras={})
-    inject_team_handles(build_context.extras, task_event_tracker=tracker)
     harness = TeamHarness(
         SimpleNamespace(),
-        build_context,
+        None,
         SimpleNamespace(send=send),
         role=TeamRole.TEAMMATE,
         member_name="dev-1",
+        task_event_tracker=tracker,
     )
     return harness, tracker
 

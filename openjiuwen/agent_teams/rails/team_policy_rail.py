@@ -85,6 +85,25 @@ if TYPE_CHECKING:
 TEAM_CONTEXT_ATTACHMENT_SECTION = "team.context"
 
 
+# Members already warned about a missing task notice tracker: the rail is
+# rebuilt every run cycle, and one warning per member says it all.
+_MISSING_TASK_TRACKER_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_missing_task_tracker(team_backend: "TeamBackend", member_name: str | None, role: TeamRole) -> None:
+    """Warn once per member that its rail got no task notice tracker (F_129)."""
+    key = (str(getattr(team_backend, "team_name", "") or ""), member_name or "")
+    if key in _MISSING_TASK_TRACKER_WARNED:
+        return
+    _MISSING_TASK_TRACKER_WARNED.add(key)
+    team_logger.warning(
+        "[{}] team={} role={}: no task notice tracker injected; task notices are off for this member",
+        member_name or "?",
+        key[0] or "?",
+        role.value,
+    )
+
+
 class TeamPolicyRail(DeepAgentRail):
     """Inject the team's static PromptSections and its evolving team state.
 
@@ -243,10 +262,7 @@ class TeamPolicyRail(DeepAgentRail):
             task_event_tracker if role != TeamRole.LEADER else None
         )
         if role != TeamRole.LEADER and task_event_tracker is None and team_backend is not None:
-            team_logger.warning(
-                "[{}] no task notice tracker injected; task notices are off for this member",
-                member_name or "?",
-            )
+            _warn_missing_task_tracker(team_backend, member_name, role)
 
     def init(self, agent: Any) -> None:
         """Cache the agent's shared prompt builder."""

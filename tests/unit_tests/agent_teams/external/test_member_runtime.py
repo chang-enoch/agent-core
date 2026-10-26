@@ -1186,6 +1186,28 @@ async def test_task_edit_announcement_is_sent_on_its_own_and_once() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.level1
+async def test_a_failure_after_delivery_keeps_the_claim() -> None:
+    """Only the delivery itself gives the claim back; recording the input happens after."""
+    harness = _FakeHarness()
+    runtime = ExternalHarnessMemberRuntime(harness=harness, context=_context())
+    tracker = _OneShotNoticeTracker('<team-event kind="task-revised">\nt1\n</team-event>')
+    runtime.bind_task_outcome_tracker(tracker)  # type: ignore[arg-type]
+    await runtime.start(team_session=_FakeTeamSession())
+
+    def _broken_record(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("recorder down")
+
+    runtime._record_input = _broken_record  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await runtime.announce_task_revisions()
+    await runtime.stop()
+
+    assert len(harness.send_calls) == 1
+    assert tracker.released == 0 and tracker.claimed
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
 async def test_a_failed_send_gives_the_notice_back() -> None:
     harness = _FakeHarness()
     runtime = ExternalHarnessMemberRuntime(harness=harness, context=_context())

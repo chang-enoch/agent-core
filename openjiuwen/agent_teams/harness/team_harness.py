@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.schema.build_context import BuildContext
     from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
     from openjiuwen.agent_teams.schema.team import TeamRole
+    from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker
     from openjiuwen.core.single_agent.rail.base import AgentRail
     from openjiuwen.harness.deep_agent import DeepAgent
     from openjiuwen.harness.schema.config import DeepAgentConfig
@@ -66,6 +67,7 @@ class TeamHarness:
         role: "TeamRole",
         member_name: Optional[str],
         initial_plan_mode: bool = False,
+        task_event_tracker: Optional["TaskOutcomeTracker | TaskRevisionTracker"] = None,
     ) -> None:
         self._agent_spec = agent_spec
         self._build_context = build_context
@@ -74,6 +76,8 @@ class TeamHarness:
         self._member_name = member_name
         self._initial_plan_mode = initial_plan_mode
         self._initial_plan_mode_seeded = False
+        # The member's task notice tracker, owned by its TeamAgent (F_129).
+        self._task_event_tracker = task_event_tracker
         self._active_agent_session: Optional[Any] = None
         self._native_session_id: Optional[str] = None
         self._bg_controller: Optional[Any] = None
@@ -95,6 +99,7 @@ class TeamHarness:
         member_name: Optional[str],
         initial_plan_mode: bool = False,
         build_context: "BuildContext | None" = None,
+        task_event_tracker: Optional["TaskOutcomeTracker | TaskRevisionTracker"] = None,
     ) -> "TeamHarness":
         """Construct the native via forward construction and configure it.
 
@@ -114,6 +119,7 @@ class TeamHarness:
             role=role,
             member_name=member_name,
             initial_plan_mode=initial_plan_mode,
+            task_event_tracker=task_event_tracker,
         )
 
     # ------------------------------------------------------------------
@@ -252,16 +258,14 @@ class TeamHarness:
     async def announce_task_revisions(self) -> None:
         """Deliver the member's pending task edit notice now, if it has one (F_129).
 
-        The member's task notice tracker (its TeamAgent's, borrowed through the
-        build context like the policy rail does) is the only source of the
-        notice. Outside a run cycle there is no session to claim against, so
-        nothing is claimed: the rail tells the member on its next input. The
-        notice steers a busy member and starts a round for an idle one.
+        The member's task notice tracker (its TeamAgent's, the same instance
+        the policy rail borrows) is the only source of the notice. Outside a
+        run cycle there is no session to claim against, so nothing is claimed:
+        the rail tells the member on its next input. The notice steers a busy
+        member and starts a round for an idle one.
         """
-        from openjiuwen.agent_teams.rails.team_context import get_task_event_tracker
-
-        tracker = get_task_event_tracker(self._build_context)
-        session = self._active_agent_session
+        tracker = self._task_event_tracker
+        session = self.current_session()
         if tracker is None or session is None:
             return
         await tracker.announce(session, lambda text: self.send(text, immediate=True))

@@ -97,23 +97,18 @@ async def test_a_released_claim_is_offered_again():
 
 @pytest.mark.asyncio
 @pytest.mark.level1
-async def test_announce_sends_persists_and_gives_back_on_failure():
+async def test_a_passed_review_never_goes_out_on_its_own():
+    """F_119: a passed review must not wake its author, so announce sends and claims nothing."""
     tracker, _manager = _tracker([_task("a", reviewers=("v1",))])
     session = _Session()
     sent: list[str] = []
 
-    async def _boom(_text_: str) -> None:
-        raise RuntimeError("down")
-
     async def _send(text: str) -> None:
         sent.append(text)
 
-    with pytest.raises(RuntimeError):
-        await tracker.announce(session, _boom)
-    assert await tracker.announce(session, _send) is True
     assert await tracker.announce(session, _send) is False
-
-    assert len(sent) == 1 and session.state[TASK_OUTCOME_STATE_KEY] == ["a"]
+    assert sent == []
+    assert await _text(tracker, session)
 
 
 @pytest.mark.asyncio

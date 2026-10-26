@@ -99,21 +99,29 @@ F_128 的成员子任务把问题放大了：
    "看到没有"仍以 DB 的 `observed_revision` 为准；告知不带正文，不推进它。
 2. **每个成员一个 tracker，由 TeamAgent 持有**：
    - 进程内成员：`AgentConfigurator` 构造一次，放进 `PrivateAgentResources`，经 `BuildContext.extras` 注入（与
-     `reliability_components` 同一做法）。`TeamPolicyRail` 每次 native rebuild 都新建，`TeamHarness` 也从自己的 build context
-     读取，借用的都是同一个实例。没拿到注入的 rail 不做任务告知并记一条 warning，不另建一份：第二份基线会把同一修改再说一遍。
+     `reliability_components` 同一做法），同一个实例也在构造时显式交给 `TeamHarness`。`TeamPolicyRail` 每次 native rebuild
+     都新建，借用的都是这一个实例。没拿到注入的 rail 不做任务告知，每个成员只记一次 warning，不另建一份：第二份基线会把同一
+     修改再说一遍。
    - 外部成员：`external_cli_spawn` 构造并绑定到成员 runtime（runtime 自己持有成员 session），接线不变。
-3. **基线以实例内存为准，绑定到一个 session，先认领再送达**：
+3. **基线以实例内存为准，绑定到一个 session 对象，先认领再送达**：
    - 接口是 `claim(session)` / `release(notice)` / `persist(session)`，外加一步到位的 `announce(session, send)`（认领 → 发送 →
      失败归还 / 成功持久化）。每次调用都要给出它服务的那个成员 session，没有 session 就不认领。
-   - 内存里是一个保序集合，绑定到一个 session id。遇到另一个 session（同一个 TeamAgent resume 进别的 team session）时，清空内存，
-     再从那个 session 的 checkpoint 读入。所以认领之前一定读过当前 session 的基线，进程重启后第一次认领也一样；一个 session 的
-     告知也不会吞掉另一个 session 里同 id 任务的告知（leader 可以自定任务 id）。
+   - 内存里是一个保序集合，绑定到一个 session **对象**（用 `is` 比较）。遇到别的对象就清空内存，再从那个对象的 state 读入。
+     每个运行周期、resume 进别的 team session、进程重启、从 checkpoint 恢复都会拿到新的子 session 对象，所以认领之前读到的
+     一定是这份对话历史对应的基线：一个 session 的告知不会吞掉另一个 session 里同 id 任务的告知（leader 可以自定任务 id），
+     回滚后的 state 也不会被回滚之前的条目覆盖。换对象不会丢已认领的条目：每次认领都在送达后立即持久化，运行周期结束时
+     runtime 也会 commit 子 session。
    - `claim` 在不夹 `await` 的一段里完成绑定、判重和标记，再渲染告知。同一成员的 rail 和 runtime 都运行在同一个事件循环上，
      所以哪条路径先认领就由哪条送出，其余路径什么也看不到，不需要任何去重。认领返回凭据 `ClaimedNotice`（文本 + 覆盖的条目），
      送达抛错时 `release(notice)` 按凭据归还，下次照常告知。
    - `TaskRevisionTracker` 对同一任务只保留最新版本的条目：版本只增不减，旧版本永远不会再命中。
+   - `announce` 只把"送达本身"放进可归还的范围：送达抛错、或者送达中途被取消（无法确定是否已发出，重复一次比丢一次便宜）
+     就归还；送达之后的记账（如外部 runtime 记录本轮输入）放在 `announce` 之外，出错不会导致重发。
+   - tracker 的类属性 `WAKES` 声明告知能否作为单独一条输入送出、唤醒空闲成员：`TaskRevisionTracker` 能，`TaskOutcomeTracker`
+     不能（F_119：验收通过不唤醒作者），对它调 `announce` 什么也不认领，只能搭车。
 4. **session 只做持久化**：认领的那条路径在送达后 `persist(session)`，把内存基线写回。进程内成员的 rail（`ctx.session`）和
-   `TeamHarness`（`current_session()`）拿到的是同一个子 session 对象，外部成员只有 runtime 一个写入方，所以不存在两个写入方互相覆盖。
+   `TeamHarness`（`current_session()`）拿到的是同一个子 session 对象——native 把自己的 session 原样交给内层 agent 的回调上下文，
+   有单测锁住；外部成员只有 runtime 一个写入方，所以不存在两个写入方互相覆盖。
 5. **三个入口，同一个实例**：
    - **输入接纳**（rail 的 `on_user_message`，steering 批次也走这里）：认领，告知插在本次输入最前。
    - **`TASK_UPDATED` 指向自己**：`TaskBoardHandler.on_task_updated` 只调 `AgentRoundController.announce_task_revisions()`，
@@ -316,7 +324,23 @@ F_128 的成员子任务把问题放大了：
 - 核实过一条疑点：停止后的 runtime 发送会抛错（`NativeHarness.send` 在 TERMINATED 下抛错），`announce` 会归还认领，不存在
   "认领了却悄悄送不到"。
 
-测试基线：`pytest tests/unit_tests/agent_teams/` → 4064 passed / 36 skipped / 2 xfailed。
+### 第三轮审查后的修复（2026-10-26）
+
+- **基线绑定到 session 对象而不是 session id**：同一个 session id 的 state 回滚到较早的 checkpoint（恢复命名 checkpoint、fork）
+  后，按 id 判断不会重新读入，还会把回滚前的条目写回去，执行者历史里已没有的告知再也不会重发。恢复总会拿到新的子 session
+  对象，按对象判断就会重新读入。顺带去掉了 `id(session)` 兜底（对象回收后 id 可能被复用）。
+- **送达之后的错误不再归还认领**：外部 runtime 原先在 `announce` 的发送回调里记录本轮输入，记录出错会把已送达的告知归还、
+  之后重发；记录移到 `announce` 之后。
+- **验收通过不会被主动送出**：`TeamHarness` 与两个外部 runtime 的 `announce_task_revisions` 原先不区分 tracker，调度模式
+  注入的 `TaskOutcomeTracker` 一旦被调用，就会把"验收通过"作为 steer 发出去并拉起作者；新增 `WAKES` 声明，统一在
+  `announce` 里拦下。
+- **`TeamHarness` 显式拿到 tracker**：`TeamHarness.build(task_event_tracker=...)` 由 configurator 传入，不再在方法里临时
+  import rail 的 extras 访问器；会话取 `current_session()`。
+- **缺注入的告警每个成员只打一次**，并带上团队与角色。
+- 核实了"单一写入方"的前提：native 把自己的 session 原样交给内层 agent，rail 的 `ctx.session` 就是 `TeamHarness` 的当前
+  session；补了单测锁住。
+
+测试基线：`pytest tests/unit_tests/agent_teams/` → 4069 passed / 36 skipped / 2 xfailed。
 
 ## 已知遗留
 
@@ -325,6 +349,8 @@ F_128 的成员子任务把问题放大了：
 - 自主模式不会为了告知修改去拉起离线成员（runtime 没起来时不认领）：要等它起来后的第一次输入才告知。
 - 成员版 `update_task` 修改子任务后，结果仍写"最新内容已发给执行者"，未按子任务状态区分送达方式。
 - 修改告知的基线以内存为准：只有进程在认领之后、这次持久化之前崩溃，重启后同一版本才会再告知一次。
+- 整个 round 被 `abort(immediate)` 丢弃时，这一轮里送达的告知随之消失，但 session 对象没变、基线不回滚，这次修改不会再告知，
+  由完成闸兜底。
 - `release(notice)` 只覆盖送达抛错的情况。送达成功即视为已告知；之后那条输入如果在 runtime 内部被丢弃，这次告知就丢了，由完成闸兜底，
   不会按旧要求默默做完。
 - 成员仍不能改派子任务、调整子任务依赖。
