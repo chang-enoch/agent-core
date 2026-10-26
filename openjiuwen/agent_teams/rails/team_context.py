@@ -100,7 +100,7 @@ def inject_team_handles(
     swarmflow_expert_specs: Optional[dict[str, Any]] = None,
     expert_catalog: Optional["ExpertCatalog"] = None,
     expert_binding: Optional["ExpertBinding"] = None,
-    task_event_tracker: Optional["TaskOutcomeTracker | TaskRevisionTracker"] = None,
+    task_event_tracker: "TaskOutcomeTracker | TaskRevisionTracker | None" = None,
 ) -> None:
     """Write the team live handles into ``extras`` (configurator-side).
 
@@ -245,7 +245,7 @@ def get_reliability_components(context: Any) -> Optional["ReliabilityComponents"
     return _get(context, TeamHandleKey.RELIABILITY_COMPONENTS)
 
 
-def get_task_event_tracker(context: Any) -> Optional["TaskOutcomeTracker | TaskRevisionTracker"]:
+def get_task_event_tracker(context: Any) -> "TaskOutcomeTracker | TaskRevisionTracker | None":
     """Return the member's shared task notice tracker, or None (leader / no configurator)."""
     return _get(context, TeamHandleKey.TASK_EVENT_TRACKER)
 

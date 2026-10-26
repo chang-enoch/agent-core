@@ -43,7 +43,7 @@ class PrivateAgentResources:
     # The member's next-input task notice tracker (F_119 / F_129), non-leader
     # in-process members only. Built once and borrowed by every rebuilt
     # TeamPolicyRail, so the handler and the rail share one baseline.
-    task_event_tracker: Optional["TaskOutcomeTracker | TaskRevisionTracker"] = None
+    task_event_tracker: "TaskOutcomeTracker | TaskRevisionTracker | None" = None
 
 
 __all__ = ["PrivateAgentResources"]

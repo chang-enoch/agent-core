@@ -2129,18 +2129,3 @@ async def test_the_inner_agent_gets_the_very_session_the_native_holds():
     await agent.invoke("hello", session)
 
     assert fake.invoke_calls[0]["session"] is session
-
-
-@pytest.mark.level1
-def test_a_missing_task_tracker_is_warned_about_once_per_member(monkeypatch):
-    from openjiuwen.agent_teams.rails import team_policy_rail
-
-    warnings: list[tuple] = []
-    monkeypatch.setattr(team_policy_rail, "_MISSING_TASK_TRACKER_WARNED", set())
-    monkeypatch.setattr(team_policy_rail.team_logger, "warning", lambda *args: warnings.append(args))
-    backend = _FakeTeamBackend(self_member_name="dev1")
-
-    for _ in range(3):
-        TeamPolicyRail(role=TeamRole.TEAMMATE, member_name="dev1", language="cn", team_backend=backend)
-
-    assert len(warnings) == 1

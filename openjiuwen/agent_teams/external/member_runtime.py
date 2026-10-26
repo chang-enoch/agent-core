@@ -618,16 +618,20 @@ class ExternalHarnessMemberRuntime:
         """
         if self._task_outcome_tracker is None:
             return
-        sent: list[tuple[Any, str]] = []
+        delivered: tuple[Any, str] | None = None
 
         async def _send(text: str) -> None:
             # Delivery only: what is raised here gives the claim back.
-            sent.append((await self._adapter.send(text, immediate=True), text))
+            nonlocal delivered
+            delivered = (await self._adapter.send(text, immediate=True), text)
 
         async with self._context_delivery_lock:
-            await self._task_outcome_tracker.announce(self._member_session, _send)
-            for receipt, text in sent:
-                self._record_input(receipt, text)
+            try:
+                await self._task_outcome_tracker.announce(self._member_session, _send)
+            finally:
+                # A delivered notice is the turn's input, whatever failed after it.
+                if delivered is not None:
+                    self._record_input(*delivered)
 
     async def abort(self, *, immediate: bool = False) -> None:
         await self._adapter.abort(immediate=immediate)

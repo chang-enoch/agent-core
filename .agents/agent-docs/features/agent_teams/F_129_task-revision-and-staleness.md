@@ -100,17 +100,18 @@ F_128 的成员子任务把问题放大了：
 2. **每个成员一个 tracker，由 TeamAgent 持有**：
    - 进程内成员：`AgentConfigurator` 构造一次，放进 `PrivateAgentResources`，经 `BuildContext.extras` 注入（与
      `reliability_components` 同一做法），同一个实例也在构造时显式交给 `TeamHarness`。`TeamPolicyRail` 每次 native rebuild
-     都新建，借用的都是这一个实例。没拿到注入的 rail 不做任务告知，每个成员只记一次 warning，不另建一份：第二份基线会把同一
-     修改再说一遍。
+     都新建，借用的都是这一个实例（有组装级单测锁住 rail、harness 与 resources 是同一个实例）。没拿到注入的 rail 不做任务告知、
+     只记 debug，不另建一份：第二份基线会把同一修改再说一遍。
    - 外部成员：`external_cli_spawn` 构造并绑定到成员 runtime（runtime 自己持有成员 session），接线不变。
 3. **基线以实例内存为准，绑定到一个 session 对象，先认领再送达**：
    - 接口是 `claim(session)` / `release(notice)` / `persist(session)`，外加一步到位的 `announce(session, send)`（认领 → 发送 →
      失败归还 / 成功持久化）。每次调用都要给出它服务的那个成员 session，没有 session 就不认领。
-   - 内存里是一个保序集合，绑定到一个 session **对象**（用 `is` 比较）。遇到别的对象就清空内存，再从那个对象的 state 读入。
+   - 内存里是一个保序集合，绑定到一个 session **对象**（弱引用保存、用 `is` 比较，runtime 放手的 session 不会被 tracker 拖住）。遇到别的对象就清空内存，再从那个对象的 state 读入。
      每个运行周期、resume 进别的 team session、进程重启、从 checkpoint 恢复都会拿到新的子 session 对象，所以认领之前读到的
      一定是这份对话历史对应的基线：一个 session 的告知不会吞掉另一个 session 里同 id 任务的告知（leader 可以自定任务 id），
-     回滚后的 state 也不会被回滚之前的条目覆盖。换对象不会丢已认领的条目：每次认领都在送达后立即持久化，运行周期结束时
-     runtime 也会 commit 子 session。
+     回滚后的 state 也不会被回滚之前的条目覆盖。换对象不会丢已认领的条目：每次认领都在送达后立即持久化；写回失败的条目
+     记在 `_pending` 里，换到**同一个 session id** 的下一个对象（下一个运行周期）时并入、下次 `persist` 补写，换到别的
+     session 则丢弃。
    - `claim` 在不夹 `await` 的一段里完成绑定、判重和标记，再渲染告知。同一成员的 rail 和 runtime 都运行在同一个事件循环上，
      所以哪条路径先认领就由哪条送出，其余路径什么也看不到，不需要任何去重。认领返回凭据 `ClaimedNotice`（文本 + 覆盖的条目），
      送达抛错时 `release(notice)` 按凭据归还，下次照常告知。
@@ -340,7 +341,18 @@ F_128 的成员子任务把问题放大了：
 - 核实了"单一写入方"的前提：native 把自己的 session 原样交给内层 agent，rail 的 `ctx.session` 就是 `TeamHarness` 的当前
   session；补了单测锁住。
 
-测试基线：`pytest tests/unit_tests/agent_teams/` → 4069 passed / 36 skipped / 2 xfailed。
+### 第四轮审查后的修复（2026-10-26）
+
+- **弱引用绑定 session**：tracker 原先强引用上一次绑定的子 session，运行周期结束后整份 state（含对话历史）要等下次绑定才
+  释放。改为 `weakref.ref`，对象回收后下次调用自然重新读入。
+- **写回失败的条目跨周期补写**：按对象绑定后，`persist` 失败的条目只在内存里，下一个周期换新对象重新读入就丢了，会重复
+  告知。新增 `_pending`：认领时加入、写回成功清空、归还时移除；换到同一 session id 的新对象时并入并补写。
+- **组装接线有了单测**：非 leader 成员的 `PrivateAgentResources.task_event_tracker`、`TeamHarness._task_event_tracker`、
+  `TeamPolicyRail._outcome_tracker` 是同一个实例；leader 三者都没有。rail 缺注入的告警随之降为 debug，模块级去重集合删掉。
+- **外部 runtime 的输入记录放进 `finally`**：拿到回执就记录，`announce` 后半段出错也不漏；改用单个局部变量而不是列表。
+- 新增的 tracker 字段注解改为 `X | None`（本模块禁止 `Optional`）。
+
+测试基线：`pytest tests/unit_tests/agent_teams/` → 4073 passed / 36 skipped / 2 xfailed。
 
 ## 已知遗留
 
@@ -349,6 +361,7 @@ F_128 的成员子任务把问题放大了：
 - 自主模式不会为了告知修改去拉起离线成员（runtime 没起来时不认领）：要等它起来后的第一次输入才告知。
 - 成员版 `update_task` 修改子任务后，结果仍写"最新内容已发给执行者"，未按子任务状态区分送达方式。
 - 修改告知的基线以内存为准：只有进程在认领之后、这次持久化之前崩溃，重启后同一版本才会再告知一次。
+- 写回失败与 state 回滚同时发生时，那条告知不会重发：为避免重复告知，补写优先于回滚后的历史。
 - 整个 round 被 `abort(immediate)` 丢弃时，这一轮里送达的告知随之消失，但 session 对象没变、基线不回滚，这次修改不会再告知，
   由完成闸兜底。
 - `release(notice)` 只覆盖送达抛错的情况。送达成功即视为已告知；之后那条输入如果在 runtime 内部被丢弃，这次告知就丢了，由完成闸兜底，

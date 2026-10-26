@@ -59,6 +59,7 @@ that can interleave means revisiting this.
 from __future__ import annotations
 
 import hashlib
+import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar
 
@@ -675,9 +676,14 @@ class _TaskNoticeTracker:
     checkpoint restore hands in a fresh child session, so the baseline is
     always the one that session's history goes with — one session's
     announcements never suppress another's, and a rolled-back state is never
-    overwritten with entries from after the rollback. Nothing claimed is lost
-    on the switch: every claim is persisted right after delivery, and the
-    runtime commits its child session when a cycle stops.
+    overwritten with entries from after the rollback. The object is held by a
+    weak reference: a session the runtime has let go is not kept alive here,
+    and once collected the next call simply reloads. Nothing claimed is lost
+    on the switch: every claim is persisted right after delivery, and an entry
+    whose persist failed is carried into the next object of the *same* session
+    id (the next run cycle) and written there — a different session drops it.
+    Were a failed persist and a rollback to meet, that one notice is not
+    repeated: a repeat is avoided at the cost of the rolled-back history.
 
     ``claim`` checks and marks with no ``await`` in between, and every caller
     runs on the member's one event loop, so two paths can never claim the same
@@ -706,16 +712,25 @@ class _TaskNoticeTracker:
         self._team_backend = team_backend
         self._member_name = member_name
         self._announced: dict[str, None] = {}
-        self._session: Any = None
+        self._session_ref: weakref.ref | None = None
+        self._session_id: str | None = None
         self._persisted: list[str] | None = None
+        # Claimed entries not yet written to any session state.
+        self._pending: dict[str, None] = {}
 
     def _bind(self, session: Any) -> None:
         """Make ``session``'s stored baseline the current one, unless it is already bound."""
-        if session is self._session:
+        bound = self._session_ref() if self._session_ref is not None else None
+        if session is bound:
             return
+        get_session_id = getattr(session, "get_session_id", None)
+        session_id = get_session_id() if callable(get_session_id) else None
+        carried = self._pending if session_id is not None and session_id == self._session_id else {}
         stored = _read_announced(session, self.STATE_KEY)
-        self._session = session
-        self._announced = dict.fromkeys(stored)
+        self._session_ref = weakref.ref(session)
+        self._session_id = session_id
+        self._pending = dict(carried)
+        self._announced = dict.fromkeys([*stored, *carried])
         self._compact()
         self._persisted = list(stored)
 
@@ -744,6 +759,7 @@ class _TaskNoticeTracker:
             return None
         entries = tuple(self._entry(row) for row in fresh)
         self._announced.update(dict.fromkeys(entries))
+        self._pending.update(dict.fromkeys(entries))
         self._compact()
         return ClaimedNotice(text=self._render(fresh), entries=entries)
 
@@ -751,6 +767,7 @@ class _TaskNoticeTracker:
         """Give ``notice``'s entries back, after its delivery failed."""
         for entry in notice.entries:
             self._announced.pop(entry, None)
+            self._pending.pop(entry, None)
 
     async def persist(self, session: Any) -> None:
         """Write the baseline into ``session`` when it changed since the last write."""
@@ -772,6 +789,7 @@ class _TaskNoticeTracker:
             )
             return
         self._persisted = current
+        self._pending.clear()
 
     async def announce(self, session: Any, send: Callable[[str], Awaitable[Any]]) -> bool:
         """Deliver the pending notice as an input of its own: claim, ``send``, persist.
@@ -900,6 +918,7 @@ class TaskRevisionTracker(_TaskNoticeTracker):
             return
         keep = {entry for _number, entry in newest.values()}
         self._announced = {entry: None for entry in self._announced if entry in keep}
+        self._pending = {entry: None for entry in self._pending if entry in keep}
 
     def _entry(self, task: Any) -> str:
         return f"{task.task_id}@{task.revision}"

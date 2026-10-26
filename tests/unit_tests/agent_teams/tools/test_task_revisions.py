@@ -597,6 +597,60 @@ async def test_the_bound_session_is_not_reread(db, bus):
 
 @pytest.mark.asyncio
 @pytest.mark.level1
+async def test_a_released_session_is_not_kept_alive(db, bus):
+    import gc
+    import weakref
+
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    await tm.update_task("t1", content="c1")
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    session = _Session()
+    assert await tracker.claim(session) is not None
+    await tracker.persist(session)
+    probe = weakref.ref(session)
+
+    del session
+    gc.collect()
+
+    assert probe() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_an_unpersisted_claim_carries_into_the_next_cycle_of_the_same_session(db, bus):
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    await tm.update_task("t1", content="c1")
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+
+    class _FailingCommit(_Session):
+        async def commit(self) -> None:
+            raise RuntimeError("checkpoint store down")
+
+    first = _FailingCommit()
+    assert await tracker.claim(first) is not None
+    await tracker.persist(first)  # swallowed: logged, entry stays pending
+
+    next_cycle = _Session()  # same session id, fresh object, nothing stored
+    assert await tracker.claim(next_cycle) is None
+    await tracker.persist(next_cycle)
+    assert next_cycle.state[TASK_REVISION_STATE_KEY] == ["t1@1"]
+
+    # Another session does not inherit it.
+    other = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    failing = _FailingCommit()
+    assert await other.claim(failing) is not None
+    await other.persist(failing)
+    assert await other.claim(_Session("another-session")) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
 async def test_only_the_newest_revision_of_a_task_is_kept(db, bus):
     tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
     assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok

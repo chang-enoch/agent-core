@@ -1208,6 +1208,29 @@ async def test_a_failure_after_delivery_keeps_the_claim() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.level1
+async def test_a_delivered_notice_is_recorded_even_if_announce_fails_after() -> None:
+    harness = _FakeHarness()
+    runtime = ExternalHarnessMemberRuntime(harness=harness, context=_context())
+    recorder = _RecordingTrajectoryRecorder()
+    runtime.bind_trajectory_recorder(recorder)  # type: ignore[arg-type]
+    notice = '<team-event kind="task-revised">\nt1\n</team-event>'
+
+    class _PersistFails(_OneShotNoticeTracker):
+        async def persist(self, session: Any) -> None:
+            raise RuntimeError("state unreadable")
+
+    runtime.bind_task_outcome_tracker(_PersistFails(notice))  # type: ignore[arg-type]
+    await runtime.start(team_session=_FakeTeamSession())
+
+    with pytest.raises(RuntimeError):
+        await runtime.announce_task_revisions()
+    await runtime.stop()
+
+    assert ("input", ("turn-1", notice)) in [call for call in recorder.calls if call[0] == "input"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
 async def test_a_failed_send_gives_the_notice_back() -> None:
     harness = _FakeHarness()
     runtime = ExternalHarnessMemberRuntime(harness=harness, context=_context())

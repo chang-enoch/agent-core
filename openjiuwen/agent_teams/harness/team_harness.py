@@ -67,7 +67,7 @@ class TeamHarness:
         role: "TeamRole",
         member_name: Optional[str],
         initial_plan_mode: bool = False,
-        task_event_tracker: Optional["TaskOutcomeTracker | TaskRevisionTracker"] = None,
+        task_event_tracker: "TaskOutcomeTracker | TaskRevisionTracker | None" = None,
     ) -> None:
         self._agent_spec = agent_spec
         self._build_context = build_context
@@ -99,7 +99,7 @@ class TeamHarness:
         member_name: Optional[str],
         initial_plan_mode: bool = False,
         build_context: "BuildContext | None" = None,
-        task_event_tracker: Optional["TaskOutcomeTracker | TaskRevisionTracker"] = None,
+        task_event_tracker: "TaskOutcomeTracker | TaskRevisionTracker | None" = None,
     ) -> "TeamHarness":
         """Construct the native via forward construction and configure it.
 
