@@ -34,7 +34,6 @@ from openjiuwen.agent_teams.external.cli_agent import TEAM_MCP_SERVER_NAME
 from openjiuwen.agent_teams.harness.turn import MemberTurn, resolve_member_turn
 from openjiuwen.agent_teams.inbound_render import render_clock
 from openjiuwen.agent_teams.team_context import (
-    ClaimedNotice,
     TaskOutcomeTracker,
     TaskRevisionTracker,
     TeamContextTracker,
@@ -119,10 +118,6 @@ class TeamContextAwareRuntime(Protocol):
 
     async def announce_team_context(self) -> None:
         """Push the pending team roster announcement to the member."""
-        ...
-
-    async def announce_task_revisions(self) -> None:
-        """Push the pending task edit notice to the member (F_129)."""
         ...
 
 
@@ -579,7 +574,8 @@ class ExternalHarnessMemberRuntime:
             # an in-process member.
             clock = render_clock(now=format_absolute_time(get_current_time()))
             external_input = _prepend_context(external_input, clock)
-            pending_outcome = await self._claim_task_outcome()
+            tracker = self._task_outcome_tracker
+            pending_outcome = await tracker.claim(self._member_session) if tracker is not None else None
             if pending_outcome is not None:
                 external_input = _prepend_context(external_input, pending_outcome.text)
             pending_context = await self._pending_team_context()
@@ -588,7 +584,8 @@ class ExternalHarnessMemberRuntime:
             try:
                 receipt = await self._adapter.send(external_input, immediate=immediate)
             except BaseException:
-                self._release_task_outcome(pending_outcome)
+                if pending_outcome is not None:
+                    tracker.release(pending_outcome)
                 raise
             # Every part is recorded, and the message first so it is the one
             # the turn states as its input. A provider splits the delivery into
@@ -598,7 +595,7 @@ class ExternalHarnessMemberRuntime:
             self._record_input(receipt, clock)
             if pending_outcome is not None:
                 self._record_input(receipt, pending_outcome.text)
-            await self._persist_task_outcome()
+                await tracker.persist(self._member_session)
             if pending_context:
                 self._record_input(receipt, pending_context)
                 await self._commit_team_context()
@@ -619,17 +616,15 @@ class ExternalHarnessMemberRuntime:
         Steers a busy member, like the edit would; a no-op when the tracker
         has nothing new.
         """
+        if self._task_outcome_tracker is None:
+            return
+
+        async def _send(text: str) -> None:
+            receipt = await self._adapter.send(text, immediate=True)
+            self._record_input(receipt, text)
+
         async with self._context_delivery_lock:
-            pending = await self._claim_task_outcome()
-            if pending is None:
-                return
-            try:
-                receipt = await self._adapter.send(pending.text, immediate=True)
-            except BaseException:
-                self._release_task_outcome(pending)
-                raise
-            self._record_input(receipt, pending.text)
-            await self._persist_task_outcome()
+            await self._task_outcome_tracker.announce(self._member_session, _send)
 
     async def abort(self, *, immediate: bool = False) -> None:
         await self._adapter.abort(immediate=immediate)
@@ -969,21 +964,6 @@ class ExternalHarnessMemberRuntime:
         if self._team_context_tracker is None or self._member_session is None:
             return
         await self._team_context_tracker.commit(self._member_session)
-
-    async def _claim_task_outcome(self) -> ClaimedNotice | None:
-        if self._task_outcome_tracker is None or self._member_session is None:
-            return None
-        self._task_outcome_tracker.seed(self._member_session)
-        return await self._task_outcome_tracker.claim()
-
-    def _release_task_outcome(self, notice: ClaimedNotice | None) -> None:
-        if self._task_outcome_tracker is not None and notice is not None:
-            self._task_outcome_tracker.release(notice)
-
-    async def _persist_task_outcome(self) -> None:
-        if self._task_outcome_tracker is None or self._member_session is None:
-            return
-        await self._task_outcome_tracker.persist(self._member_session)
 
     # ------------------------------------------------------------------
     # MemberRuntime: interrupt helpers and no-op hooks

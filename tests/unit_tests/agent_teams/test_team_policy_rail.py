@@ -1891,6 +1891,8 @@ def _teammate_rail(
     *,
     role: TeamRole = TeamRole.TEAMMATE,
 ) -> tuple[TeamPolicyRail, _FakeTeamBackend]:
+    from openjiuwen.agent_teams.team_context import build_task_event_tracker
+
     backend = _FakeTeamBackend(self_member_name="dev1")
     backend.task_manager = _OutcomeTaskManager([_verified_task("done-1")])
     rail = TeamPolicyRail(
@@ -1899,6 +1901,8 @@ def _teammate_rail(
         language="cn",
         dispatch_mode=dispatch_mode,
         team_backend=backend,
+        # What the configurator injects: the member's own tracker.
+        task_event_tracker=build_task_event_tracker(dispatch_mode, team_backend=backend, member_name="dev1"),
     )
     return rail, backend
 
@@ -1995,10 +1999,11 @@ async def test_rail_borrows_the_members_tracker_so_an_edit_is_told_once():
     assert ctx.session.get_state(TASK_REVISION_STATE_KEY) == ["t1@1"]
 
     edited.revision = 2
-    assert (await shared.claim()) is not None  # the edit event's path claims r2 first
+    assert (await shared.claim(ctx.session)) is not None  # the edit event's path claims r2 first
     third = await _admit(_rail(), ctx, "a third mail")
     assert "task-revised" not in third.content
-    assert ctx.session.get_state(TASK_REVISION_STATE_KEY) == ["t1@1", "t1@2"]
+    await shared.persist(ctx.session)  # the claiming path persists its own claim
+    assert ctx.session.get_state(TASK_REVISION_STATE_KEY) == ["t1@2"]
 
 
 
@@ -2087,3 +2092,18 @@ def test_policy_rail_factory_borrows_the_injected_task_tracker():
 
     assert first is not second
     assert first._outcome_tracker is shared and second._outcome_tracker is shared
+
+
+@pytest.mark.level1
+def test_a_teammate_rail_without_an_injected_tracker_announces_nothing():
+    """No rail-owned fallback: a second tracker would repeat what the runtime announced."""
+    backend = _FakeTeamBackend(self_member_name="dev1")
+    rail = TeamPolicyRail(
+        role=TeamRole.TEAMMATE,
+        member_name="dev1",
+        language="cn",
+        dispatch_mode="autonomous",
+        team_backend=backend,
+    )
+
+    assert rail._outcome_tracker is None

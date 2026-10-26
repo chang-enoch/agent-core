@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar
 
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.inbound_render import (
@@ -663,21 +663,25 @@ class _TaskNoticeTracker:
     """Shared baseline of the next-input task notices (F_119 / F_129).
 
     One instance per member, held by its ``TeamAgent`` and borrowed by every
-    path that can tell the member something: the rail on each admitted input,
-    the coordination handler on a task event, an external runtime on each send.
-    Whichever path claims an entry first delivers it; the others find nothing.
+    path that can tell the member something: the policy rail on each admitted
+    input, the member runtime when a task event asks it to speak now, an
+    external runtime on each send. Whichever path claims an entry first
+    delivers it; the others find nothing.
 
-    The baseline is the in-memory list of entries already announced; it is
-    authoritative. ``claim`` checks and marks with no ``await`` in between, and
-    every caller runs on the member's one event loop, so two paths can never
-    claim the same entry. The member's own session only persists it across a
-    process restart: :meth:`seed` folds the checkpointed entries in once,
-    :meth:`persist` writes the list back. Only the rail (in-process) or the
-    runtime (external) writes the session — the handler never does — so the
-    two never overwrite each other. A crash between a claim and the next
-    persist can repeat that one notice after a restart.
+    The baseline is an in-memory ordered set of entries already announced,
+    bound to one member session: every call names the session it acts for, and
+    a session other than the bound one (a resume into a different team session)
+    resets the set and reloads it from that session's checkpointed state, so
+    one session's announcements never suppress another's. ``claim`` checks and
+    marks with no ``await`` in between, and every caller runs on the member's
+    one event loop, so two paths can never claim the same entry. All callers
+    of one member hand in the same live child session (the rail's
+    ``ctx.session`` is the runtime's current session), so persisting it never
+    overwrites anything. A crash between a claim and its persist can repeat
+    that notice after a restart.
 
-    Claim before delivering, :meth:`release` the claim if delivery raises.
+    Claim before delivering, :meth:`release` the claim if delivery raises —
+    or let :meth:`announce` do all three steps.
     """
 
     STATE_KEY: ClassVar[str] = ""
@@ -690,57 +694,65 @@ class _TaskNoticeTracker:
     ) -> None:
         self._team_backend = team_backend
         self._member_name = member_name
-        self._announced: list[str] = []
-        self._seeded = False
+        self._announced: dict[str, None] = {}
+        self._session_key: object = None
         self._persisted: list[str] | None = None
 
-    def seed(self, session: Any) -> None:
-        """Fold the entries checkpointed in ``session`` into the baseline, once per instance."""
-        if self._seeded or session is None:
+    def _bind(self, session: Any) -> None:
+        """Make ``session``'s checkpointed baseline the current one, if it is not already."""
+        get_session_id = getattr(session, "get_session_id", None)
+        key = get_session_id() if callable(get_session_id) else id(session)
+        if self._session_key == key:
             return
-        self._seeded = True
         stored = _read_announced(session, self.STATE_KEY)
-        self._announced[:0] = [entry for entry in stored if entry not in self._announced]
+        self._session_key = key
+        self._announced = dict.fromkeys(stored)
+        self._compact()
         self._persisted = list(stored)
 
-    async def claim(self) -> ClaimedNotice | None:
+    async def claim(self, session: Any) -> ClaimedNotice | None:
         """Mark this member's not-yet-announced entries as announced and render them.
+
+        Args:
+            session: The member session the notice is for. ``None`` claims
+                nothing: without its baseline, a claim could repeat a notice.
 
         Returns:
             The claimed notice (its ``text`` is the ``<team-event>`` block to
             deliver), or ``None`` when there is nothing new (or the tracker is
             unbound).
         """
-        if self._team_backend is None or not self._member_name:
+        if session is None or self._team_backend is None or not self._member_name:
             return None
         task_manager = getattr(self._team_backend, "task_manager", None)
         if task_manager is None:
             return None
         rows = await self._candidates(task_manager)
-        # From here on no await: the check and the mark are one step.
+        # From here on no await: binding, the check and the mark are one step.
+        self._bind(session)
         fresh = [row for row in rows if self._entry(row) not in self._announced]
         if not fresh:
             return None
         entries = tuple(self._entry(row) for row in fresh)
-        self._announced.extend(entries)
+        self._announced.update(dict.fromkeys(entries))
+        self._compact()
         return ClaimedNotice(text=self._render(fresh), entries=entries)
 
     def release(self, notice: ClaimedNotice) -> None:
         """Give ``notice``'s entries back, after its delivery failed."""
-        self._announced = [entry for entry in self._announced if entry not in notice.entries]
+        for entry in notice.entries:
+            self._announced.pop(entry, None)
 
     async def persist(self, session: Any) -> None:
-        """Write the baseline into ``session`` when it changed since the last write.
-
-        Seeds first, so a checkpointed baseline is merged in, never overwritten.
-        """
+        """Write the baseline into ``session`` when it changed since the last write."""
         if session is None:
             return
-        self.seed(session)
-        if self._announced == self._persisted:
+        self._bind(session)
+        current = list(self._announced)
+        if current == self._persisted:
             return
         try:
-            session.update_state({self.STATE_KEY: list(self._announced)})
+            session.update_state({self.STATE_KEY: current})
             await session.commit()
         except Exception as exc:  # noqa: BLE001 - never break a model call over a checkpoint write
             team_logger.warning(
@@ -750,7 +762,27 @@ class _TaskNoticeTracker:
                 exc,
             )
             return
-        self._persisted = list(self._announced)
+        self._persisted = current
+
+    async def announce(self, session: Any, send: Callable[[str], Awaitable[Any]]) -> bool:
+        """Claim, deliver through ``send`` and persist; give the claim back if ``send`` raises.
+
+        Returns:
+            Whether a notice was sent.
+        """
+        notice = await self.claim(session)
+        if notice is None:
+            return False
+        try:
+            await send(notice.text)
+        except BaseException:
+            self.release(notice)
+            raise
+        await self.persist(session)
+        return True
+
+    def _compact(self) -> None:
+        """Drop entries that can never match again (none by default)."""
 
     async def _candidates(self, task_manager: Any) -> list[Any]:
         raise NotImplementedError
@@ -815,15 +847,17 @@ class TaskRevisionTracker(_TaskNoticeTracker):
     The single source of the edit notice: a ``<team-event kind="task-revised">``
     naming each edited task, the revisions it missed and the edit notes, and
     asking it to re-read the task. The edit's ``TASK_UPDATED`` event only
-    prompts an early claim (``TeamAgent.announce_task_revisions``); a member
-    that was down when the leader edited is told on its next admitted input,
-    since the edit still stands on the row as ``revision > observed_revision``.
+    prompts an early claim (the member runtime's ``announce_task_revisions``);
+    a member that was down when the leader edited is told on its next admitted
+    input, since the edit still stands on the row as
+    ``revision > observed_revision``.
     Scheduled dispatch has no use for it: the scheduler pushes the latest
     content as a durable mail.
 
     The notice does not count as seeing the revision — it carries no body.
     "Seen" stays the DB's ``observed_revision``; an entry is
-    ``task_id@revision`` and only stops the same revision being announced twice.
+    ``task_id@revision`` and only stops the same revision being announced
+    twice, so only each task's newest entry is kept.
 
     Args:
         team_backend: Backend whose task manager answers the board query.
@@ -835,6 +869,19 @@ class TaskRevisionTracker(_TaskNoticeTracker):
 
     async def _candidates(self, task_manager: Any) -> list[Any]:
         return await task_manager.unseen_edits(self._member_name)
+
+    def _compact(self) -> None:
+        """Keep each task's newest revision only: revisions only grow, so older ones never match again."""
+        newest: dict[str, tuple[int, str]] = {}
+        for entry in self._announced:
+            task_id, _, revision = entry.rpartition("@")
+            number = int(revision) if revision.isdigit() else -1
+            if task_id not in newest or number > newest[task_id][0]:
+                newest[task_id] = (number, entry)
+        if len(newest) == len(self._announced):
+            return
+        keep = {entry for _number, entry in newest.values()}
+        self._announced = {entry: None for entry in self._announced if entry in keep}
 
     def _entry(self, task: Any) -> str:
         return f"{task.task_id}@{task.revision}"

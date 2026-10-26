@@ -65,7 +65,6 @@ from openjiuwen.agent_teams.team_context import (
     TaskOutcomeTracker,
     TaskRevisionTracker,
     TeamContextTracker,
-    build_task_event_tracker,
 )
 from openjiuwen.agent_teams.timefmt import format_absolute_time
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
@@ -237,14 +236,16 @@ class TeamPolicyRail(DeepAgentRail):
         # the author (F_119); under autonomous dispatch an edit (F_129). The
         # leader needs neither. The tracker is the member's own, owned by its
         # TeamAgent and borrowed here, so its baseline outlives this rail and
-        # is shared with the coordination handler; a rail built directly
-        # (no configurator) gets one of its own.
-        self._outcome_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = None
-        if role != TeamRole.LEADER:
-            self._outcome_tracker = (
-                task_event_tracker
-                if task_event_tracker is not None
-                else build_task_event_tracker(dispatch_mode, team_backend=team_backend, member_name=member_name)
+        # is shared with the runtime's event-driven announcement. A second,
+        # rail-owned tracker would announce the same edit again, so a missing
+        # one disables the notices instead.
+        self._outcome_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = (
+            task_event_tracker if role != TeamRole.LEADER else None
+        )
+        if role != TeamRole.LEADER and task_event_tracker is None and team_backend is not None:
+            team_logger.warning(
+                "[{}] no task notice tracker injected; task notices are off for this member",
+                member_name or "?",
             )
 
     def init(self, agent: Any) -> None:
@@ -323,12 +324,10 @@ class TeamPolicyRail(DeepAgentRail):
         """Prepend the task facts not yet told to the member onto its input."""
         if self._outcome_tracker is None:
             return
-        self._outcome_tracker.seed(session)
-        notice = await self._outcome_tracker.claim()
+        notice = await self._outcome_tracker.claim(session)
         if notice is not None:
             parts.insert(0, notice.text)
-        # Also writes back what other paths claimed since the last input.
-        await self._outcome_tracker.persist(session)
+            await self._outcome_tracker.persist(session)
 
     async def before_steering_drain(self, ctx: AgentCallbackContext) -> None:
         """Cap how much of the steering backlog one model call takes.

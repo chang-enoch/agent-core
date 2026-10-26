@@ -99,25 +99,31 @@ F_128 的成员子任务把问题放大了：
    "看到没有"仍以 DB 的 `observed_revision` 为准；告知不带正文，不推进它。
 2. **每个成员一个 tracker，由 TeamAgent 持有**：
    - 进程内成员：`AgentConfigurator` 构造一次，放进 `PrivateAgentResources`，经 `BuildContext.extras` 注入（与
-     `reliability_components` 同一做法）。`TeamPolicyRail` 每次 native rebuild 都新建，但借用的是同一个实例。
+     `reliability_components` 同一做法）。`TeamPolicyRail` 每次 native rebuild 都新建，`TeamHarness` 也从自己的 build context
+     读取，借用的都是同一个实例。没拿到注入的 rail 不做任务告知并记一条 warning，不另建一份：第二份基线会把同一修改再说一遍。
    - 外部成员：`external_cli_spawn` 构造并绑定到成员 runtime（runtime 自己持有成员 session），接线不变。
-3. **基线以实例内存为准，先认领再送达**：
-   - `claim()` 在不夹 `await` 的一段里挑出还没告知过的 `task_id@revision`，记为已告知，再渲染告知。同一成员的 handler、rail、
-     runtime 都运行在同一个事件循环上，所以哪条路径先认领就由哪条送出，其余路径什么也看不到，不需要任何去重。
-   - 送达抛错时 `release()` 撤销本次认领，下次照常告知。
-4. **session 只做持久化**：
-   - 首次使用时 `seed(session)`：把 checkpoint 里的已告知集合并入内存，每个实例只做一次，用于跨进程重启。
-   - 认领后 `persist(session)`：把内存基线写回 session。
-   - 写 session 的只有 rail（外部成员是 runtime）。handler 不写，所以不存在两个写入方互相覆盖。
+3. **基线以实例内存为准，绑定到一个 session，先认领再送达**：
+   - 接口是 `claim(session)` / `release(notice)` / `persist(session)`，外加一步到位的 `announce(session, send)`（认领 → 发送 →
+     失败归还 / 成功持久化）。每次调用都要给出它服务的那个成员 session，没有 session 就不认领。
+   - 内存里是一个保序集合，绑定到一个 session id。遇到另一个 session（同一个 TeamAgent resume 进别的 team session）时，清空内存，
+     再从那个 session 的 checkpoint 读入。所以认领之前一定读过当前 session 的基线，进程重启后第一次认领也一样；一个 session 的
+     告知也不会吞掉另一个 session 里同 id 任务的告知（leader 可以自定任务 id）。
+   - `claim` 在不夹 `await` 的一段里完成绑定、判重和标记，再渲染告知。同一成员的 rail 和 runtime 都运行在同一个事件循环上，
+     所以哪条路径先认领就由哪条送出，其余路径什么也看不到，不需要任何去重。认领返回凭据 `ClaimedNotice`（文本 + 覆盖的条目），
+     送达抛错时 `release(notice)` 按凭据归还，下次照常告知。
+   - `TaskRevisionTracker` 对同一任务只保留最新版本的条目：版本只增不减，旧版本永远不会再命中。
+4. **session 只做持久化**：认领的那条路径在送达后 `persist(session)`，把内存基线写回。进程内成员的 rail（`ctx.session`）和
+   `TeamHarness`（`current_session()`）拿到的是同一个子 session 对象，外部成员只有 runtime 一个写入方，所以不存在两个写入方互相覆盖。
 5. **三个入口，同一个实例**：
    - **输入接纳**（rail 的 `on_user_message`，steering 批次也走这里）：认领，告知插在本次输入最前。
-   - **`TASK_UPDATED` 指向自己**：`TaskBoardHandler.on_task_updated` 只调 `AgentRoundController.announce_task_revisions()`，自己不产出文案。
-     - 进程内成员：runtime 已存在时，认领并把告知作为一条输入送出。成员空闲时这条输入拉起 round，忙时作为 steer 进入当前 round。
-     - runtime 还没起来时不认领，等它起来后的第一次输入接纳再告知。否则认领了却送不到，告知就丢了。
-     - 外部成员：转给 runtime 的 `announce_task_revisions()`，与 `announce_team_context()` 同型。
+   - **`TASK_UPDATED` 指向自己**：`TaskBoardHandler.on_task_updated` 只调 `AgentRoundController.announce_task_revisions()`，
+     自己不产出文案。TeamAgent 只做转发：runtime 实现了 `TaskNoticeAwareRuntime`（`agent/member_runtime.py`，独立于名册协议
+     `TeamContextAwareRuntime`）就调它的 `announce_task_revisions()`，否则没有提前告知，下一次输入照常带上。
+     - `TeamHarness`：运行周期内用当前子 session `announce`，告知作为 steer 送出，成员空闲时拉起 round、忙时进入当前 round。
+       运行周期外没有 session，不认领，等 rail 在下一次输入时告知。
+     - 外部 runtime：用自己的成员 session `announce`，与 `announce_team_context()` 同型。
    - **外部 runtime 发送任意输入**：搭车带上，现有通道不变。
-6. 调度模式的 `TaskOutcomeTracker`（F_119）换成同一套接口（`claim` / `release` / `seed` / `persist`）、同一种归属，行为不变。
-   rail 和 runtime 对两种 tracker 一视同仁。
+6. 调度模式的 `TaskOutcomeTracker`（F_119）换成同一套接口、同一种归属，行为不变。rail 和 runtime 对两种 tracker 一视同仁。
 
 ### D4：完成闸——不会按旧要求默默做完（两种模式）
 
@@ -290,10 +296,27 @@ F_128 的成员子任务把问题放大了：
 - **实现中定下的两处细节**：
   - `claim()` 返回认领凭据 `ClaimedNotice`（文本 + 覆盖的条目），`release(notice)` 按凭据归还。不能只记"最近一次认领"：A 路径认领后
     在 `await` 送达时，B 路径的一次空认领会把它清掉，A 送达失败时就撤不回了。
-  - `persist()` 先 `seed()`：从没读过 checkpoint 的实例直接写回，会用内存里的列表覆盖 checkpoint 里已有的基线。
+  - 任何读写都先绑定到当前 session 的基线（第二轮审查后由 `seed` 改为按 session id 的 `_bind`）：从没读过 checkpoint 的实例
+    直接写回，会用内存里的列表覆盖 checkpoint 里已有的基线。
 - 告知的开头文案补上原来提醒里的意思：任务仍归你、无需重新认领，先重看再继续；`dispatcher.task_content_updated_to_self` 文案删除。
 
-测试基线：`pytest tests/unit_tests/agent_teams/` → 4058 passed / 36 skipped / 2 xfailed。
+### 第二轮审查后的修复（2026-10-26）
+
+- **基线按 session 绑定**：原先内存基线跟着 TeamAgent 跨 session 存活，而且每个实例只读一次 checkpoint。同一个 TeamAgent
+  resume 进另一个 session 后，旧 session 的已告知条目会吞掉新 session 里同 id 任务的告知，新 session 自己的基线也读不进来。
+  改为绑定 session id，换 session 时清空并重新读入。
+- **认领之前先读基线**：事件路径原先不经 session 就认领，进程正常重启后，只要第一次输入之前来了 `TASK_UPDATED`，重启前告知过的
+  修改都会再说一遍。现在 `claim(session)` 必带 session，事件路径用 `TeamHarness.current_session()`。
+- **任务告知协议独立**：`announce_task_revisions` 从名册协议 `TeamContextAwareRuntime` 里拿出来，放进独立的
+  `TaskNoticeAwareRuntime`。原先没实现新方法的 runtime 会连名册刷新一起失效。
+- **进程内的告知由 `TeamHarness` 自己发**：TeamAgent 不再按 runtime 类型特判，只转发给实现了该协议的 runtime。
+- **rail 不再自建 tracker**：缺注入时关掉任务告知并记 warning，不再悄悄形成第二份基线。
+- **基线是保序集合**，修订 tracker 每个任务只留最新版本，不再线性查找、无限增长。三处重复的认领、送达、归还、持久化组合
+  收进 `announce(session, send)`。
+- 核实过一条疑点：停止后的 runtime 发送会抛错（`NativeHarness.send` 在 TERMINATED 下抛错），`announce` 会归还认领，不存在
+  "认领了却悄悄送不到"。
+
+测试基线：`pytest tests/unit_tests/agent_teams/` → 4064 passed / 36 skipped / 2 xfailed。
 
 ## 已知遗留
 
@@ -301,8 +324,8 @@ F_128 的成员子任务把问题放大了：
 - 推进 `observed_revision` 需要成员一侧写库（邮件投递、认领通知、`view_task`），每次是一条小 UPDATE。
 - 自主模式不会为了告知修改去拉起离线成员（runtime 没起来时不认领）：要等它起来后的第一次输入才告知。
 - 成员版 `update_task` 修改子任务后，结果仍写"最新内容已发给执行者"，未按子任务状态区分送达方式。
-- 修改告知的基线以内存为准：进程在认领之后、下一次持久化之前崩溃，重启后同一版本最多重复告知一次。
-- `release()` 只覆盖送达抛错的情况。送达成功即视为已告知；之后那条输入如果在 runtime 内部被丢弃，这次告知就丢了，由完成闸兜底，
+- 修改告知的基线以内存为准：只有进程在认领之后、这次持久化之前崩溃，重启后同一版本才会再告知一次。
+- `release(notice)` 只覆盖送达抛错的情况。送达成功即视为已告知；之后那条输入如果在 runtime 内部被丢弃，这次告知就丢了，由完成闸兜底，
   不会按旧要求默默做完。
 - 成员仍不能改派子任务、调整子任务依赖。
 - D11（上下文未压缩时只推差异）单独排期，本次不实现。

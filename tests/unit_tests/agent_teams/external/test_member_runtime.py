@@ -1114,11 +1114,8 @@ class _OneShotNoticeTracker:
         self.released = 0
         self.persists = 0
 
-    def seed(self, session: Any) -> None:
-        _ = session
-
-    async def claim(self) -> ClaimedNotice | None:
-        if self.claimed:
+    async def claim(self, session: Any) -> ClaimedNotice | None:
+        if self.claimed or session is None:
             return None
         self.claimed = True
         return ClaimedNotice(text=self.text, entries=("t1",))
@@ -1131,6 +1128,18 @@ class _OneShotNoticeTracker:
     async def persist(self, session: Any) -> None:
         _ = session
         self.persists += 1
+
+    async def announce(self, session: Any, send: Any) -> bool:
+        notice = await self.claim(session)
+        if notice is None:
+            return False
+        try:
+            await send(notice.text)
+        except BaseException:
+            self.release(notice)
+            raise
+        await self.persist(session)
+        return True
 
 
 @pytest.mark.asyncio
@@ -1154,7 +1163,7 @@ async def test_review_pass_notice_rides_once_and_is_recorded_as_its_own_input() 
     assert inputs[0] == ("input", ("turn-1", "next task"))
     assert ("input", ("turn-1", notice)) in inputs
     assert sum(1 for call in inputs if call[1][1] == notice) == 1
-    assert tracker.persists == 2
+    assert tracker.persists == 1
 
 
 @pytest.mark.asyncio

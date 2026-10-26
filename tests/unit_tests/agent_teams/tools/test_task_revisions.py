@@ -455,8 +455,12 @@ async def test_member_update_task_follows_the_subtask_gate(db, bus):
 
 
 class _Session:
-    def __init__(self) -> None:
+    def __init__(self, session_id: str = "revision_session") -> None:
         self.state: dict = {}
+        self.session_id = session_id
+
+    def get_session_id(self) -> str:
+        return self.session_id
 
     def get_state(self, key: str):
         return self.state.get(key)
@@ -481,16 +485,15 @@ async def test_autonomous_member_is_told_of_a_missed_edit_once(db, bus):
     tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
     session = _Session()
 
-    tracker.seed(session)
-    notice = await tracker.claim()
+    notice = await tracker.claim(session)
     text = notice.text if notice else ""
     assert 'kind="task-revised"' in text
     assert "t2" not in text and "not started yet" not in text
     assert "r0 → r1" in text and "tightened criteria" in text
-    assert await tracker.claim() is None
+    assert await tracker.claim(session) is None
 
     await tm.update_task("t1", content="c2")
-    assert "r0 → r2" in (await tracker.claim()).text
+    assert "r0 → r2" in (await tracker.claim(session)).text
 
 
 @pytest.mark.level1
@@ -516,21 +519,57 @@ async def test_an_edit_is_claimed_once_across_paths_and_restarts(db, bus):
     tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
     session = _Session()
 
-    notice = await tracker.claim()
+    assert await tracker.claim(None) is None
+    notice = await tracker.claim(session)
     assert notice is not None and notice.entries == ("t1@1",)
     # Another path (the rail on the next input) finds nothing left to say.
-    assert await tracker.claim() is None
+    assert await tracker.claim(session) is None
     # A failed delivery gives that claim back, whatever was claimed since.
     tracker.release(notice)
-    assert await tracker.claim() is not None
+    assert await tracker.claim(session) is not None
     await tracker.persist(session)
     assert session.state[TASK_REVISION_STATE_KEY] == ["t1@1"]
 
+    # A restarted process reads the checkpointed baseline before its first claim.
     restarted = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
-    restarted.seed(session)
-    assert await restarted.claim() is None
-    # Without the checkpoint (a crash before persist) the notice repeats once.
-    assert await TaskRevisionTracker(team_backend=backend, member_name=DEV_1).claim() is not None
+    assert await restarted.claim(session) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_the_baseline_belongs_to_one_session(db, bus):
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    await tm.update_task("t1", content="c1")
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    first, second = _Session("session-a"), _Session("session-b")
+
+    assert await tracker.claim(first) is not None
+    await tracker.persist(first)
+    # The same id in another session is a different task: it is announced there.
+    assert await tracker.claim(second) is not None
+    await tracker.persist(second)
+    assert second.state[TASK_REVISION_STATE_KEY] == ["t1@1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_only_the_newest_revision_of_a_task_is_kept(db, bus):
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    session = _Session()
+
+    for content in ("c1", "c2", "c3"):
+        await tm.update_task("t1", content=content)
+        assert await tracker.claim(session) is not None
+    await tracker.persist(session)
+
+    assert session.state[TASK_REVISION_STATE_KEY] == ["t1@3"]
 
 
 @pytest.mark.asyncio

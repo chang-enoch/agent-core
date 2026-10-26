@@ -60,7 +60,6 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.member_runtime import MemberRuntime
     from openjiuwen.agent_teams.memory.manager import TeamMemoryManager
     from openjiuwen.agent_teams.models.allocator import Allocation, ModelAllocator
-    from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
     from openjiuwen.harness.tools.worktree import WorktreeManager
 
@@ -339,10 +338,6 @@ class AgentConfigurator:
     @memory_manager.setter
     def memory_manager(self, value: Optional["TeamMemoryManager"]) -> None:
         self._resources.memory_manager = value
-
-    @property
-    def task_event_tracker(self) -> Optional["TaskOutcomeTracker | TaskRevisionTracker"]:
-        return self._resources.task_event_tracker
 
     @property
     def model_allocator(self) -> Optional["ModelAllocator"]:
@@ -923,9 +918,9 @@ class AgentConfigurator:
             if expert_catalog is not None:
                 expert_binding = _derive_expert_binding(spec)
 
-        # One task notice tracker per member, owned here and borrowed by every
-        # rebuilt policy rail: the coordination handler claims through the same
-        # instance, so the two never announce one edit twice (F_129).
+        # One task notice tracker per member, owned here and borrowed through
+        # extras by every rebuilt policy rail and by the TeamHarness, so the
+        # rail and the event-driven announcement share one baseline (F_129).
         if ctx.role != TeamRole.LEADER and self._resources.task_event_tracker is None:
             from openjiuwen.agent_teams.team_context import build_task_event_tracker
 

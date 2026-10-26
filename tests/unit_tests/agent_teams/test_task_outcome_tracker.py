@@ -48,8 +48,8 @@ def _tracker(completed: list) -> tuple[TaskOutcomeTracker, _TaskManager]:
     return TaskOutcomeTracker(team_backend=backend, member_name="dev-1"), manager
 
 
-async def _text(tracker: TaskOutcomeTracker) -> str | None:
-    notice = await tracker.claim()
+async def _text(tracker: TaskOutcomeTracker, session: "_Session | None" = None) -> str | None:
+    notice = await tracker.claim(session if session is not None else _Session())
     return notice.text if notice is not None else None
 
 
@@ -73,8 +73,8 @@ async def test_a_claim_is_announced_once_and_persisted():
     tracker, _manager = _tracker([_task("a", reviewers=("v1",))])
     session = _Session()
 
-    assert await _text(tracker)
-    assert await _text(tracker) is None
+    assert await _text(tracker, session)
+    assert await _text(tracker, session) is None
     await tracker.persist(session)
     await tracker.persist(session)
 
@@ -87,11 +87,33 @@ async def test_a_claim_is_announced_once_and_persisted():
 async def test_a_released_claim_is_offered_again():
     """Delivery failed: the claim is given back and the next input carries the notice."""
     tracker, _manager = _tracker([_task("a", reviewers=("v1",))])
+    session = _Session()
 
-    notice = await tracker.claim()
+    notice = await tracker.claim(session)
     tracker.release(notice)
 
-    assert await _text(tracker)
+    assert await _text(tracker, session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_announce_sends_persists_and_gives_back_on_failure():
+    tracker, _manager = _tracker([_task("a", reviewers=("v1",))])
+    session = _Session()
+    sent: list[str] = []
+
+    async def _boom(_text_: str) -> None:
+        raise RuntimeError("down")
+
+    async def _send(text: str) -> None:
+        sent.append(text)
+
+    with pytest.raises(RuntimeError):
+        await tracker.announce(session, _boom)
+    assert await tracker.announce(session, _send) is True
+    assert await tracker.announce(session, _send) is False
+
+    assert len(sent) == 1 and session.state[TASK_OUTCOME_STATE_KEY] == ["a"]
 
 
 @pytest.mark.asyncio
@@ -100,11 +122,11 @@ async def test_later_passes_are_announced_without_repeating_earlier_ones():
     completed = [_task("a", reviewers=("v1",))]
     tracker, _manager = _tracker(completed)
     session = _Session()
-    await tracker.claim()
+    await tracker.claim(session)
     await tracker.persist(session)
 
     completed.append(_task("b", reviewers=("v1",)))
-    text = await _text(tracker)
+    text = await _text(tracker, session)
     await tracker.persist(session)
 
     assert "- b · title-b" in text
@@ -114,13 +136,12 @@ async def test_later_passes_are_announced_without_repeating_earlier_ones():
 
 @pytest.mark.asyncio
 @pytest.mark.level1
-async def test_seed_restores_the_baseline_after_a_restart():
+async def test_a_checkpointed_baseline_is_honoured_after_a_restart():
     session = _Session()
     session.state[TASK_OUTCOME_STATE_KEY] = ["a"]
     tracker, _manager = _tracker([_task("a", reviewers=("v1",))])
 
-    tracker.seed(session)
-    assert await _text(tracker) is None
+    assert await _text(tracker, session) is None
     await tracker.persist(session)
 
     assert session.commits == 0
@@ -132,7 +153,7 @@ async def test_persist_without_claims_is_a_no_op():
     tracker, _manager = _tracker([])
     session = _Session()
 
-    assert await _text(tracker) is None
+    assert await _text(tracker, session) is None
     await tracker.persist(session)
     await tracker.persist(None)
 
@@ -142,7 +163,9 @@ async def test_persist_without_claims_is_a_no_op():
 
 @pytest.mark.asyncio
 @pytest.mark.level1
-async def test_disabled_without_backend_or_member():
+async def test_disabled_without_session_backend_or_member():
+    tracker, _manager = _tracker([_task("a", reviewers=("v1",))])
+    assert await tracker.claim(None) is None
     assert await _text(TaskOutcomeTracker(team_backend=None, member_name="dev-1")) is None
     backend = SimpleNamespace(task_manager=_TaskManager([_task("a", reviewers=("v1",))]))
     assert await _text(TaskOutcomeTracker(team_backend=backend, member_name=None)) is None

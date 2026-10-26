@@ -249,6 +249,23 @@ class TeamHarness:
 
         return create_agent_session(card=card)
 
+    async def announce_task_revisions(self) -> None:
+        """Deliver the member's pending task edit notice now, if it has one (F_129).
+
+        The member's task notice tracker (its TeamAgent's, borrowed through the
+        build context like the policy rail does) is the only source of the
+        notice. Outside a run cycle there is no session to claim against, so
+        nothing is claimed: the rail tells the member on its next input. The
+        notice steers a busy member and starts a round for an idle one.
+        """
+        from openjiuwen.agent_teams.rails.team_context import get_task_event_tracker
+
+        tracker = get_task_event_tracker(self._build_context)
+        session = self._active_agent_session
+        if tracker is None or session is None:
+            return
+        await tracker.announce(session, lambda text: self.send(text, immediate=True))
+
     def current_session(self) -> Any | None:
         """Return the active child Session, if this harness is running."""
         return self._active_agent_session
