@@ -37,7 +37,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
-| 最近一次修订日期 | 2026-10-25 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md、F_129_task-revision-and-staleness.md |
 
 ## 范围 / 边界
@@ -240,7 +240,8 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     标题 / 内容，都**不再** `cancel_member`。cancel 发 `TASK_CANCELLED`（带 `member_name`）
     让该成员经 `on_task_cancelled` 停手；编辑**保持任务 IN_PROGRESS**（DAO 放开 PLANNING /
     IN_PROGRESS 可编辑，仅 IN_REVIEW 锁——验证期内容冻结），发 `TASK_UPDATED`（带 `member_name`
-    与写事务内读回的 `status`，见 B_03）让该成员经 `on_task_updated` 重看后继续。**仍在团队中的**人类成员持有的任务对 cancel /
+    与写事务内读回的 `status`，见 B_03）。自主模式下该成员经 `on_task_updated` 收到任务修改告知（由其 `TaskRevisionTracker`
+    产出、带修改说明，提示重看后继续，任务仍归它，F_129）；调度模式由调度器推送最新内容（`S_22` 不变量 19）。**仍在团队中的**人类成员持有的任务对 cancel /
     reassign / **改标题·内容**三者都 leader-immutable（HITT 锁，key 在
     `TeamBackend.is_live_human_agent` / `live_human_agent_names`，**不是**裸 role——见
     `S_07` 运行约束 3），故这些信号的 `member_name` 永不指向一个**在队**的 human avatar。
@@ -511,10 +512,12 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     - `view_task` 的 list 行带 `[subtask of #父]`，get 带 `Subtask of:` / `Subtasks:`。
 31. **任务版本：修改一定被执行者看到，完成前必须看过最新版本**（F_129，两种调度模式）。
     - leader `update_task` 新增可选 `change_note`（只能与 `title` / `content` 同传，单独传报错），随版本加一落进
-      `change_notes`；结果回带新版本号、调度模式下的推送对象，以及会因此过期的未完成子任务。
+      `change_notes`；结果回带新版本号、执行者与送达方式 `delivery`（`pushed` / `notified` / `review_requested` /
+      `on_start`，按编辑时的状态），以及会因此过期的未完成子任务。传了 `change_note` 但标题与内容都没变时报错，提示改用
+      `send_message`。
     - **完成闸**：`member_complete_task` 与 `claim_task(status=completed)` 在任务 `revision > observed_revision` 时拒绝并给出
       版本差（`r{observed} -> r{revision}`），提示先 `view_task(action=get)`；执行者自己 `view_task(get)` 即推进
-      `observed_revision`。别人的 `view_task` 不推进。
+      `observed_revision`。别人的 `view_task` 不推进。在队人类成员不受完成闸约束。
     - **成员版 `update_task`**（`MemberSubtaskUpdateTool`，`_UPDATE_TASK_CLASS[("scheduled", "member")]`，与成员 `create_task`
       同一门控 `member_subtasks_enabled()`）：`task_id` + `title?` / `content?` / `change_note?` / `confirm?` / `status?`（仅
       `"cancelled"`）。只能处理**父任务当前执行者是调用者**的未结束子任务（不看 `created_by`、不要求调用者有活跃任务）；

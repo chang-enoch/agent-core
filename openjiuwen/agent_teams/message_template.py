@@ -43,6 +43,7 @@ from typing import Any, Awaitable, Callable
 
 from openjiuwen.agent_teams.prompts.loader import TemplateLoader, load_template
 from openjiuwen.agent_teams.schema.task import REVISION_DIFF_MIN_CHARS
+from openjiuwen.agent_teams.tools.database.graph import stale_against
 from openjiuwen.core.common.logging import team_logger
 
 # Async row lookups the expansion needs. Narrow callables rather than a DB
@@ -485,8 +486,9 @@ def subtask_brief(subtasks: list[Any], parent_revision: int, language: str = "cn
     lines = []
     for row in subtasks:
         line = f"- {_task_line(row, with_summary=False)} · {row.status}"
-        if row.status not in ("completed", "cancelled") and int(row.parent_revision or 0) < parent_revision:
-            line += f" · [{mark}: r{row.parent_revision or 0} → r{parent_revision}]"
+        stale = stale_against(row, parent_revision)
+        if stale:
+            line += f" · [{mark}: r{stale[1]} → r{stale[0]}]"
         lines.append(line)
     return "\n".join(lines)
 
@@ -511,7 +513,7 @@ def revision_getters(db: Any, team_name: str) -> tuple[RevisionSnapshotGetter, S
     """The F_129 getters both delivery sites bind, over a ``TeamDatabase``."""
 
     async def _snapshot(task_id: str, revision: int) -> str | None:
-        return db.task.get_revision_snapshot(team_name, task_id, revision)
+        return await db.task.get_revision_snapshot(team_name, task_id, revision)
 
     async def _subtasks(task_id: str) -> list[Any]:
         return await db.task.get_subtasks(team_name, task_id)

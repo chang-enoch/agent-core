@@ -457,7 +457,7 @@ class ExternalTeamClient:
         now_ms = get_current_time()
         parts: list[str] = []
         if view.messages:
-            bodies = await self._expand_template_bodies(view.messages)
+            bodies = await self._expand_template_bodies(view.messages, observe=mark_read)
             # The messages carry absolute send times only; the clock anchor
             # in front lets the reader tell how long ago each was sent.
             parts.append(render_clock(now=format_absolute_time(now_ms)))
@@ -478,13 +478,19 @@ class ExternalTeamClient:
             parts.append(board)
         return "\n\n".join(parts) if parts else "(inbox empty)"
 
-    async def _expand_template_bodies(self, messages: list[TeamMessageBase]) -> dict[str, str]:
+    async def _expand_template_bodies(self, messages: list[TeamMessageBase], *, observe: bool) -> dict[str, str]:
         """Render the framework template messages in a batch (F_63).
 
         An external member reaches the same shared DB as an in-process one, so
         it renders the same document from the same template against the same
         task rows — the pull path must not degrade to a blank body just because
         the framework stores the message as a template plus refs.
+
+        Args:
+            messages: The pulled messages.
+            observe: Whether this pull consumes the messages. Only a consuming
+                read records a shown task revision as seen (F_129); a peek
+                leaves the revision unseen, like it leaves the message unread.
         """
         db = self._require_db()
 
@@ -513,7 +519,7 @@ class ExternalTeamClient:
                 bodies[msg.message_id] = expanded.body
             # The pulled inbox is what the member reads; a handoff that showed
             # its task's content counts as seen (F_129).
-            if expanded.shown_revision is not None and self._tasks is not None:
+            if observe and expanded.shown_revision is not None and self._tasks is not None:
                 await self._tasks.observe_revision(*expanded.shown_revision)
         return bodies
 

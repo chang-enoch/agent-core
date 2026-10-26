@@ -10,6 +10,7 @@ from openjiuwen.agent_teams.schema.status import TaskStatus
 from openjiuwen.agent_teams.schema.task import TaskGraphSpec
 from openjiuwen.agent_teams.timefmt import format_time_context
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
+from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES, TASK_WORKING_STATUSES
 from openjiuwen.agent_teams.tools.locales import Translator
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.agent_teams.tools.team import TeamBackend
@@ -488,22 +489,38 @@ async def _validate_assignees(
     return None
 
 
-def _unseen_revision_error(task: Any) -> str | None:
+async def _unseen_revision_error(task_manager: TeamTaskManager, task: Any) -> str | None:
     """Refuse to complete a task edited since its assignee last saw it (F_129 / D4).
 
     Optimistic concurrency on the task body: the submission is based on the
     revision the assignee was shown, so a newer one must be read first.
-    Reading it (``view_task(action=get)``) records it as seen.
+    Reading it (``view_task(action=get)``) records it as seen. A human
+    assignee reads the task on its own screen, not through the notices that
+    record a revision as seen, so it is never held back here.
     """
     observed = int(getattr(task, "observed_revision", 0) or 0)
     revision = int(getattr(task, "revision", 0) or 0)
     if revision <= observed:
+        return None
+    member_dao = task_manager.db.member
+    if member_dao is not None and await member_dao.is_live_human_agent(task_manager.team_name, task.assignee or ""):
         return None
     return (
         f"Task '{task.task_id}' was edited after you started it (r{observed} -> r{revision}). "
         f"Read the latest requirements with view_task(action='get', task_id='{task.task_id}'), "
         "adjust your work if needed, then submit again."
     )
+
+
+# How update_task reports the way a new revision reaches the assignee (F_129).
+_REVISION_DELIVERY_LINES = {
+    "pushed": "The new revision is sent to {assignee} with the latest content.",
+    "notified": "{assignee} is told to re-read the task before continuing.",
+    "review_requested": (
+        "{assignee} is asked to review this task's subtasks against the new revision before it resumes."
+    ),
+    "on_start": "{assignee} has not started it yet and will start from the latest content.",
+}
 
 
 # Appended to member_complete_task results under scheduled dispatch (F_119).
@@ -1698,6 +1715,15 @@ class UpdateTaskTool(TeamTool):
             result = await self.task_manager.update_task(task_id, title=title, content=content, change_note=change_note)
             if not result.ok:
                 return ToolOutput(success=False, error=result.reason)
+            if change_note and not (result.data or {}).get("revised"):
+                return ToolOutput(
+                    success=False,
+                    error=(
+                        f"Task #{task_id}: the title and content are unchanged, so no new revision was made "
+                        "and the change_note was not recorded. To tell the assignee something without "
+                        "editing the task, use send_message."
+                    ),
+                )
             if title:
                 updated.append("title")
             if content:
@@ -1818,17 +1844,36 @@ class UpdateTaskTool(TeamTool):
 
     async def _revision_info(self, task: Any, result: dict) -> dict:
         """What the leader should know after an edit (F_129): the new revision,
-        who gets it, and the subtasks it leaves stale."""
+        how its assignee gets it, and the subtasks it leaves stale."""
         if not result.get("revised"):
             return {}
         info: dict[str, Any] = {"revision": result.get("revision")}
-        if task.assignee:
-            info["pushed_to"] = task.assignee if self._review_enabled else None
+        delivery = self._revision_delivery(task)
+        if delivery:
+            info["assignee"] = task.assignee
+            info["delivery"] = delivery
         stale = await self.task_manager.open_subtask_ids(task.task_id)
         if stale:
             info["stale_subtasks"] = stale
             info["subtask_owner"] = task.assignee
         return info
+
+    def _revision_delivery(self, task: Any) -> str | None:
+        """How the assignee learns of a new revision, from the task's status at edit time.
+
+        Mirrors the paths that actually carry it: under scheduled dispatch the
+        scheduler pushes an executing task's revision and asks a suspended
+        parent's owner to review its subtasks; an autonomous executor is
+        steered (or told on its next input). A task not started yet gets
+        nothing now — the content it is started with is the latest.
+        """
+        if not task.assignee or task.status in TASK_TERMINAL_STATUSES or task.status == TaskStatus.IN_REVIEW.value:
+            return None
+        if task.status in TASK_WORKING_STATUSES:
+            return "pushed" if self._review_enabled else "notified"
+        if self._review_enabled and task.status == TaskStatus.BLOCKED.value and task.resume_pending:
+            return "review_requested"
+        return "on_start"
 
     def render_for_llm(self, output: ToolOutput) -> str:
         if not output.success:
@@ -1839,8 +1884,9 @@ class UpdateTaskTool(TeamTool):
         lines = [f"Task #{d['task_id']} {d['status']}"]
         if d.get("revision") is not None:
             lines[0] += f" (now r{d['revision']})"
-        if d.get("pushed_to"):
-            lines.append(f"The new revision is sent to {d['pushed_to']} with the latest content.")
+        delivery_line = _REVISION_DELIVERY_LINES.get(d.get("delivery") or "")
+        if delivery_line:
+            lines.append(delivery_line.format(assignee=d.get("assignee")))
         if d.get("stale_subtasks"):
             subtasks = ", ".join(f"#{tid}" for tid in d["stale_subtasks"])
             lines.append(
@@ -1969,7 +2015,7 @@ class ClaimTaskTool(TeamTool):
                 extra["fields_ignored"] = True
 
         elif status == "completed":
-            error = _unseen_revision_error(task)
+            error = await _unseen_revision_error(self.task_manager, task)
             if error:
                 return ToolOutput(success=False, error=error)
             complete_result = await self.task_manager.complete(task_id=task_id, summary=summary, note=note)
@@ -2087,7 +2133,7 @@ class MemberCompleteTaskTool(TeamTool):
                 ),
             )
 
-        error = _unseen_revision_error(task)
+        error = await _unseen_revision_error(self.task_manager, task)
         if error:
             return ToolOutput(success=False, error=error)
 

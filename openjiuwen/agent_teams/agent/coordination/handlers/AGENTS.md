@@ -130,14 +130,14 @@ rail，团队状态平时搭下一条外发消息的车（`CliRuntimeBase.send`�
 
 按"事件指向谁"分成三组：
 
-**A. 定向所有权变更** —— 指向自己就 `deliver_input(use_steer=True)` 打断：
+**A. 定向所有权变更** —— 指向自己就 `deliver_input(use_steer=True)` 打断（`TASK_UPDATED` 例外，见表）：
 
 | 事件 | 自身分支 | 非自身 |
 |---|---|---|
 | `TASK_CLAIMED` | 被指派：steer 通知（**跳过看板兜底**，定向消息已点名任务） | fall-through 看板（实际只 leader 会被喂） |
 | `TASK_REVOKED` | 改派走人：**停手** | 直接忽略 |
 | `TASK_CANCELLED` | 任务取消：**停手** | fall-through 看板 |
-| `TASK_UPDATED` | 内容被编辑：重看后继续，**任务仍归你** | fall-through 看板 |
+| `TASK_UPDATED` | 内容被编辑：**只触发** `announce_task_revisions()`，由成员的 `TaskRevisionTracker` 产出告知（带修改说明、重看后继续、任务仍归你），handler 自己不出文案（F_129） | fall-through 看板 |
 
 改派经 DAO 原子 CAS 交换 assignee，**不发 `TASK_RELEASED`**（任务从没回到公共池）。见 F_54 / F_56。
 

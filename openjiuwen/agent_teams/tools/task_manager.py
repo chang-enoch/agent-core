@@ -63,7 +63,7 @@ from openjiuwen.agent_teams.tools.database import (
     TeamTaskBase,
     TeamTaskDependencyBase,
 )
-from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES
+from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES, stale_against
 from openjiuwen.agent_teams.tools.models import TeamTaskReviewVoteBase
 from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
 from openjiuwen.core.common.logging import team_logger
@@ -93,16 +93,6 @@ def _json_read(path: Path) -> dict[str, Any]:
 def _json_write(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _stale_against(task: TeamTaskBase, revisions: dict[str, int]) -> tuple[int, int] | None:
-    """``(parent revision, based-on revision)`` when an open subtask lags its parent (F_129)."""
-    if not task.parent_task_id or task.status in TASK_TERMINAL_STATUSES:
-        return None
-    parent_revision = revisions.get(task.parent_task_id)
-    if parent_revision is None or (task.parent_revision or 0) >= parent_revision:
-        return None
-    return parent_revision, task.parent_revision or 0
 
 
 class TeamTaskManager:
@@ -368,9 +358,11 @@ class TeamTaskManager:
         for dep in all_deps:
             if not dep.resolved:
                 unresolved_by_task[dep.task_id].append(dep.depends_on_task_id)
-        # A filtered list may leave the parent out; its revision still decides staleness.
-        board = tasks if status is None else await self.list_tasks()
-        revisions = {task.task_id: task.revision or 0 for task in board}
+        revisions = {task.task_id: task.revision or 0 for task in tasks}
+        # A filtered list may leave a parent out; its revision still decides staleness.
+        missing_parents = {task.parent_task_id for task in tasks if task.parent_task_id} - revisions.keys()
+        if missing_parents:
+            revisions.update(await self.db.task.get_task_revisions(self.team_name, list(missing_parents)))
         summaries = [
             TaskSummary(
                 task_id=task.task_id,
@@ -379,7 +371,7 @@ class TeamTaskManager:
                 assignee=task.assignee,
                 blocked_by=unresolved_by_task.get(task.task_id, []),
                 parent_task_id=task.parent_task_id,
-                stale_against=_stale_against(task, revisions),
+                stale_against=stale_against(task, revisions.get(task.parent_task_id or "")),
                 updated_at=task.updated_at,
             )
             for task in tasks
@@ -408,8 +400,7 @@ class TeamTaskManager:
         blocks = await self.db.task.get_dependent_task_ids(task_id)
         subtask_rows = await self.db.task.get_subtasks(self.team_name, task_id)
         subtasks = [row.task_id for row in subtask_rows]
-        revisions = {task.task_id: task.revision or 0}
-        stale_subtasks = [row.task_id for row in subtask_rows if _stale_against(row, revisions) is not None]
+        stale_subtasks = [row.task_id for row in subtask_rows if stale_against(row, task.revision or 0) is not None]
 
         return TaskDetail(
             task_id=task.task_id,
@@ -1741,6 +1732,10 @@ class TeamTaskManager:
     async def unseen_revisions(self) -> list[tuple[str, str, str, bool, int]]:
         """Assigned, unfinished tasks whose assignee has not seen the current revision (F_129)."""
         return await self.db.task.get_unseen_revisions(self.team_name)
+
+    async def unseen_edits(self, member_name: str) -> list[TeamTaskBase]:
+        """``member_name``'s working tasks edited since it last saw them, bodies unread (F_129)."""
+        return await self.db.task.get_unseen_edits(self.team_name, member_name)
 
     async def open_subtask_ids(self, task_id: str) -> list[str]:
         """Return the non-terminal direct subtasks of a task (F_128)."""

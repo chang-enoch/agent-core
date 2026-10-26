@@ -49,7 +49,12 @@ from openjiuwen.agent_teams.external.cli_agent.transport.base import ProcessLike
 from openjiuwen.agent_teams.harness.outputs import _END, _OutputIterator
 from openjiuwen.agent_teams.harness.state import HarnessState
 from openjiuwen.agent_teams.inbound_render import render_clock
-from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker, TeamContextTracker
+from openjiuwen.agent_teams.team_context import (
+    ClaimedNotice,
+    TaskOutcomeTracker,
+    TaskRevisionTracker,
+    TeamContextTracker,
+)
 from openjiuwen.agent_teams.timefmt import format_absolute_time
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -305,17 +310,20 @@ class CliRuntimeBase(ABC):
         # in-process member.
         clock = render_clock(now=format_absolute_time(get_current_time()))
         text = f"{clock}\n{text}" if text else clock
-        outcome = await self._pending_task_outcome()
-        if outcome:
-            text = f"{outcome}\n\n{text}" if text else outcome
+        outcome = await self._claim_task_outcome()
+        if outcome is not None:
+            text = f"{outcome.text}\n\n{text}" if text else outcome.text
         pending = await self._pending_team_context()
         if pending:
             text = f"{pending}\n\n{text}" if text else pending
-        result = await self._send_raw(text, immediate=immediate)
+        try:
+            result = await self._send_raw(text, immediate=immediate)
+        except BaseException:
+            self._release_task_outcome(outcome)
+            raise
         if pending:
             await self._commit_team_context()
-        if outcome:
-            await self._commit_task_outcome()
+        await self._persist_task_outcome()
         return result
 
     async def announce_team_context(self) -> None:
@@ -333,6 +341,23 @@ class CliRuntimeBase(ABC):
         await self._send_raw(pending, immediate=False)
         await self._commit_team_context()
 
+    async def announce_task_revisions(self) -> None:
+        """Deliver the pending task edit notice as a message of its own (F_129).
+
+        The ``TASK_UPDATED`` event's only job: ask the tracker to speak now
+        instead of on the next send. It steers a busy member, like the edit
+        would. A no-op when the tracker has nothing new.
+        """
+        outcome = await self._claim_task_outcome()
+        if outcome is None:
+            return
+        try:
+            await self._send_raw(outcome.text, immediate=True)
+        except BaseException:
+            self._release_task_outcome(outcome)
+            raise
+        await self._persist_task_outcome()
+
     async def _pending_team_context(self) -> str | None:
         """Render team state this member has not been told about yet."""
         if self._team_context_tracker is None or self._member_session is None:
@@ -345,17 +370,23 @@ class CliRuntimeBase(ABC):
             return
         await self._team_context_tracker.commit(self._member_session)
 
-    async def _pending_task_outcome(self) -> str | None:
-        """Render review passes this member has not been told about yet."""
+    async def _claim_task_outcome(self) -> ClaimedNotice | None:
+        """Claim and render the task facts this member has not been told about yet."""
         if self._task_outcome_tracker is None or self._member_session is None:
             return None
-        return await self._task_outcome_tracker.pending_text(self._member_session)
+        self._task_outcome_tracker.seed(self._member_session)
+        return await self._task_outcome_tracker.claim()
 
-    async def _commit_task_outcome(self) -> None:
-        """Record the delivered review passes as told."""
+    def _release_task_outcome(self, notice: ClaimedNotice | None) -> None:
+        """Give a claim back after its send failed."""
+        if self._task_outcome_tracker is not None and notice is not None:
+            self._task_outcome_tracker.release(notice)
+
+    async def _persist_task_outcome(self) -> None:
+        """Write the task notice baseline into the member session."""
         if self._task_outcome_tracker is None or self._member_session is None:
             return
-        await self._task_outcome_tracker.commit(self._member_session)
+        await self._task_outcome_tracker.persist(self._member_session)
 
     async def _send_raw(self, text: str, *, immediate: bool = False) -> Any:
         """Drive the CLI with one message: start a turn, steer, or follow up.

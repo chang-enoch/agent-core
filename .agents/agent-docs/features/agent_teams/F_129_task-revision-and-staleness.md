@@ -92,14 +92,32 @@ F_128 的成员子任务把问题放大了：
   返工、验收交接改走调度器邮件是同一个做法（S_22 不变量 14）：既不会和邮件重复，也消除了"挂起中的父任务被改时被叫去继续做"。
   时效不变：leader 编辑经 `SCHEDULER_SCAN` 回声立即触发扫描，成员正忙时邮件在下一次模型调用时进入上下文。
 
-**自主模式：事件 + 下一次输入时补告知。** 没有调度器，保留两条：
+**自主模式：tracker 是唯一来源，事件只负责尽早触发它。** 没有调度器，告知只有一种、只由一个对象产出：
 
-1. `TASK_UPDATED` 事件唤醒"重看后继续"，行为不变。
-2. 新增 `TaskRevisionTracker`（与 F_119 的 `TaskOutcomeTracker` 同型，`pending_text` → 投递 → `commit`），只在自主模式的成员上构造：
-   每次被接纳的输入前，查名下"有没看到的修改"的任务，把 `<team-event kind="task-revised">`（任务 id、标题、`observed → revision`、
-   "用 `view_task(action=get)` 重看最新要求"）并进这次输入。已告知的 `(task_id, revision)` 记在成员自己的 session state 里，避免每次
-   输入重复提醒；"看到没有"仍以 DB 里的 `observed_revision` 为准。进程内成员由 `TeamPolicyRail.on_user_message` 消费，外部 CLI 成员
-   由 `CliRuntimeBase` 搭车投递（F_70 / F_119 的两条通道）。
+1. **告知只有一种**：`TaskRevisionTracker` 渲染的 `<team-event kind="task-revised">`——任务 id、标题、`r{observed} → r{revision}`、
+   这段区间内的修改说明，以及"用 `view_task(action=get)` 重看最新要求"。不再有单独的 `task-updated`"重看后继续"提醒。
+   "看到没有"仍以 DB 的 `observed_revision` 为准；告知不带正文，不推进它。
+2. **每个成员一个 tracker，由 TeamAgent 持有**：
+   - 进程内成员：`AgentConfigurator` 构造一次，放进 `PrivateAgentResources`，经 `BuildContext.extras` 注入（与
+     `reliability_components` 同一做法）。`TeamPolicyRail` 每次 native rebuild 都新建，但借用的是同一个实例。
+   - 外部成员：`external_cli_spawn` 构造并绑定到成员 runtime（runtime 自己持有成员 session），接线不变。
+3. **基线以实例内存为准，先认领再送达**：
+   - `claim()` 在不夹 `await` 的一段里挑出还没告知过的 `task_id@revision`，记为已告知，再渲染告知。同一成员的 handler、rail、
+     runtime 都运行在同一个事件循环上，所以哪条路径先认领就由哪条送出，其余路径什么也看不到，不需要任何去重。
+   - 送达抛错时 `release()` 撤销本次认领，下次照常告知。
+4. **session 只做持久化**：
+   - 首次使用时 `seed(session)`：把 checkpoint 里的已告知集合并入内存，每个实例只做一次，用于跨进程重启。
+   - 认领后 `persist(session)`：把内存基线写回 session。
+   - 写 session 的只有 rail（外部成员是 runtime）。handler 不写，所以不存在两个写入方互相覆盖。
+5. **三个入口，同一个实例**：
+   - **输入接纳**（rail 的 `on_user_message`，steering 批次也走这里）：认领，告知插在本次输入最前。
+   - **`TASK_UPDATED` 指向自己**：`TaskBoardHandler.on_task_updated` 只调 `AgentRoundController.announce_task_revisions()`，自己不产出文案。
+     - 进程内成员：runtime 已存在时，认领并把告知作为一条输入送出。成员空闲时这条输入拉起 round，忙时作为 steer 进入当前 round。
+     - runtime 还没起来时不认领，等它起来后的第一次输入接纳再告知。否则认领了却送不到，告知就丢了。
+     - 外部成员：转给 runtime 的 `announce_task_revisions()`，与 `announce_team_context()` 同型。
+   - **外部 runtime 发送任意输入**：搭车带上，现有通道不变。
+6. 调度模式的 `TaskOutcomeTracker`（F_119）换成同一套接口（`claim` / `release` / `seed` / `persist`）、同一种归属，行为不变。
+   rail 和 runtime 对两种 tracker 一视同仁。
 
 ### D4：完成闸——不会按旧要求默默做完（两种模式）
 
@@ -239,11 +257,53 @@ F_128 的成员子任务把问题放大了：
 - **修正了一处过时的提示词**：自主模式成员模板写着"任务被 `update_task` 修改会重置为 pending、认领被撤销"，这早已不是现状
   （编辑保持归属，F_56），随本特性改为"任务仍归你，会收到提醒，提交前必须看过最新版本"。
 
+## 审查后修复（2026-10-25）
+
+代码审查发现的问题合成一个 `fix(swarm)` 提交修复：
+
+- **人类成员不受完成闸约束**：人类在自己的界面看任务，不经过那几条会记录"已看到"的通知；任务开工前被改过的话，人类成员会一直被
+  拒绝完成。`_unseen_revision_error` 对在队人类成员（`is_live_human_agent`）放行；HITT 指派通知送达后同样记录当前版本。
+- **只看不读不算看到**：外部成员 `read_inbox(mark_read=False)` 只预览、不消费消息，也不再推进 `observed_revision`；只有标记已读的
+  拉取才记录已看到的版本，与"消息算送达"同一时刻。
+- **补告知只提醒进行中的任务**：自主模式的 `TaskRevisionTracker` 只看 `PLANNING` / `IN_PROGRESS`（新常量 `TASK_WORKING_STATUSES`）。
+  还没开工的预指派任务被修改，认领时版本本来就会对齐，提醒只是噪音。查询改为 DAO 的窄查询 `get_unseen_edits`，不再按成员读出全部
+  任务并回读溢出正文。
+- **修改告知只有一个来源**：在线执行者原来会同时收到 `TASK_UPDATED` 的 `task-updated` 提醒和 tracker 的 `task-revised` 补告知，
+  同一次修改说两遍。改为 D3 所述：tracker 是唯一来源，事件只触发它。评估过、没有采用的做法：
+  - **按输入内容去重**（rail 删掉被补告知覆盖的那条提醒）：一度实现过，又撤掉了。它依赖事件块的文本格式，而且只在两条落进同一次
+    输入时才有效；`before_steering_drain` 的分批上限把提醒推到下一批时，仍会重复。
+  - **handler 送达提醒后替 tracker 写 session 基线**：进程内成员空闲时，session 不在内存里，handler 只能写 checkpoint；而紧接着拉起的
+    round 会从 checkpoint 恢复出自己的副本，round 结束时整体写回，把 handler 记下的基线覆盖掉。
+  - **任务行新增 `notified_revision`，以数据库条件更新认领**：可行，进程重启后也不会重复告知；但要加列和迁移。内存基线不改表，与
+    团队上下文告知（F_70）同样把基线存在 session 里，代价只是进程崩溃后最多重复告知一次。
+- **编辑结果如实说送达方式**：`update_task` 结果的 `pushed_to` 改为 `assignee` + `delivery`，按编辑时的任务状态取值：调度模式执行中
+  `pushed`、挂起中的父任务 `review_requested`；自主模式执行中 `notified`；两种模式未开工都是 `on_start`；验收中与已结束的不回报。
+  原来对未开工任务也说"已推送"，与调度器的实际行为不符。
+- **内容没变时修改说明不再静默丢弃**：leader 传了 `change_note`、但标题和内容都没变时，工具报错并提示改用 `send_message`，不再回报
+  `updated`。没有在 DAO 层"内容不变也加版本"：空版本会触发推送和完成闸，代价太大。
+- **过期判定只有一份**：`stale_against(task, parent_revision)` 下沉到 `tools/database/graph.py`，`TeamTaskManager` 的列表 / 详情与
+  `message_template.subtask_brief` 共用，终态统一用 `TASK_TERMINAL_STATUSES`。
+- **带过滤的列表不再重读整个看板**：缺的父任务版本经 `get_task_revisions` 只投影 `task_id` / `revision` 两列补齐。
+- **快照文件读写移出事件循环**：`_seen_revision_snapshot` 返回要做的文件操作，`update_task` 提交后用 `asyncio.to_thread` 执行；
+  `get_revision_snapshot` 改为异步。正文溢出本身的读写仍是同步的（既有行为），本次不动。
+
+- **实现中定下的两处细节**：
+  - `claim()` 返回认领凭据 `ClaimedNotice`（文本 + 覆盖的条目），`release(notice)` 按凭据归还。不能只记"最近一次认领"：A 路径认领后
+    在 `await` 送达时，B 路径的一次空认领会把它清掉，A 送达失败时就撤不回了。
+  - `persist()` 先 `seed()`：从没读过 checkpoint 的实例直接写回，会用内存里的列表覆盖 checkpoint 里已有的基线。
+- 告知的开头文案补上原来提醒里的意思：任务仍归你、无需重新认领，先重看再继续；`dispatcher.task_content_updated_to_self` 文案删除。
+
+测试基线：`pytest tests/unit_tests/agent_teams/` → 4058 passed / 36 skipped / 2 xfailed。
+
 ## 已知遗留
 
 - 完成闸改变了两种模式下完成工具的行为（被修改后需要先看到最新内容），属于对现有行为的收紧；外部 / MCP 成员同样受约束。
 - 推进 `observed_revision` 需要成员一侧写库（邮件投递、认领通知、`view_task`），每次是一条小 UPDATE。
-- 自主模式仍靠事件 + 补告知：成员离线期间不会被主动拉起，要等它下一次有输入才知道。
+- 自主模式不会为了告知修改去拉起离线成员（runtime 没起来时不认领）：要等它起来后的第一次输入才告知。
+- 成员版 `update_task` 修改子任务后，结果仍写"最新内容已发给执行者"，未按子任务状态区分送达方式。
+- 修改告知的基线以内存为准：进程在认领之后、下一次持久化之前崩溃，重启后同一版本最多重复告知一次。
+- `release()` 只覆盖送达抛错的情况。送达成功即视为已告知；之后那条输入如果在 runtime 内部被丢弃，这次告知就丢了，由完成闸兜底，
+  不会按旧要求默默做完。
 - 成员仍不能改派子任务、调整子任务依赖。
 - D11（上下文未压缩时只推差异）单独排期，本次不实现。
 - 差异阈值是模块常量，未做成 spec 配置；有实际调参需求再放开。

@@ -21,7 +21,7 @@
 |---|---|---|
 | `self._blueprint` | `TeamAgentBlueprint` | 静态身份（role / member_name / lifecycle / spec）|
 | `self._infra` | `TeamInfra` | per-process 容器（task_manager / message_manager / team_backend / messager / workspace_manager）|
-| `self._round` | `AgentRoundController` | 跟 TeamHarness 打交道（deliver_input / cancel_agent / resume_interrupt / has_in_flight_round / has_pending_interrupt / is_agent_running）|
+| `self._round` | `AgentRoundController` | 跟 TeamHarness 打交道（deliver_input / cancel_agent / resume_interrupt / has_in_flight_round / has_pending_interrupt / is_agent_running / announce_task_revisions）|
 | `self._lifecycle` | `TeamLifecycleController` | TeamAgent 级副作用（`shutdown_self` / `conclude_completed_round` / `observe_member_status`）|
 | `self._poll` | `PollController` | EventBus 自身的 poll 控制（pause_polls / resume_polls）|
 

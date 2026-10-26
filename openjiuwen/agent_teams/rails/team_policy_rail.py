@@ -149,6 +149,7 @@ class TeamPolicyRail(DeepAgentRail):
         fork_source: str | None = None,
         loader: TemplateLoader = load_template,
         bound_group_name: str | None = None,
+        task_event_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = None,
     ) -> None:
         super().__init__()
         self._language = language
@@ -233,13 +234,18 @@ class TeamPolicyRail(DeepAgentRail):
         )
         # A task fact the member may have missed rides its next admitted
         # input: under scheduled dispatch a passed review, which does not wake
-        # the author (F_119); under autonomous dispatch an edit made while it
-        # was down (F_129). The leader needs neither.
-        self._outcome_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = (
-            build_task_event_tracker(dispatch_mode, team_backend=team_backend, member_name=member_name)
-            if role != TeamRole.LEADER
-            else None
-        )
+        # the author (F_119); under autonomous dispatch an edit (F_129). The
+        # leader needs neither. The tracker is the member's own, owned by its
+        # TeamAgent and borrowed here, so its baseline outlives this rail and
+        # is shared with the coordination handler; a rail built directly
+        # (no configurator) gets one of its own.
+        self._outcome_tracker: TaskOutcomeTracker | TaskRevisionTracker | None = None
+        if role != TeamRole.LEADER:
+            self._outcome_tracker = (
+                task_event_tracker
+                if task_event_tracker is not None
+                else build_task_event_tracker(dispatch_mode, team_backend=team_backend, member_name=member_name)
+            )
 
     def init(self, agent: Any) -> None:
         """Cache the agent's shared prompt builder."""
@@ -317,11 +323,12 @@ class TeamPolicyRail(DeepAgentRail):
         """Prepend the task facts not yet told to the member onto its input."""
         if self._outcome_tracker is None:
             return
-        text = await self._outcome_tracker.pending_text(session)
-        if not text:
-            return
-        parts.insert(0, text)
-        await self._outcome_tracker.commit(session)
+        self._outcome_tracker.seed(session)
+        notice = await self._outcome_tracker.claim()
+        if notice is not None:
+            parts.insert(0, notice.text)
+        # Also writes back what other paths claimed since the last input.
+        await self._outcome_tracker.persist(session)
 
     async def before_steering_drain(self, ctx: AgentCallbackContext) -> None:
         """Cap how much of the steering backlog one model call takes.

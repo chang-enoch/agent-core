@@ -33,7 +33,12 @@ from typing import (
 from openjiuwen.agent_teams.external.cli_agent import TEAM_MCP_SERVER_NAME
 from openjiuwen.agent_teams.harness.turn import MemberTurn, resolve_member_turn
 from openjiuwen.agent_teams.inbound_render import render_clock
-from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker, TeamContextTracker
+from openjiuwen.agent_teams.team_context import (
+    ClaimedNotice,
+    TaskOutcomeTracker,
+    TaskRevisionTracker,
+    TeamContextTracker,
+)
 from openjiuwen.agent_teams.timefmt import format_absolute_time
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
 from openjiuwen.core.common.logging import team_logger
@@ -114,6 +119,10 @@ class TeamContextAwareRuntime(Protocol):
 
     async def announce_team_context(self) -> None:
         """Push the pending team roster announcement to the member."""
+        ...
+
+    async def announce_task_revisions(self) -> None:
+        """Push the pending task edit notice to the member (F_129)."""
         ...
 
 
@@ -570,22 +579,26 @@ class ExternalHarnessMemberRuntime:
             # an in-process member.
             clock = render_clock(now=format_absolute_time(get_current_time()))
             external_input = _prepend_context(external_input, clock)
-            pending_outcome = await self._pending_task_outcome()
-            if pending_outcome:
-                external_input = _prepend_context(external_input, pending_outcome)
+            pending_outcome = await self._claim_task_outcome()
+            if pending_outcome is not None:
+                external_input = _prepend_context(external_input, pending_outcome.text)
             pending_context = await self._pending_team_context()
             if pending_context:
                 external_input = _prepend_context(external_input, pending_context)
-            receipt = await self._adapter.send(external_input, immediate=immediate)
+            try:
+                receipt = await self._adapter.send(external_input, immediate=immediate)
+            except BaseException:
+                self._release_task_outcome(pending_outcome)
+                raise
             # Every part is recorded, and the message first so it is the one
             # the turn states as its input. A provider splits the delivery into
             # a message per block, so the combined text would match none of
             # them and the turn would read as if nobody had said anything.
             self._record_input(receipt, delivered_text)
             self._record_input(receipt, clock)
-            if pending_outcome:
-                self._record_input(receipt, pending_outcome)
-                await self._commit_task_outcome()
+            if pending_outcome is not None:
+                self._record_input(receipt, pending_outcome.text)
+            await self._persist_task_outcome()
             if pending_context:
                 self._record_input(receipt, pending_context)
                 await self._commit_team_context()
@@ -599,6 +612,24 @@ class ExternalHarnessMemberRuntime:
             receipt = await self._adapter.send(pending, immediate=False)
             self._record_input(receipt, pending)
             await self._commit_team_context()
+
+    async def announce_task_revisions(self) -> None:
+        """Send the pending task edit notice as a message of its own (F_129).
+
+        Steers a busy member, like the edit would; a no-op when the tracker
+        has nothing new.
+        """
+        async with self._context_delivery_lock:
+            pending = await self._claim_task_outcome()
+            if pending is None:
+                return
+            try:
+                receipt = await self._adapter.send(pending.text, immediate=True)
+            except BaseException:
+                self._release_task_outcome(pending)
+                raise
+            self._record_input(receipt, pending.text)
+            await self._persist_task_outcome()
 
     async def abort(self, *, immediate: bool = False) -> None:
         await self._adapter.abort(immediate=immediate)
@@ -939,15 +970,20 @@ class ExternalHarnessMemberRuntime:
             return
         await self._team_context_tracker.commit(self._member_session)
 
-    async def _pending_task_outcome(self) -> str | None:
+    async def _claim_task_outcome(self) -> ClaimedNotice | None:
         if self._task_outcome_tracker is None or self._member_session is None:
             return None
-        return await self._task_outcome_tracker.pending_text(self._member_session)
+        self._task_outcome_tracker.seed(self._member_session)
+        return await self._task_outcome_tracker.claim()
 
-    async def _commit_task_outcome(self) -> None:
+    def _release_task_outcome(self, notice: ClaimedNotice | None) -> None:
+        if self._task_outcome_tracker is not None and notice is not None:
+            self._task_outcome_tracker.release(notice)
+
+    async def _persist_task_outcome(self) -> None:
         if self._task_outcome_tracker is None or self._member_session is None:
             return
-        await self._task_outcome_tracker.commit(self._member_session)
+        await self._task_outcome_tracker.persist(self._member_session)
 
     # ------------------------------------------------------------------
     # MemberRuntime: interrupt helpers and no-op hooks

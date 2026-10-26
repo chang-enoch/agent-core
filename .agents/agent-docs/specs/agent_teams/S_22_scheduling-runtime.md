@@ -219,7 +219,7 @@ kernel 侧：
 `summary` / `note` 是任务行列、**不进事件**：`TASK_COMPLETED` / `TASK_SUBMITTED_FOR_REVIEW` 仍只是唤醒信号，
 正文从行里现查——与"能表查的一律现查"同一原则。
 
-**展开点共四处**（缺一处即漏投空消息）。渲染了 `task.content` 的展开回报 `ExpandedMessage.shown_revision`，进程内邮箱投递（`handlers/message.py`）与外部拉取（`external/client.py`）据此为执行者记下已看到的版本（F_129）：`handlers/message.py` 的
+**展开点共四处**（缺一处即漏投空消息）。渲染了 `task.content` 的展开回报 `ExpandedMessage.shown_revision`，进程内邮箱投递（`handlers/message.py`）与外部拉取（`external/client.py`）据此为执行者记下已看到的版本（F_129；外部拉取只在标记已读的读取时记录，`mark_read=False` 的预览不算）：`handlers/message.py` 的
 `_format_message`（进程内邮箱）与 `_notify_human_agent_inbound`（HITT 人类成员回调——
 人类可以是 assignee/reviewer）、`_bridge_deliverable_for`（bridge relay 必须转发**展开后**
 文本，远程执行者无 DB）、`external/format.py` + `client.read_inbox`（外部成员 pull）。

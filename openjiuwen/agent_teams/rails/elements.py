@@ -51,6 +51,7 @@ from openjiuwen.agent_teams.rails.team_context import (
     get_swarmflow_human_base_spec,
     get_swarmflow_model_resolver,
     get_swarmflow_worker_base_spec,
+    get_task_event_tracker,
     get_team_backend,
     get_workspace_manager,
 )
@@ -222,6 +223,7 @@ def build_team_policy_rail(params: dict[str, Any], context: Any) -> Any:
         # The bound-group section names the expert tools, so it rides the same
         # signal they are wired on: an injected expert catalog.
         bound_group_name=_expert_scope_group(context),
+        task_event_tracker=get_task_event_tracker(context),
     )
 
 

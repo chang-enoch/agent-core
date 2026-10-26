@@ -14,9 +14,10 @@ The module is organised in two layers:
   transaction shells over the helpers above.
 """
 
+import asyncio
 import json
 from dataclasses import replace
-from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -40,6 +41,7 @@ from openjiuwen.agent_teams.tools.database.engine import DbSessions, get_current
 from openjiuwen.agent_teams.tools.database.graph import (
     TASK_DEPENDENCY_REJECT_STATUSES,
     TASK_TERMINAL_STATUSES,
+    TASK_WORKING_STATUSES,
     detect_cycle_in_adjacency,
 )
 from openjiuwen.agent_teams.tools.models import (
@@ -706,6 +708,38 @@ class TaskDao:
             )
             return [(row[0], row[1], row[2], bool(row[3]), int(row[4])) for row in result.all()]
 
+    async def get_task_revisions(self, team_name: str, task_ids: List[str]) -> dict[str, int]:
+        """``task_id -> revision`` of the given tasks; missing ids are absent (F_129). No bodies are read."""
+        if not task_ids:
+            return {}
+        team_task_model = _get_task_model()
+        async with self._sessions.read() as session:
+            result = await session.execute(
+                select(team_task_model.task_id, team_task_model.revision).where(
+                    team_task_model.team_name == team_name,
+                    team_task_model.task_id.in_(task_ids),
+                )
+            )
+            return {row[0]: int(row[1] or 0) for row in result.all()}
+
+    async def get_unseen_edits(self, team_name: str, assignee: str) -> List[TeamTaskBase]:
+        """Rows of ``assignee``'s working tasks edited since it last saw them (F_129).
+
+        Read on every admitted input of an autonomous member, so bodies are
+        left unread: ``content`` may be a spill placeholder.
+        """
+        team_task_model = _get_task_model()
+        async with self._sessions.read() as session:
+            result = await session.execute(
+                select(team_task_model).where(
+                    team_task_model.team_name == team_name,
+                    team_task_model.assignee == assignee,
+                    team_task_model.status.in_(list(TASK_WORKING_STATUSES)),
+                    team_task_model.revision > team_task_model.observed_revision,
+                )
+            )
+            return list(result.scalars().all())
+
     async def get_subtasks(self, team_name: str, parent_task_id: str) -> List[TeamTaskBase]:
         """Return a task's direct subtask rows (F_129), bodies left unread.
 
@@ -1318,13 +1352,14 @@ class TaskDao:
                 return None
 
             revised = False
+            snapshot: Callable[[], None] | None = None
             if title is not None and task.title != title:
                 task.title = title
                 revised = True
             if content is not None:
                 previous = self._deref_row(task) if self._is_placeholder(task.content) else task.content
                 if previous != content:
-                    self._keep_seen_revision(task, previous, content)
+                    snapshot = self._seen_revision_snapshot(task, previous, content)
                     # Spill overwrites the session file (task_id unchanged →
                     # same path). The DB row keeps the constant ``#file#`` on
                     # success; on IO failure ``_to_stored`` degrades to the raw
@@ -1344,64 +1379,75 @@ class TaskDao:
             if revised or realigned:
                 await session.commit()
                 team_logger.info("Task %s updated (revision %s)", task_id, task.revision)
+            if snapshot is not None:
+                await asyncio.to_thread(snapshot)
 
             return task
 
-    def _keep_seen_revision(self, task: TeamTaskBase, previous: str, content: str) -> None:
-        """Snapshot the body the assignee last saw before it is overwritten (F_129 / D9).
+    def _seen_revision_snapshot(self, task: TeamTaskBase, previous: str, content: str) -> Callable[[], None] | None:
+        """The file work that keeps the body the assignee last saw (F_129 / D9).
 
         Only the assignee's observed revision is a diff baseline, so only it
         is kept: it is written the first time it is about to be overwritten
         (when it is still the current body) and every older snapshot goes.
-        Short bodies are not snapshotted. IO failures only cost the diff.
+        Short bodies are not snapshotted. The work is returned rather than
+        done, so the caller runs it off the event loop once the edit is
+        committed; it reads only values captured here. IO failures only cost
+        the diff.
         """
-        if not task.assignee or self._file_store is None:
-            return
+        file_store = self._file_store
+        if not task.assignee or file_store is None:
+            return None
         if max(len(previous), len(content)) < REVISION_DIFF_MIN_CHARS:
-            return
+            return None
         session_id = self._session_id()
         if not session_id:
-            return
-        from openjiuwen.agent_teams.team_workspace.session_file_store import KIND_TASK_REVISION, FileAddress
-
-        try:
-            if task.observed_revision == task.revision:
-                self._file_store.put(
-                    previous,
-                    FileAddress(
-                        team_name=task.team_name,
-                        session_id=session_id,
-                        kind=KIND_TASK_REVISION,
-                        object_id=task.task_id,
-                        revision=task.revision,
-                    ),
-                )
-            self._file_store.remove_task_revisions(
-                team_name=task.team_name,
-                session_id=session_id,
-                task_id=task.task_id,
-                below=task.observed_revision,
-            )
-        except (ValueError, OSError) as exc:
-            team_logger.warning("revision snapshot of task %s failed: %s", task.task_id, exc)
-
-    def get_revision_snapshot(self, team_name: str, task_id: str, revision: int) -> Optional[str]:
-        """Return a task body snapshot at ``revision`` (F_129 / D9), ``None`` when absent."""
-        session_id = self._session_id()
-        if self._file_store is None or not session_id:
             return None
         from openjiuwen.agent_teams.team_workspace.session_file_store import KIND_TASK_REVISION, FileAddress
 
-        try:
-            return self._file_store.get(
-                FileAddress(
-                    team_name=team_name,
-                    session_id=session_id,
-                    kind=KIND_TASK_REVISION,
-                    object_id=task_id,
-                    revision=revision,
-                )
+        team_name, task_id = task.team_name, task.task_id
+        observed = task.observed_revision
+        address = (
+            FileAddress(
+                team_name=team_name,
+                session_id=session_id,
+                kind=KIND_TASK_REVISION,
+                object_id=task_id,
+                revision=task.revision,
             )
+            if observed == task.revision
+            else None
+        )
+
+        def _write() -> None:
+            try:
+                if address is not None:
+                    file_store.put(previous, address)
+                file_store.remove_task_revisions(
+                    team_name=team_name, session_id=session_id, task_id=task_id, below=observed
+                )
+            except (ValueError, OSError) as exc:
+                team_logger.warning("revision snapshot of task %s failed: %s", task_id, exc)
+
+        return _write
+
+    async def get_revision_snapshot(self, team_name: str, task_id: str, revision: int) -> Optional[str]:
+        """Return a task body snapshot at ``revision`` (F_129 / D9), ``None`` when absent."""
+        session_id = self._session_id()
+        file_store = self._file_store
+        if file_store is None or not session_id:
+            return None
+        from openjiuwen.agent_teams.team_workspace.session_file_store import KIND_TASK_REVISION, FileAddress
+
+        address = FileAddress(
+            team_name=team_name,
+            session_id=session_id,
+            kind=KIND_TASK_REVISION,
+            object_id=task_id,
+            revision=revision,
+        )
+        try:
+            return await asyncio.to_thread(file_store.get, address)
         except (ValueError, OSError):
             return None
 

@@ -59,7 +59,8 @@ that can interleave means revisiting this.
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.inbound_render import (
@@ -650,7 +651,118 @@ TASK_REVISION_STATE_KEY = "task_revision_announced"
 TASK_REVISED_EVENT_KIND = "task-revised"
 
 
-class TaskOutcomeTracker:
+@dataclass(frozen=True)
+class ClaimedNotice:
+    """A task notice claimed for delivery: the text to send and the entries it covers."""
+
+    text: str
+    entries: tuple[str, ...]
+
+
+class _TaskNoticeTracker:
+    """Shared baseline of the next-input task notices (F_119 / F_129).
+
+    One instance per member, held by its ``TeamAgent`` and borrowed by every
+    path that can tell the member something: the rail on each admitted input,
+    the coordination handler on a task event, an external runtime on each send.
+    Whichever path claims an entry first delivers it; the others find nothing.
+
+    The baseline is the in-memory list of entries already announced; it is
+    authoritative. ``claim`` checks and marks with no ``await`` in between, and
+    every caller runs on the member's one event loop, so two paths can never
+    claim the same entry. The member's own session only persists it across a
+    process restart: :meth:`seed` folds the checkpointed entries in once,
+    :meth:`persist` writes the list back. Only the rail (in-process) or the
+    runtime (external) writes the session — the handler never does — so the
+    two never overwrite each other. A crash between a claim and the next
+    persist can repeat that one notice after a restart.
+
+    Claim before delivering, :meth:`release` the claim if delivery raises.
+    """
+
+    STATE_KEY: ClassVar[str] = ""
+
+    def __init__(
+        self,
+        *,
+        team_backend: "TeamBackend | None",
+        member_name: str | None,
+    ) -> None:
+        self._team_backend = team_backend
+        self._member_name = member_name
+        self._announced: list[str] = []
+        self._seeded = False
+        self._persisted: list[str] | None = None
+
+    def seed(self, session: Any) -> None:
+        """Fold the entries checkpointed in ``session`` into the baseline, once per instance."""
+        if self._seeded or session is None:
+            return
+        self._seeded = True
+        stored = _read_announced(session, self.STATE_KEY)
+        self._announced[:0] = [entry for entry in stored if entry not in self._announced]
+        self._persisted = list(stored)
+
+    async def claim(self) -> ClaimedNotice | None:
+        """Mark this member's not-yet-announced entries as announced and render them.
+
+        Returns:
+            The claimed notice (its ``text`` is the ``<team-event>`` block to
+            deliver), or ``None`` when there is nothing new (or the tracker is
+            unbound).
+        """
+        if self._team_backend is None or not self._member_name:
+            return None
+        task_manager = getattr(self._team_backend, "task_manager", None)
+        if task_manager is None:
+            return None
+        rows = await self._candidates(task_manager)
+        # From here on no await: the check and the mark are one step.
+        fresh = [row for row in rows if self._entry(row) not in self._announced]
+        if not fresh:
+            return None
+        entries = tuple(self._entry(row) for row in fresh)
+        self._announced.extend(entries)
+        return ClaimedNotice(text=self._render(fresh), entries=entries)
+
+    def release(self, notice: ClaimedNotice) -> None:
+        """Give ``notice``'s entries back, after its delivery failed."""
+        self._announced = [entry for entry in self._announced if entry not in notice.entries]
+
+    async def persist(self, session: Any) -> None:
+        """Write the baseline into ``session`` when it changed since the last write.
+
+        Seeds first, so a checkpointed baseline is merged in, never overwritten.
+        """
+        if session is None:
+            return
+        self.seed(session)
+        if self._announced == self._persisted:
+            return
+        try:
+            session.update_state({self.STATE_KEY: list(self._announced)})
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 - never break a model call over a checkpoint write
+            team_logger.warning(
+                "[{}] failed to persist {}: {}",
+                self._member_name or "?",
+                self.STATE_KEY,
+                exc,
+            )
+            return
+        self._persisted = list(self._announced)
+
+    async def _candidates(self, task_manager: Any) -> list[Any]:
+        raise NotImplementedError
+
+    def _entry(self, task: Any) -> str:
+        raise NotImplementedError
+
+    def _render(self, tasks: list[Any]) -> str:
+        raise NotImplementedError
+
+
+class TaskOutcomeTracker(_TaskNoticeTracker):
     """Tell a member, on its next input, which of its submitted tasks passed review.
 
     Under scheduled dispatch a passed review does not wake the author (F_119):
@@ -661,85 +773,32 @@ class TaskOutcomeTracker:
     This is an *event*, not standing state, so it is folded into the admitted
     input itself and never into the ``team.context`` attachment (a
     current-state channel). The source of truth is the task table — the
-    member's completed tasks that carry reviewers — and the delivery baseline
-    is the set of task ids already told, kept in the member's own session
-    state next to the team-context baseline so both are checkpointed with the
-    conversation. A task completed without review is never announced: the
-    member completed it itself.
+    member's completed tasks that carry reviewers — and an entry is a task id.
+    A task completed without review is never announced: the member completed
+    it itself.
 
-    Usage mirrors :class:`TeamContextTracker`: ``pending_text`` → deliver →
-    ``commit``. Not task-safe, for the same reason that tracker is not.
+    The notice text follows the process-global runtime language (``i18n.t``),
+    like the roster note.
 
     Args:
         team_backend: Backend whose task manager answers the board query.
             ``None`` disables the tracker.
         member_name: This member's semantic identifier.
-
-    The notice text follows the process-global runtime language (``i18n.t``),
-    like the roster note.
     """
 
-    def __init__(
-        self,
-        *,
-        team_backend: "TeamBackend | None",
-        member_name: str | None,
-    ) -> None:
-        self._team_backend = team_backend
-        self._member_name = member_name
-        # Task ids rendered by the last pending_text call, held until delivery
-        # is confirmed. None means there is nothing awaiting a commit.
-        self._uncommitted: list[str] | None = None
+    STATE_KEY = TASK_OUTCOME_STATE_KEY
 
-    async def pending_text(self, session: Any) -> str | None:
-        """Render the verified tasks this member has not been told about yet.
-
-        Args:
-            session: The member's own child ``AgentSession``. ``None`` disables
-                the tracker.
-
-        Returns:
-            A ``<team-event kind="task-verified">`` block, or ``None``.
-        """
-        self._uncommitted = None
-        if session is None or self._team_backend is None or not self._member_name:
-            return None
-        task_manager = getattr(self._team_backend, "task_manager", None)
-        if task_manager is None:
-            return None
-        announced = set(_read_announced(session))
+    async def _candidates(self, task_manager: Any) -> list[Any]:
         completed = await task_manager.get_tasks_by_assignee(self._member_name, status="completed")
-        fresh = [task for task in completed if task.reviewers() and task.task_id not in announced]
-        if not fresh:
-            return None
-        self._uncommitted = [task.task_id for task in fresh]
+        return [task for task in completed if task.reviewers()]
+
+    def _entry(self, task: Any) -> str:
+        return task.task_id
+
+    def _render(self, tasks: list[Any]) -> str:
         lines = [t("team_context.task_verified_intro")]
-        lines.extend(f"- {task.task_id} · {task.title or ''}" for task in fresh)
+        lines.extend(f"- {task.task_id} · {task.title or ''}" for task in tasks)
         return render_event(kind=TASK_VERIFIED_EVENT_KIND, body="\n".join(lines))
-
-    async def commit(self, session: Any) -> None:
-        """Record the tasks the caller just delivered as told.
-
-        A no-op when the last :meth:`pending_text` returned nothing.
-
-        Args:
-            session: The member's own child ``AgentSession``.
-        """
-        pending = self._uncommitted
-        self._uncommitted = None
-        if pending is None or session is None:
-            return
-        announced = list(_read_announced(session))
-        announced.extend(task_id for task_id in pending if task_id not in announced)
-        try:
-            session.update_state({TASK_OUTCOME_STATE_KEY: announced})
-            await session.commit()
-        except Exception as exc:  # noqa: BLE001 - never break a model call over a checkpoint write
-            team_logger.warning(
-                "[{}] failed to persist task outcome baseline: {}",
-                self._member_name or "?",
-                exc,
-            )
 
 
 def _read_announced(session: Any, key: str = TASK_OUTCOME_STATE_KEY) -> list[str]:
@@ -750,22 +809,21 @@ def _read_announced(session: Any, key: str = TASK_OUTCOME_STATE_KEY) -> list[str
     return [str(entry) for entry in state]
 
 
-class TaskRevisionTracker:
-    """Tell an autonomous member, on its next input, which of its tasks were edited (F_129).
+class TaskRevisionTracker(_TaskNoticeTracker):
+    """Tell an autonomous member which of its working tasks were edited (F_129).
 
-    The edit's ``TASK_UPDATED`` steer reaches a member that is up; one that
-    was down when the leader edited never hears it. The edit still stands on
-    the task row as ``revision > observed_revision``, so whatever wakes the
-    member next carries a ``<team-event kind="task-revised">`` naming each
-    edited task, the revisions it missed and the edit notes, and asking it to
-    re-read the task. Scheduled dispatch has no use for it: the scheduler
-    pushes the latest content as a durable mail.
+    The single source of the edit notice: a ``<team-event kind="task-revised">``
+    naming each edited task, the revisions it missed and the edit notes, and
+    asking it to re-read the task. The edit's ``TASK_UPDATED`` event only
+    prompts an early claim (``TeamAgent.announce_task_revisions``); a member
+    that was down when the leader edited is told on its next admitted input,
+    since the edit still stands on the row as ``revision > observed_revision``.
+    Scheduled dispatch has no use for it: the scheduler pushes the latest
+    content as a durable mail.
 
     The notice does not count as seeing the revision — it carries no body.
-    "Seen" stays the DB's ``observed_revision``; the session-state baseline
-    (``task_id@revision`` entries) only stops the same revision being
-    announced twice. Same ``pending_text`` → deliver → ``commit`` contract as
-    :class:`TaskOutcomeTracker`, so both bind to the same input hooks.
+    "Seen" stays the DB's ``observed_revision``; an entry is
+    ``task_id@revision`` and only stops the same revision being announced twice.
 
     Args:
         team_backend: Backend whose task manager answers the board query.
@@ -773,72 +831,22 @@ class TaskRevisionTracker:
         member_name: This member's semantic identifier.
     """
 
-    def __init__(
-        self,
-        *,
-        team_backend: "TeamBackend | None",
-        member_name: str | None,
-    ) -> None:
-        self._team_backend = team_backend
-        self._member_name = member_name
-        self._uncommitted: list[str] | None = None
+    STATE_KEY = TASK_REVISION_STATE_KEY
 
-    async def pending_text(self, session: Any) -> str | None:
-        """Render this member's edited tasks it has not been told about yet.
+    async def _candidates(self, task_manager: Any) -> list[Any]:
+        return await task_manager.unseen_edits(self._member_name)
 
-        Args:
-            session: The member's own child ``AgentSession``. ``None`` disables
-                the tracker.
+    def _entry(self, task: Any) -> str:
+        return f"{task.task_id}@{task.revision}"
 
-        Returns:
-            A ``<team-event kind="task-revised">`` block, or ``None``.
-        """
+    def _render(self, tasks: list[Any]) -> str:
         from openjiuwen.agent_teams.message_template import change_notes_lines
 
-        self._uncommitted = None
-        if session is None or self._team_backend is None or not self._member_name:
-            return None
-        task_manager = getattr(self._team_backend, "task_manager", None)
-        if task_manager is None:
-            return None
-        announced = set(_read_announced(session, TASK_REVISION_STATE_KEY))
-        owned = await task_manager.get_tasks_by_assignee(self._member_name)
-        fresh = [task for task in owned if _unseen_edit(task) and f"{task.task_id}@{task.revision}" not in announced]
-        if not fresh:
-            return None
-        self._uncommitted = [f"{task.task_id}@{task.revision}" for task in fresh]
         lines = [t("team_context.task_revised_intro")]
-        for task in fresh:
+        for task in tasks:
             lines.append(f"- {task.task_id} · {task.title or ''} · r{task.observed_revision or 0} → r{task.revision}")
             lines.extend(f"  {line}" for line in change_notes_lines(task))
         return render_event(kind=TASK_REVISED_EVENT_KIND, body="\n".join(lines))
-
-    async def commit(self, session: Any) -> None:
-        """Record the revisions the caller just delivered as announced."""
-        pending = self._uncommitted
-        self._uncommitted = None
-        if pending is None or session is None:
-            return
-        announced = list(_read_announced(session, TASK_REVISION_STATE_KEY))
-        announced.extend(entry for entry in pending if entry not in announced)
-        try:
-            session.update_state({TASK_REVISION_STATE_KEY: announced})
-            await session.commit()
-        except Exception as exc:  # noqa: BLE001 - never break a model call over a checkpoint write
-            team_logger.warning(
-                "[{}] failed to persist task revision baseline: {}",
-                self._member_name or "?",
-                exc,
-            )
-
-
-def _unseen_edit(task: Any) -> bool:
-    """Whether an owned, unfinished task carries a revision its assignee has not seen (F_129)."""
-    from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES
-
-    if getattr(task, "status", None) in TASK_TERMINAL_STATUSES:
-        return False
-    return (getattr(task, "revision", 0) or 0) > (getattr(task, "observed_revision", 0) or 0)
 
 
 def build_task_event_tracker(
@@ -861,6 +869,7 @@ def build_task_event_tracker(
 
 
 __all__ = [
+    "ClaimedNotice",
     "ROSTER_CHANGE_EVENT_KIND",
     "ROSTER_EVENT_KIND",
     "ROSTER_NOTE_KIND",

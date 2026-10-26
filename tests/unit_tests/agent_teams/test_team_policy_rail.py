@@ -1869,11 +1869,15 @@ class TestTeamPolicyRailSteeringQuota:
 class _OutcomeTaskManager:
     """Answers the outcome tracker's board query with fixed completed rows."""
 
-    def __init__(self, completed: list) -> None:
+    def __init__(self, completed: list, edited: list | None = None) -> None:
         self.completed = completed
+        self.edited = edited or []
 
     async def get_tasks_by_assignee(self, member_name: str, status: str | None = None) -> list:
         return list(self.completed)
+
+    async def unseen_edits(self, member_name: str) -> list:
+        return list(self.edited)
 
 
 def _verified_task(task_id: str):
@@ -1950,6 +1954,53 @@ async def test_autonomous_and_leader_rails_carry_no_outcome_notice():
     assert "task-verified" not in leader_msg.content
 
 
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_rail_borrows_the_members_tracker_so_an_edit_is_told_once():
+    """F_129: the rail and the edit event share the TeamAgent-owned tracker."""
+    from types import SimpleNamespace
+
+    from openjiuwen.agent_teams.team_context import TASK_REVISION_STATE_KEY, TaskRevisionTracker
+
+    edited = SimpleNamespace(
+        task_id="t1",
+        title="build",
+        revision=1,
+        observed_revision=0,
+        change_notes='[{"revision": 1, "note": "tightened criteria", "by": "leader"}]',
+    )
+    backend = _FakeTeamBackend(self_member_name="dev1")
+    backend.task_manager = _OutcomeTaskManager([], edited=[edited])
+    shared = TaskRevisionTracker(team_backend=backend, member_name="dev1")
+
+    def _rail() -> TeamPolicyRail:
+        rail = TeamPolicyRail(
+            role=TeamRole.TEAMMATE,
+            member_name="dev1",
+            language="cn",
+            dispatch_mode="autonomous",
+            team_backend=backend,
+            task_event_tracker=shared,
+        )
+        rail.init(_StubAgent(SystemPromptBuilder(language="cn")))
+        return rail
+
+    ctx = _StubContext()
+    first = await _admit(_rail(), ctx, "a mail")
+    # A rebuilt rail borrows the same tracker: nothing left to tell.
+    second = await _admit(_rail(), ctx, "another mail")
+
+    assert '<team-event kind="task-revised">' in first.content and "tightened criteria" in first.content
+    assert "task-revised" not in second.content
+    assert ctx.session.get_state(TASK_REVISION_STATE_KEY) == ["t1@1"]
+
+    edited.revision = 2
+    assert (await shared.claim()) is not None  # the edit event's path claims r2 first
+    third = await _admit(_rail(), ctx, "a third mail")
+    assert "task-revised" not in third.content
+    assert ctx.session.get_state(TASK_REVISION_STATE_KEY) == ["t1@1", "t1@2"]
+
+
 
 @pytest.mark.asyncio
 @pytest.mark.level0
@@ -2014,3 +2065,25 @@ def test_policy_rail_takes_the_bound_group_only_with_the_expert_catalog():
 
     assert _expert_scope_group(with_catalog) == "designer"
     assert _expert_scope_group(without_catalog) is None, "the section names expert tools that are not wired"
+
+
+@pytest.mark.level1
+def test_policy_rail_factory_borrows_the_injected_task_tracker():
+    """The configurator-owned tracker rides extras; each rebuilt rail borrows it (F_129)."""
+    from types import SimpleNamespace
+
+    from openjiuwen.agent_teams.rails.elements import build_team_policy_rail
+    from openjiuwen.agent_teams.rails.team_context import inject_team_handles
+    from openjiuwen.agent_teams.team_context import TaskRevisionTracker
+
+    backend = _FakeTeamBackend(self_member_name="dev1")
+    backend.workspace_cache = None
+    shared = TaskRevisionTracker(team_backend=backend, member_name="dev1")
+    context = SimpleNamespace(role="teammate", member_name="dev1", language="cn", extras={})
+    inject_team_handles(context.extras, team_backend=backend, task_event_tracker=shared)
+
+    first = build_team_policy_rail({"dispatch_mode": "autonomous"}, context)
+    second = build_team_policy_rail({"dispatch_mode": "autonomous"}, context)
+
+    assert first is not second
+    assert first._outcome_tracker is shared and second._outcome_tracker is shared

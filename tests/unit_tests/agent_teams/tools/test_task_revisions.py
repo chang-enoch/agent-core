@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 
 from openjiuwen.agent_teams.agent.coordination.event_bus import InnerEventMessage, InnerEventType
-from openjiuwen.agent_teams.agent.coordination.handlers.task_board import ScheduledTaskBoardHandler
+from openjiuwen.agent_teams.agent.coordination.handlers.task_board import ScheduledTaskBoardHandler, TaskBoardHandler
 from openjiuwen.agent_teams.agent.infra import TeamInfra
 from openjiuwen.agent_teams.agent.scheduling import TeamScheduler
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
@@ -29,10 +29,16 @@ from openjiuwen.agent_teams.message_template import (
 )
 from openjiuwen.agent_teams.messager import Messager
 from openjiuwen.agent_teams.paths import configure_openjiuwen_home, reset_openjiuwen_home
-from openjiuwen.agent_teams.schema.events import TeamEvent
+from openjiuwen.agent_teams.schema.events import EventMessage, TaskUpdatedEvent, TeamEvent
 from openjiuwen.agent_teams.schema.status import MemberMode, TaskStatus
 from openjiuwen.agent_teams.schema.task import REVISION_DIFF_MIN_CHARS, TaskGraphSpec
-from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker, build_task_event_tracker
+from openjiuwen.agent_teams.schema.team import TeamRole
+from openjiuwen.agent_teams.team_context import (
+    TASK_REVISION_STATE_KEY,
+    TaskOutcomeTracker,
+    TaskRevisionTracker,
+    build_task_event_tracker,
+)
 from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType, TeamDatabase
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.agent_teams.tools.team import TeamBackend
@@ -467,19 +473,24 @@ class _Session:
 async def test_autonomous_member_is_told_of_a_missed_edit_once(db, bus):
     tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
     assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await tm.add_graph([TaskGraphSpec(title="b", content="c0", task_id="t2", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
     await tm.update_task("t1", content="c1", change_note="tightened criteria")
+    await tm.update_task("t2", content="c1", change_note="not started yet")
     backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
     tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
     session = _Session()
 
-    text = await tracker.pending_text(session)
-    assert text is not None and 'kind="task-revised"' in text
+    tracker.seed(session)
+    notice = await tracker.claim()
+    text = notice.text if notice else ""
+    assert 'kind="task-revised"' in text
+    assert "t2" not in text and "not started yet" not in text
     assert "r0 → r1" in text and "tightened criteria" in text
-    await tracker.commit(session)
-    assert await tracker.pending_text(session) is None
+    assert await tracker.claim() is None
 
     await tm.update_task("t1", content="c2")
-    assert "r0 → r2" in (await tracker.pending_text(session))
+    assert "r0 → r2" in (await tracker.claim()).text
 
 
 @pytest.mark.level1
@@ -492,3 +503,137 @@ def test_each_mode_gets_its_own_next_input_tracker():
         build_task_event_tracker("autonomous", team_backend=backend, member_name=DEV_1), TaskRevisionTracker
     )
     assert build_task_event_tracker("autonomous", team_backend=None, member_name=DEV_1) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_an_edit_is_claimed_once_across_paths_and_restarts(db, bus):
+    tm = _mgr(db, bus, LEADER, dispatch_mode="autonomous")
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    assert (await db.task.start_task("t1", DEV_1)) is True
+    await tm.update_task("t1", content="c1")
+    backend = SimpleNamespace(task_manager=_mgr(db, bus, DEV_1, dispatch_mode="autonomous"))
+    tracker = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    session = _Session()
+
+    notice = await tracker.claim()
+    assert notice is not None and notice.entries == ("t1@1",)
+    # Another path (the rail on the next input) finds nothing left to say.
+    assert await tracker.claim() is None
+    # A failed delivery gives that claim back, whatever was claimed since.
+    tracker.release(notice)
+    assert await tracker.claim() is not None
+    await tracker.persist(session)
+    assert session.state[TASK_REVISION_STATE_KEY] == ["t1@1"]
+
+    restarted = TaskRevisionTracker(team_backend=backend, member_name=DEV_1)
+    restarted.seed(session)
+    assert await restarted.claim() is None
+    # Without the checkpoint (a crash before persist) the notice repeats once.
+    assert await TaskRevisionTracker(team_backend=backend, member_name=DEV_1).claim() is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_task_updated_for_self_only_asks_the_tracker_to_speak():
+    host = SimpleNamespace(announce_task_revisions=AsyncMock(), deliver_input=AsyncMock())
+    handler = TaskBoardHandler(
+        host,
+        SimpleNamespace(member_name=DEV_1, role=TeamRole.TEAMMATE),
+        SimpleNamespace(task_manager=object()),
+        SimpleNamespace(resume_polls=AsyncMock()),
+    )
+    event = EventMessage.from_event(TaskUpdatedEvent(team_name=TEAM, member_name=DEV_1, task_id="t1", revision=1))
+
+    await handler.on_task_updated(event)
+
+    host.announce_task_revisions.assert_awaited_once()
+    host.deliver_input.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+@pytest.mark.parametrize("dispatch_mode", ["scheduled", "autonomous"])
+async def test_a_human_assignee_is_not_held_by_the_completion_gate(db, bus, dispatch_mode):
+    await db.member.create_member(
+        member_name="human-1",
+        team_name=TEAM,
+        display_name="human-1",
+        agent_card=AgentCard().model_dump_json(),
+        status="READY",
+        role=TeamRole.HUMAN_AGENT.value,
+        mode=MemberMode.BUILD_MODE.value,
+    )
+    tm = _mgr(db, bus, LEADER, dispatch_mode=dispatch_mode)
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee="human-1")])).ok
+    await tm.update_task("t1", content="c1")
+    # Autonomous dispatch starts a live human's task on assignment.
+    if (await tm.get("t1")).status == TaskStatus.PENDING.value:
+        assert (await db.task.start_task("t1", "human-1")) is True
+    assert (await tm.get("t1")).observed_revision < 1
+    tools = _tools(db, bus, "human-1", dispatch_mode=dispatch_mode)
+    complete = tools["member_complete_task"] if dispatch_mode == "scheduled" else tools["claim_task"]
+    args = {"task_id": "t1"} if dispatch_mode == "scheduled" else {"task_id": "t1", "status": "completed"}
+
+    result = await complete.invoke(args)
+    assert result.success, result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_a_change_note_on_an_unchanged_body_is_refused(db, bus):
+    tm = _mgr(db, bus, LEADER)
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+
+    result = await _tools(db, bus, LEADER)["update_task"].invoke(
+        {"task_id": "t1", "content": "c0", "change_note": "please do X first"}
+    )
+    assert not result.success and "send_message" in result.error
+    task = await tm.get("t1")
+    assert task.revision == 0 and "please do X first" not in (task.change_notes or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+@pytest.mark.parametrize(
+    ("dispatch_mode", "started", "expected"),
+    [
+        ("scheduled", True, "sent to dev-1 with the latest content"),
+        ("scheduled", False, "has not started it yet"),
+        ("autonomous", True, "is told to re-read"),
+        ("autonomous", False, "has not started it yet"),
+    ],
+)
+async def test_edit_result_says_how_the_revision_reaches_the_assignee(db, bus, dispatch_mode, started, expected):
+    tm = _mgr(db, bus, LEADER, dispatch_mode=dispatch_mode)
+    assert (await tm.add_graph([TaskGraphSpec(title="a", content="c0", task_id="t1", assignee=DEV_1)])).ok
+    if started:
+        assert (await db.task.start_task("t1", DEV_1)) is True
+    tool = _tools(db, bus, LEADER, dispatch_mode=dispatch_mode)["update_task"]
+
+    output = await tool.invoke({"task_id": "t1", "content": "c1"})
+    assert output.success, output.error
+    rendered = tool.render_for_llm(output)
+    assert expected in rendered
+    assert "sent to" not in rendered or expected.startswith("sent to")
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_a_filtered_list_still_marks_subtasks_stale_against_an_unlisted_parent(db, bus):
+    tm = _mgr(db, bus, LEADER)
+    assert (await tm.add_graph([TaskGraphSpec(title="p", content="c0", task_id="p1", assignee=DEV_1)])).ok
+    assert (await tm.start_task("p1")).ok
+    sub_spec = TaskGraphSpec(title="s", content="c0", task_id="s1", assignee=DEV_2, parent_task_id="p1")
+    assert (await _mgr(db, bus, DEV_1).add_graph([sub_spec])).ok
+    await tm.update_task("p1", content="c1")
+
+    listed = await tm.list_tasks_with_deps(status=TaskStatus.PENDING.value)
+    summary = next(item for item in listed.tasks if item.task_id == "s1")
+    assert summary.stale_against == (1, 0)
+    assert "p1" not in {item.task_id for item in listed.tasks}

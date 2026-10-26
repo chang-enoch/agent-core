@@ -532,6 +532,39 @@ class TeamAgent(BaseAgent):
     def has_in_flight_round(self) -> bool:
         return self._has_in_flight_round()
 
+    async def announce_task_revisions(self) -> None:
+        """Deliver the member's pending task edit notice now, if it has one (F_129).
+
+        The task notice tracker is the only source of the notice; a
+        ``TASK_UPDATED`` event only asks it to speak early. An external member's
+        runtime owns its tracker and session, so it announces itself. An
+        in-process member's tracker is owned here and shared with its policy
+        rail: claiming here first means the rail finds nothing to repeat, and
+        the notice goes in as an input of its own — starting a round when the
+        member is idle, steering the current one when it is busy. With no
+        runtime there is nothing to deliver into, so nothing is claimed: the
+        rail tells the member on its first input once it is up.
+        """
+        harness = self.harness
+        if harness is None:
+            return
+        from openjiuwen.agent_teams.external.member_runtime import TeamContextAwareRuntime
+
+        if isinstance(harness, TeamContextAwareRuntime):
+            await harness.announce_task_revisions()
+            return
+        tracker = self._configurator.task_event_tracker
+        if tracker is None:
+            return
+        notice = await tracker.claim()
+        if notice is None:
+            return
+        try:
+            await self.deliver_input(notice.text)
+        except BaseException:
+            tracker.release(notice)
+            raise
+
     async def deliver_input(
         self,
         content: Any,

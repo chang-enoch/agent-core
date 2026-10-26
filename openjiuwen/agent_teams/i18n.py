@@ -188,10 +188,6 @@ STRINGS: dict[str, dict[str, str]] = {
             "[任务取消] 你正在执行的任务 [{task_id}] 已被取消。请立即停止该任务的工作，"
             "不要再为它提交结果；新任务指派给你时会另行通知开工，无需轮询看板。"
         ),
-        "dispatcher.task_content_updated_to_self": (
-            "[任务变更] 你正在执行的任务 [{task_id}] 的内容已被更新。请通过 view_task "
-            "重新查看最新要求后继续执行（任务仍归你，无需重新认领）。"
-        ),
         # agent/dispatcher.py — message formatting
         "dispatcher.task_plan_approved_to_self": (
             "[计划已批准] 任务 [{task_id}] 的执行计划已通过。请开始执行，完成后用 "
@@ -385,8 +381,8 @@ STRINGS: dict[str, dict[str, str]] = {
         # team_context.py TaskRevisionTracker (F_129): an edit the member was
         # down for rides its next input.
         "team_context.task_revised_intro": (
-            "你名下的以下任务在你上次查看后被修改过。提交前先用 view_task(action='get', task_id=...) "
-            "查看最新要求，按需调整："
+            "你名下的以下任务在你上次查看后被修改过（任务仍归你，无需重新认领）。请先用 "
+            "view_task(action='get', task_id=...) 查看最新要求，按需调整后继续；提交前必须看过最新版本："
         ),
         # agent/coordination/handlers/workflow.py — swarmflow spectator broadcast
         "workflow.started": "编排 [{run_id}]「{name}」已启动，我将在每个阶段向你汇报进展。",
@@ -638,11 +634,6 @@ STRINGS: dict[str, dict[str, str]] = {
             "Stop working on it now and do not submit results for it; a new task assigned "
             "to you arrives with its own start notice, so there is no need to poll the board."
         ),
-        "dispatcher.task_content_updated_to_self": (
-            "[Task Updated] The content of task [{task_id}] you are working on has changed. "
-            "Call view_task to re-read the latest requirements, then continue (the task is "
-            "still yours — no need to re-claim)."
-        ),
         # agent/dispatcher.py — message formatting
         "dispatcher.task_plan_approved_to_self": (
             "[Plan Approved] Your execution plan for task [{task_id}] was approved. "
@@ -857,8 +848,9 @@ STRINGS: dict[str, dict[str, str]] = {
             "Nothing more is needed — do not contact the leader about them:"
         ),
         "team_context.task_revised_intro": (
-            "These tasks of yours were edited after you last read them. Before submitting, read the latest "
-            "requirements with view_task(action='get', task_id=...) and adjust as needed:"
+            "These tasks of yours were edited after you last read them (they are still yours — no need to "
+            "re-claim). Read the latest requirements with view_task(action='get', task_id=...), adjust as "
+            "needed and continue; you must have read the latest revision before submitting:"
         ),
         # agent/coordination/handlers/workflow.py — swarmflow spectator broadcast
         "workflow.started": (
