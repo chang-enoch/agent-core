@@ -91,7 +91,7 @@ Pass `COMMITS=N` to check recent commits instead.
 - `.agents/skills/jw-coding-flow/SKILL.md`：需求、设计、开发、检视与交付的流程入口。
 - `.agents/skills/jw-design/SKILL.md`：仅设计阶段，包含设计概览、架构和特性方案参考。
 - `.agents/skills/jw-dev/SKILL.md`：开发、测试、契约同步及 feature / bugfix 记忆维护。
-- `.agents/skills/jw-review/SKILL.md`：本地代码或已确认提交范围的检视流程、关注点、证据核对与复查交接。
+- `.agents/skills/jw-review/SKILL.md`：代码检视入口；按 agent-core 技术定位、模块 AGENTS/spec 审视工作区、提交或分支差异，核对跨层影响、兼容与回归证据并交接复查，不限定 PR 场景。
 - `.agents/skills/jw-testing/SKILL.md`：独立撰写与维护转测文档，输出暂存本地被忽略的 designs/testing/，不进入设计生命周期或索引。
 
 实际资产位于 `.agents/agent-docs/` 的 `designs/`、`specs/`、`features/`、`bugfix/`。
