@@ -3,6 +3,7 @@
 """Tests for openjiuwen.harness.tools.worktree.backend."""
 
 import pytest
+from unittest.mock import AsyncMock
 
 from openjiuwen.harness.tools.worktree.backend import (
     GitBackend,
@@ -13,6 +14,36 @@ from openjiuwen.harness.tools.worktree.backend import (
 )
 from openjiuwen.harness.tools.worktree.models import WorktreeConfig
 from tests.test_logger import logger
+
+
+@pytest.mark.asyncio
+async def test_fetch_success_without_tracking_ref_falls_back_to_head(monkeypatch):
+    """A single-branch refspec can fetch main without creating origin/main."""
+    head = "b" * 40
+    resolve = AsyncMock(side_effect=[None, None, head])
+    fetch = AsyncMock(return_value=True)
+    monkeypatch.setattr("openjiuwen.harness.tools.worktree.backend.get_default_branch", AsyncMock(return_value="main"))
+    monkeypatch.setattr("openjiuwen.harness.tools.worktree.backend.rev_parse", resolve)
+    monkeypatch.setattr("openjiuwen.harness.tools.worktree.backend.fetch_ref", fetch)
+
+    assert await GitBackend()._resolve_base("repo") == ("HEAD", head)
+    fetch.assert_awaited_once_with("repo", "main")
+
+
+@pytest.mark.asyncio
+async def test_create_uses_resolved_commit_not_a_moving_ref(monkeypatch, tmp_path):
+    sha = "c" * 40
+    backend = GitBackend(WorktreeConfig(longpaths_support=False))
+    monkeypatch.setattr(backend, "_resolve_base", AsyncMock(return_value=("origin/develop", sha)))
+    monkeypatch.setattr("openjiuwen.harness.tools.worktree.backend.read_worktree_head_sha", AsyncMock(return_value=None))
+    add = AsyncMock()
+    monkeypatch.setattr("openjiuwen.harness.tools.worktree.backend.worktree_add", add)
+
+    result = await backend.create("fixed-base", "repo", str(tmp_path / "worktree"))
+
+    assert add.await_args.args[3] == sha
+    assert result.base_branch == "origin/develop"
+    assert result.head_commit == sha
 
 
 def _wt_target(tmp_path, slug: str) -> str:

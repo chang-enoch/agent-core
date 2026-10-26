@@ -35,6 +35,7 @@ from openjiuwen.agent_teams.agent.spawn_manager import SpawnManager
 from openjiuwen.agent_teams.agent.state import TeamAgentState
 from openjiuwen.agent_teams.agent.stream_controller import StreamController
 from openjiuwen.agent_teams.fork import ForkContext
+from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.interaction.payload import GodViewMessage
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.status import (
@@ -181,6 +182,9 @@ class TeamAgent(BaseAgent):
         self._configurator = AgentConfigurator(card)
         self._state = TeamAgentState()
         self._named_checkpoints: dict[str, dict] = {}  # name → {count, description, created_by}
+        # Local startup diagnostics, not persisted task/member state. Suppress
+        # identical idle-edge failures until startup succeeds or the cause changes.
+        self._member_startup_failures: dict[str, str] = {}
 
         self._spawn_manager = SpawnManager(
             state=self._state,
@@ -1333,8 +1337,12 @@ class TeamAgent(BaseAgent):
                 e,
                 exc_info=True,
             )
+            await self._report_member_startup_failure("*", e)
             return
+        self._member_startup_failures.pop("*", None)
         if started:
+            for member_name in started:
+                self._member_startup_failures.pop(member_name, None)
             team_logger.info(
                 "[{}] round-idle reconcile started members: {}",
                 self._member_name() or "?",
@@ -1785,6 +1793,18 @@ class TeamAgent(BaseAgent):
             fork_from=fork_from,
         )
 
+    async def _report_member_startup_failure(self, member_name: str, error: Exception) -> None:
+        """Notify the leader once per unchanged startup failure, without raising."""
+        reason = f"{type(error).__name__}: {error}"[:1200]
+        if self._member_startup_failures.get(member_name) == reason:
+            return
+        self._member_startup_failures[member_name] = reason
+        try:
+            await self.deliver_input(t("team.member_startup_failed", member_name=member_name, reason=reason))
+        except Exception:
+            self._member_startup_failures.pop(member_name, None)
+            team_logger.error("Failed to notify leader of member startup failure: {}", member_name, exc_info=True)
+
     async def auto_start_member(self, member_name: str) -> bool:
         """Start an UNSTARTED member or recover an ERROR member.
 
@@ -1800,8 +1820,10 @@ class TeamAgent(BaseAgent):
                 started = await backend.recover_member(member_name)
         except Exception as exc:
             team_logger.error("auto_start_member({}) failed: {}", member_name, exc)
+            await self._report_member_startup_failure(member_name, exc)
             return False
         if started:
+            self._member_startup_failures.pop(member_name, None)
             team_logger.info("Auto-started member via interact: {}", member_name)
         return started
 
@@ -1842,11 +1864,15 @@ class TeamAgent(BaseAgent):
             return []
         try:
             started = await backend.startup(on_created=self._on_teammate_created)
+            self._member_startup_failures.pop("*", None)
             if started:
+                for member_name in started:
+                    self._member_startup_failures.pop(member_name, None)
                 team_logger.info("Auto-started members via interact broadcast: {}", started)
             return started
         except Exception as exc:
             team_logger.error("auto_start_all failed: {}", exc)
+            await self._report_member_startup_failure("*", exc)
             return []
 
     # ------------------------------------------------------------------

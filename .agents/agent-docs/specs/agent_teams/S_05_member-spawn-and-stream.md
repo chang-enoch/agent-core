@@ -18,7 +18,7 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/spawn/`、`openjiuwen/agent_teams/agent/spawn_manager.py`、`openjiuwen/agent_teams/agent/stream_controller.py`、`openjiuwen/agent_teams/agent/payload.py`、`openjiuwen/agent_teams/agent/agent_configurator.py`、`openjiuwen/agent_teams/worktree/`、`openjiuwen/agent_teams/context.py` |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联 feature | F_38_team-teammate-worktree-isolation-agenttool.md、F_28_native-harness-team-adoption.md、F_60_native-harness-pause-abort-resume.md、F_69_cwd-workspace-project-root-separation.md、F_74_leader-member-activity-and-team-idle.md、F_77_team-idle-requires-a-settled-task-board.md、F_79_team-scoped-skill-library-and-visibility.md、F_80_fork-identity-conversion.md、F_84_task-creation-starts-members.md、F_125_team-expert-catalog-and-spawn.md |
 
 ## 范围 / 边界
@@ -94,6 +94,11 @@ author_email: chengshuo5@huawei.com
    CAS 守卫是这条链上**唯一**的并发闸：第一个到的路径把 `UNSTARTED→STARTING` 抢
    成功，其余并发路径查到 `STARTING`/`READY` 直接返回 False。spawn 失败回滚
    `STARTING→UNSTARTED` 保证可重试。
+
+   best-effort 启动失败不能只留日志：`auto_start_member`、`auto_start_all` 与
+   round-idle 对账将真实异常通知 Leader，明确成员尚未成功启动、看板进行中不代表
+   实际执行。相同成员（批量路径为 `*`）的同一错误只通知一次，错误变化或成功后
+   再失败可重新通知；不伪造任务失败、不重复投递已落盘的启动消息，也不停止其他成员。
 
    漏斗有**六个触发点**，全都是"活要交给一个还没起来的成员"——前五个是交付那一刻
    的即时拉起，第六个是兜底对账：

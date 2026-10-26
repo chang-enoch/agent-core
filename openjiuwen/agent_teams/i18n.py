@@ -62,6 +62,11 @@ STRINGS: dict[str, dict[str, str]] = {
         # tools/team.py
         "team.shutdown_request_content": "当前任务已全部完成，请结束流程",
         "team.cancel_request_content": "当前任务有变动，请停止执行当前任务，重新尝试认领合适任务",
+        "team.member_startup_failed": (
+            "[成员启动失败] 成员 {member_name}（* 表示批量启动检查）未能成功启动。原因：{reason}。"
+            "任务已分派或看板显示进行中不代表该成员正在执行；请核对真实成员状态并处理启动故障，"
+            "不要仅等待其交付。本通知不代表任务完成、已取消或自动重试成功。"
+        ),
         "team.shutdown_human_active_tasks": (
             "人类成员 {member_name} 仍持有 {count} 个活跃任务 [{task_ids}]，不允许非强制关闭。"
             "请先通过 send_message 与成员协商是否同意强制关闭并取消任务。"
@@ -520,6 +525,12 @@ STRINGS: dict[str, dict[str, str]] = {
             "Progress: {attempt}/{max_attempts}. Reason: {reason_message}. "
             "Diagnostics: http_status={http_status}, sdk_error_code={sdk_error_code}. "
             "The round stays open and member status is unchanged; awaiting the next SDK result. {summary}"
+        ),
+        "team.member_startup_failed": (
+            "[member startup failed] Member {member_name} (* denotes a batch startup check) could not start. "
+            "Reason: {reason}. An assignment or in-progress board row does not prove execution. "
+            "Check actual member state and address the startup failure rather than only waiting for delivery. "
+            "This notification does not mean task completion, cancellation, or a successful retry."
         ),
         "reliability.external_runtime_failed": (
             "[external runtime failed] Member {member_name} ({agent_kind}, model {model}, phase {phase}) finally "

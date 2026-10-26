@@ -151,7 +151,7 @@ class GitBackend:
             repo_root,
             wt_path,
             wt_branch,
-            base_branch,
+            base_sha or base_branch,
             no_checkout=bool(sparse),
         )
 
@@ -235,7 +235,8 @@ class GitBackend:
         fetched = await fetch_ref(repo_root, default_branch)
         if fetched:
             sha = await rev_parse(origin_ref, repo_root)
-            return origin_ref, sha
+            if sha:
+                return origin_ref, sha
 
         # Last resort: use current HEAD
         sha = await rev_parse("HEAD", repo_root)

@@ -274,6 +274,11 @@ class WorktreeLifecyclePolicy(str, Enum): ...
 - `get_or_create_plan_slug` 缺 workspace_root → 抛；plan 文件路径经 `resolve_plan_file_path`
   固定解析（`<workspace_root>/<slug>/plan.md` 形态，实际以 `agent_mode_tools.py` 为准）。
 - `WorktreeManager` 操作失败抛 `GitError` / `WorktreeLockTimeout`（`tools/worktree/`）。
+  Git 基线解析必须验证引用可用：缺失或悬空的 `origin/HEAD` 不等于仓库使用 `main`；
+  回退时识别当前已跟踪分支及 `main/master/develop`。单分支 fetch 成功也不保证
+  `origin/<branch>` 已生成，须再次解析，失败则沿既有策略回退本地 HEAD。
+  创建工作树使用已解析的固定 SHA，展示元数据仍保留基线引用；不从不受控的
+  `FETCH_HEAD` 悄悄改换基线，不切换或修改用户分支。
 
 ## 数据结构
 
