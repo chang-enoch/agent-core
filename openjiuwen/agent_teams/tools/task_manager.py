@@ -1507,11 +1507,14 @@ class TeamTaskManager:
             error_label=f"Task list drained event for team {self.team_name}",
         )
 
-    async def list_tasks(self, status: Optional[str] = None) -> List[TeamTaskBase]:
+    async def list_tasks(self, status: Optional[str] = None, *, with_content: bool = True) -> List[TeamTaskBase]:
         """List all tasks for the team
 
         Args:
             status: Optional status filter
+            with_content: Load each task body. ``False`` skips the session-file
+                reads and leaves ``content`` as the stored placeholder; for
+                board scans that only need ids / status / assignee.
 
         Returns:
             List of TeamTask objects
@@ -1523,7 +1526,7 @@ class TeamTaskManager:
             # Get all tasks
             all_tasks = task_manager.list_tasks()
         """
-        return await self.db.task.get_team_tasks(self.team_name, status)
+        return await self.db.task.get_team_tasks(self.team_name, status, hydrate=with_content)
 
     async def get_dependencies(self, task_id: str) -> List[TeamTaskDependencyBase]:
         """Get task dependencies

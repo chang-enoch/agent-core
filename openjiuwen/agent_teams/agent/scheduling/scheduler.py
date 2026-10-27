@@ -310,7 +310,7 @@ class TeamScheduler:
 
     async def _reconcile_starts(self, task_manager) -> bool:
         """Start each idle member's earliest assigned PENDING task."""
-        pending = await task_manager.list_tasks(status=TaskStatus.PENDING.value)
+        pending = await task_manager.list_tasks(status=TaskStatus.PENDING.value, with_content=False)
         queue_by_member: dict[str, list] = {}
         for task in pending:
             if task.assignee:
@@ -371,7 +371,7 @@ class TeamScheduler:
             return False
         active: list[Any] = []
         for status in (TaskStatus.PLANNING.value, TaskStatus.IN_PROGRESS.value):
-            active.extend(await task_manager.list_tasks(status=status))
+            active.extend(await task_manager.list_tasks(status=status, with_content=False))
         acted = False
         for task in active:
             owner = task.assignee
@@ -425,7 +425,9 @@ class TeamScheduler:
         backend = self._infra.team_backend
         if backend is not None and not backend.task_verification_enabled():
             return False
-        in_review = await task_manager.list_tasks(status=TaskStatus.IN_REVIEW.value)
+        # Scanned without bodies: only reviewer dispatch and fail feedback
+        # read ``content``, and they re-read the one task they act on.
+        in_review = await task_manager.list_tasks(status=TaskStatus.IN_REVIEW.value, with_content=False)
         now_ms = get_current_time()
         acted = False
         for task in in_review:
@@ -439,8 +441,9 @@ class TeamScheduler:
             round_key = (task.task_id, task.review_round)
             if round_key not in self._review_dispatched:
                 self._review_dispatched.add(round_key)
+                full_task = await self._with_content(task_manager, task)
                 for reviewer in reviewers:
-                    await self._dispatch_to_reviewer(reviewer, task)
+                    await self._dispatch_to_reviewer(reviewer, full_task)
 
             tally = await task_manager.get_review_tally(task)
             verdict = settle_review_tally(tally)
@@ -456,6 +459,7 @@ class TeamScheduler:
                     )
                     acted = True
             elif verdict == VERDICT_FAIL:
+                task = await self._with_content(task_manager, task)
                 if await self._settle_fail_or_escalate(task_manager, task, tally):
                     team_logger.info(
                         "[judge-fail] task=%s round=%d tally(pass=%d fail=%d total=%d)",
@@ -469,6 +473,11 @@ class TeamScheduler:
             else:
                 await self._handle_undecided(task, tally, now_ms)
         return acted
+
+    @staticmethod
+    async def _with_content(task_manager, task):
+        """Re-read one scanned task with its body; fall back to the scan row."""
+        return await task_manager.get(task.task_id) or task
 
     async def _settle_pass(self, task_manager, task) -> bool:
         result = await task_manager.settle_review(task.task_id, "pass")
@@ -929,7 +938,7 @@ class TeamScheduler:
         if task.task_id in self._digested_tasks:
             return
         self._digested_tasks.add(task.task_id)
-        tasks = await task_manager.list_tasks()
+        tasks = await task_manager.list_tasks(with_content=False)
         terminal = (TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value)
         remaining = sum(1 for row in tasks if row.status not in terminal)
         if not getattr(task, "parent_task_id", None):

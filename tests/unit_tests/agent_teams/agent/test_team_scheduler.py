@@ -413,6 +413,33 @@ async def test_review_fail_dispatches_aggregated_feedback_to_mounted_rail(db, bu
     assert payload["review_round"] == 1
     assert payload["session_id"] == "sched_session"
     assert "broken build" in payload["feedback"]
+    # The scan reads the board without bodies; the fail path re-reads the task.
+    assert payload["task_content"] == "c"
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_board_scan_skips_task_bodies_but_reviewer_gets_one(db, bus, monkeypatch):
+    scheduler, _host, _mm, tm = _build_scheduler(db, bus)
+    dispatched = AsyncMock()
+    monkeypatch.setattr(scheduler, "_dispatch_to_reviewer", dispatched)
+    hydrated: list[int] = []
+    original = db.task._hydrate_rows
+
+    def counting(rows):
+        hydrated.append(len(rows))
+        return original(rows)
+
+    monkeypatch.setattr(db.task, "_hydrate_rows", counting)
+    await _seed_review(db, bus, scheduler, tm, reviewers=("rev-1",))
+    hydrated.clear()
+
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+
+    assert hydrated == [], "board scans must not dereference task bodies"
+    reviewer, task = dispatched.await_args.args
+    assert reviewer == "rev-1"
+    assert task.content == "c"
 
 
 @pytest.mark.asyncio

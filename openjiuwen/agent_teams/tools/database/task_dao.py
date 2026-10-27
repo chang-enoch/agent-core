@@ -560,6 +560,25 @@ class TaskDao:
                 row.content = self._deref_row(row)
         return rows
 
+    async def _hydrate_row_off_loop(self, row: Optional[TeamTaskBase]) -> Optional[TeamTaskBase]:
+        """``_hydrate_row`` on a worker thread, after the read session closed.
+
+        Dereferencing is synchronous file IO; doing it inside ``read()`` held
+        a pooled reader connection and blocked the event loop that every
+        in-process team member shares. ``to_thread`` copies the context, so
+        the bound session id still resolves the file path.
+        """
+        if row is None or not self._is_placeholder(row.content):
+            return row
+        return await asyncio.to_thread(self._hydrate_row, row)
+
+    async def _hydrate_rows_off_loop(self, rows: Iterable[TeamTaskBase]) -> List[TeamTaskBase]:
+        """``_hydrate_rows`` on a worker thread; see ``_hydrate_row_off_loop``."""
+        rows = list(rows)
+        if not any(self._is_placeholder(row.content) for row in rows):
+            return rows
+        return await asyncio.to_thread(self._hydrate_rows, rows)
+
     async def create_task(
         self,
         task_id: str,
@@ -595,17 +614,35 @@ class TaskDao:
         team_task_model = _get_task_model()
         async with self._sessions.read() as session:
             result = await session.execute(select(team_task_model).where(team_task_model.task_id == task_id))
-            return self._hydrate_row(result.scalar_one_or_none())
+            row = result.scalar_one_or_none()
+        return await self._hydrate_row_off_loop(row)
 
-    async def get_team_tasks(self, team_name: str, status: Optional[str] = None) -> List[TeamTaskBase]:
-        """Get all tasks for a team, optionally filtered by status."""
+    async def get_team_tasks(
+        self,
+        team_name: str,
+        status: Optional[str] = None,
+        *,
+        hydrate: bool = True,
+    ) -> List[TeamTaskBase]:
+        """Get all tasks for a team, optionally filtered by status.
+
+        Args:
+            team_name: Team whose board to read.
+            status: Optional status filter.
+            hydrate: Read each spilled ``content`` body from its session file.
+                ``False`` leaves the ``#file#`` placeholder in place, for
+                callers that only look at ids / status / assignee.
+        """
         team_task_model = _get_task_model()
         async with self._sessions.read() as session:
             query = select(team_task_model).where(team_task_model.team_name == team_name)
             if status:
                 query = query.where(team_task_model.status == status)
             result = await session.execute(query)
-            return self._hydrate_rows(result.scalars().all())
+            rows = result.scalars().all()
+        if not hydrate:
+            return list(rows)
+        return await self._hydrate_rows_off_loop(rows)
 
     async def count_tasks_terminality(self, team_name: str) -> tuple[int, int]:
         """Return ``(total_tasks, non_terminal_tasks)`` for a team in one query.
@@ -642,7 +679,8 @@ class TaskDao:
         team_task_model = _get_task_model()
         async with self._sessions.read() as session:
             result = await session.execute(select(team_task_model).where(team_task_model.task_id.in_(task_ids)))
-            return self._hydrate_rows(result.scalars().all())
+            rows = result.scalars().all()
+        return await self._hydrate_rows_off_loop(rows)
 
     async def open_task_counts_by_assignee(self, team_name: str) -> dict[str, int]:
         """Count non-terminal tasks per assignee in one grouped query.
@@ -778,7 +816,8 @@ class TaskDao:
             if status:
                 query = query.where(team_task_model.status == status)
             result = await session.execute(query)
-            return self._hydrate_rows(result.scalars().all())
+            rows = result.scalars().all()
+        return await self._hydrate_rows_off_loop(rows)
 
     async def get_other_active_task_id(
         self, team_name: str, member_name: str, exclude_task_id: str
