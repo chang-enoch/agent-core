@@ -235,7 +235,11 @@ STRINGS: dict[str, dict[str, str]] = {
             "可用 send_message 催促验证者，或 update_task 调整验证者/处置任务。"
         ),
         "scheduler.leader_all_done": (
-            "[调度器] 任务看板已全部终结（共 {count} 个任务）。请汇总团队执行结果，向用户交付最终结论。"
+            "[调度器] 任务看板上已没有未终结的任务（共 {count} 个任务）。这只表示看板清空，不代表目标已经达成。"
+            "先对照用户目标检查是否还有剩余工作（返工、新一轮检视或验证、下一阶段等）：有就用 create_task 建任务。"
+            "注意：send_message 或拉起成员不会让工作进入看板，调度器看不到它，不会派发验收，也不会在它完成后提醒你；"
+            "只靠拉起、没有任务的成员会一直空闲。"
+            "确认目标全部达成后，再汇总团队执行结果，向用户交付最终结论。"
             "无需向成员发送收尾或待命通知——它们没有新任务时会自动待命，广播只会把每个成员各唤醒一轮。"
         ),
         "scheduler.inspector_avg_line": (
@@ -269,11 +273,15 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         # agent/dispatcher.py — idle-agent nudges
         "dispatcher.all_done_persistent": (
-            "所有任务已完成。请汇总本轮工作成果。团队继续保持运行，等待新的任务指令。"
+            "任务看板上已没有未完成的任务。这只表示看板清空，不代表目标已经达成。"
+            "先对照用户目标检查是否还有剩余工作：有就用 create_task 建任务；"
+            "确认目标全部达成后，再汇总本轮工作成果。团队继续保持运行，等待新的任务指令。"
             "无需向成员发送收尾或待命通知——它们没有新任务时会自动待命，广播只会把每个成员各唤醒一轮。"
         ),
         "dispatcher.all_done_temporary": (
-            "所有任务已完成。请汇总团队工作成果，"
+            "任务看板上已没有未完成的任务。这只表示看板清空，不代表目标已经达成。"
+            "先对照用户目标检查是否还有剩余工作：有就用 create_task 建任务；"
+            "确认目标全部达成后，再汇总团队工作成果，"
             "然后依次调用 shutdown_member 关闭所有成员，"
             "等待所有成员状态转为 shutdown 后，"
             "调用 clean_team 解散团队。"
@@ -689,7 +697,12 @@ STRINGS: dict[str, dict[str, str]] = {
             "the task via update_task."
         ),
         "scheduler.leader_all_done": (
-            "[Scheduler] Every task on the board is terminal ({count} task(s) total). Summarize "
+            "[Scheduler] No task on the board is open any more ({count} task(s) total). An empty board does "
+            "not mean the goal is reached. First check the user's goal for remaining work (a rework, another "
+            "review or verification round, the next phase): if any is left, open it with create_task. "
+            "send_message or starting a member does not put the work on the board: the scheduler cannot see "
+            "it, dispatches no review for it and will not tell you when it finishes, and a member started "
+            "without a task stays idle. Once the goal is fully reached, summarize "
             "the team's results and deliver the final conclusion to the user. Do not send members a wrap-up "
             "or stand-by notice — they idle on their own when there is no new work, and a broadcast only wakes "
             "each of them for a round."
@@ -723,13 +736,17 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         # agent/dispatcher.py — idle-agent nudges
         "dispatcher.all_done_persistent": (
-            "All tasks are complete. Please summarize this round's results. "
+            "No task on the board is open any more. An empty board does not mean the goal is reached. "
+            "First check the user's goal for remaining work: if any is left, open it with create_task. "
+            "Once the goal is fully reached, summarize this round's results. "
             "The team remains running and awaits new task instructions. "
             "Do not send members a wrap-up or stand-by notice — they idle on their own when there is no "
             "new work, and a broadcast only wakes each of them for a round."
         ),
         "dispatcher.all_done_temporary": (
-            "All tasks are complete. Summarize the team's work, "
+            "No task on the board is open any more. An empty board does not mean the goal is reached. "
+            "First check the user's goal for remaining work: if any is left, open it with create_task. "
+            "Once the goal is fully reached, summarize the team's work, "
             "then call shutdown_member for each member in turn, "
             "wait until all members reach status shutdown, "
             "and finally call clean_team to disband the team."

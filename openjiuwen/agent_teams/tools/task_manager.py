@@ -1553,6 +1553,15 @@ class TeamTaskManager:
         """Non-terminal task count per assignee (absent = none open). See F_118."""
         return await self.db.task.open_task_counts_by_assignee(self.team_name)
 
+    async def board_counts(self) -> tuple[int, int]:
+        """``(total, non_terminal)`` task counts for the board, in one aggregate query. See B_09."""
+        return await self.db.task.count_tasks_terminality(self.team_name)
+
+    async def has_open_tasks(self) -> bool:
+        """Whether any task on the board is non-terminal. See B_09."""
+        _, non_terminal = await self.board_counts()
+        return non_terminal > 0
+
     async def get_tasks_by_assignee(self, member_name: str, status: Optional[str] = None) -> List[TeamTaskBase]:
         """Get tasks assigned to a specific member
 

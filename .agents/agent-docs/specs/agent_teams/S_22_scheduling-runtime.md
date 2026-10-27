@@ -20,8 +20,8 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/agent/scheduling/` |
-| 最近一次修订日期 | 2026-10-25 |
-| 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接）、`F_129_task-revision-and-staleness.md`（第五个幂等扫描：把修改后的最新内容推给没看到的执行者、挂起父任务的子任务复核；调度模式编辑不再走事件 steer） |
+| 最近一次修订日期 | 2026-10-27 |
+| 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接）、`B_09_all-done-prompt-stalls-remaining-work.md`（收尾文案不再暗示工作已结束；看板重新出现未终结任务时复位 `_all_done_announced`）、`F_129_task-revision-and-staleness.md`（第五个幂等扫描：把修改后的最新内容推给没看到的执行者、挂起父任务的子任务复核；调度模式编辑不再走事件 steer） |
 
 ## 范围 / 边界
 
@@ -180,7 +180,7 @@ kernel 侧：
 ## 数据结构
 
 - 票表 / `review_round` / `max_review_rounds` / `team_info` 能力列：见 `S_12`。
-- 调度器内存记账：`_review_dispatched: set[(task_id, round)]`、`_renudged_at: dict[(task_id, round), ms]`、`_escalated: set[(task_id, round)]`、`_digested_tasks: set[task_id]`、`_all_done_announced: bool`、`_review_feedback_dispatched: set[(task_id, round)]`、`_review_feedback_tasks: set[asyncio.Task]`、`_team_review_feedback_dispatched: bool`。其中团队终态 callback 标记在 `activate()` 复位；失败轮次去重随 scheduler 实例生命周期保留。`_all_done_announced` 只发一次在开放成员子任务（F_128）后仍然成立：成员只能在持有 `IN_PROGRESS` 父任务时建子任务，父任务未终态则看板不可能已清空，子任务不会出现在收尾之后。
+- 调度器内存记账：`_review_dispatched: set[(task_id, round)]`、`_renudged_at: dict[(task_id, round), ms]`、`_escalated: set[(task_id, round)]`、`_digested_tasks: set[task_id]`、`_all_done_announced: bool`、`_review_feedback_dispatched: set[(task_id, round)]`、`_review_feedback_tasks: set[asyncio.Task]`、`_team_review_feedback_dispatched: bool`。其中团队终态 callback 标记在 `activate()` 复位；失败轮次去重随 scheduler 实例生命周期保留。`_all_done_announced` 保证每次看板清空只收尾一次，而不是整个生命周期只收尾一次（B_09）：除 `activate()` 外，每次扫描开头在标志为真时读一次看板，有非 `COMPLETED` / `CANCELLED` 的任务就复位，leader 在收尾之后建的任务全部完成时会再收尾一次。`TASK_LIST_DRAINED` 收尾前同样复查看板：事件晚到、看板已有未终结任务时不发收尾，也不触发团队终态 review feedback。两条收尾入口（终态摘要、清空事件）与复位都用 `TeamTaskManager.board_counts()` / `has_open_tasks()`（DAO `count_tasks_terminality` 的同一聚合 COUNT）判定看板。成员子任务（F_128）不会触发复位：成员只能在持有 `IN_PROGRESS` 父任务时建子任务，父任务未终态则看板不可能已清空。
 
 ## 消息面
 

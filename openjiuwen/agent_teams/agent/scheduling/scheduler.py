@@ -218,6 +218,7 @@ class TeamScheduler:
         task_manager = self._infra.task_manager
         if task_manager is None:
             return
+        await self._rearm_all_done(task_manager)
         for _ in range(_MAX_SCAN_PASSES):
             acted = await self._reconcile_starts(task_manager)
             acted = await self._reconcile_handoffs(task_manager) or acted
@@ -226,6 +227,21 @@ class TeamScheduler:
             acted = await self._reconcile_revisions(task_manager) or acted
             if not acted:
                 return
+
+    async def _rearm_all_done(self, task_manager) -> None:
+        """Re-arm the wrap-up once the board holds open work again.
+
+        A drained board is not a finished goal: the leader may open a rework
+        or a new review round after the wrap-up. Those tasks must drain into
+        a wrap-up of their own, so any non-terminal task clears the
+        once-only flag. The board is probed (one aggregate COUNT) only while
+        the flag is set.
+        """
+        if not self._all_done_announced:
+            return
+        if await task_manager.has_open_tasks():
+            self._all_done_announced = False
+            team_logger.info("[scheduler] board reopened after wrap-up, all-done re-armed")
 
     async def _reconcile_revisions(self, task_manager) -> bool:
         """Push an edited task's latest content to an executor that has not seen it (F_129).
@@ -938,21 +954,19 @@ class TeamScheduler:
         if task.task_id in self._digested_tasks:
             return
         self._digested_tasks.add(task.task_id)
-        tasks = await task_manager.list_tasks(with_content=False)
-        terminal = (TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value)
-        remaining = sum(1 for row in tasks if row.status not in terminal)
+        total, remaining = await task_manager.board_counts()
         if not getattr(task, "parent_task_id", None):
             await self._host.deliver_input(
                 render.render_leader_task_done(task, verified=verified),
                 use_steer=False,
             )
-        if remaining == 0 and tasks and not self._all_done_announced:
+        if remaining == 0 and total and not self._all_done_announced:
             self._all_done_announced = True
             await self._host.deliver_input(
-                render.render_leader_all_done(len(tasks)),
+                render.render_leader_all_done(total),
                 use_steer=False,
             )
-        if remaining == 0 and tasks:
+        if remaining == 0 and total:
             await self._dispatch_team_review_feedback()
 
     async def _digest_completion(self, event: EventMessage, *, verified: bool) -> None:
@@ -978,8 +992,19 @@ class TeamScheduler:
         await self._digest_task_done(task_manager, task, verified=verified)
 
     async def _announce_all_done(self, event: EventMessage) -> None:
-        """Inject the final all-terminal digest into the leader, once."""
+        """Inject the final all-terminal digest into the leader, once.
+
+        The drained event can reach the bus loop after the leader has already
+        opened new work; the board is re-checked so a stale event never tells
+        the leader an open board is empty (B_09). The check runs before the
+        flag test on purpose: right after a reopen the flag can still be set
+        until the next scan re-arms it, and a stale event in that window must
+        not reach the once-only team review feedback either.
+        """
         payload = event.get_payload()
+        task_manager = self._infra.task_manager
+        if task_manager is not None and await task_manager.has_open_tasks():
+            return
         if not self._all_done_announced:
             self._all_done_announced = True
             await self._host.deliver_input(

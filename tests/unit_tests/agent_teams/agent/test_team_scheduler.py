@@ -560,6 +560,72 @@ async def test_task_list_drained_announces_once(db, bus):
     assert len(host.leader_inputs) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_board_reopened_after_wrap_up_announces_again(db, bus):
+    """Work opened after the wrap-up drains into a wrap-up of its own."""
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await tm.add_graph([TaskGraphSpec(title="one", content="c", task_id="a", assignee="dev-1")])
+    await scheduler.activate()
+    author = _reviewer_mgr(db, bus, "dev-1")
+    assert (await author.complete("a")).ok
+    await scheduler.on_event(EventMessage.from_event(TaskCompletedEvent(team_name=TEAM, task_id="a", member_name="dev-1")))
+
+    # A rework opened after the wrap-up: the scan sees open work again.
+    await tm.add_graph([TaskGraphSpec(title="rework", content="c", task_id="b", assignee="dev-1")])
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+    assert (await author.complete("b")).ok
+    await scheduler.on_event(EventMessage.from_event(TaskCompletedEvent(team_name=TEAM, task_id="b", member_name="dev-1")))
+
+    from openjiuwen.agent_teams.agent.scheduling import render
+
+    wrap_ups = [
+        text
+        for text in host.leader_inputs
+        if text in (render.render_leader_all_done(1), render.render_leader_all_done(2))
+    ]
+    assert wrap_ups == [render.render_leader_all_done(1), render.render_leader_all_done(2)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_scan_on_a_drained_board_keeps_the_wrap_up_once(db, bus):
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await tm.add_graph([TaskGraphSpec(title="one", content="c", task_id="a", assignee="dev-1")])
+    await scheduler.activate()
+    author = _reviewer_mgr(db, bus, "dev-1")
+    assert (await author.complete("a")).ok
+    await scheduler.on_event(EventMessage.from_event(TaskCompletedEvent(team_name=TEAM, task_id="a", member_name="dev-1")))
+    count = len(host.leader_inputs)
+
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+    await scheduler.on_event(EventMessage.from_event(TaskListDrainedEvent(team_name=TEAM, task_count=1)))
+
+    assert len(host.leader_inputs) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_late_drained_event_on_a_reopened_board_sends_no_wrap_up(db, bus):
+    """A drained event processed after the leader opened new work is stale."""
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await scheduler.activate()
+    await tm.add_graph([TaskGraphSpec(title="rework", content="c", task_id="b", assignee="dev-1")])
+
+    await scheduler.on_event(EventMessage.from_event(TaskListDrainedEvent(team_name=TEAM, task_count=1)))
+
+    from openjiuwen.agent_teams.agent.scheduling import render
+
+    wrap_up = render.render_leader_all_done(1)
+    assert wrap_up not in host.leader_inputs
+
+    # The stale event must not consume the wrap-up: b still drains into one.
+    author = _reviewer_mgr(db, bus, "dev-1")
+    assert (await author.complete("b")).ok
+    await scheduler.on_event(EventMessage.from_event(TaskCompletedEvent(team_name=TEAM, task_id="b", member_name="dev-1")))
+    assert host.leader_inputs.count(wrap_up) == 1
+
+
 # ---------------------------------------------------------------------------
 # settle_review_tally — pure math (F_73)
 # ---------------------------------------------------------------------------

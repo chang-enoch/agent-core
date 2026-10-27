@@ -14,7 +14,7 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 
 ## 核心不变量
 
-1. **调度器不理解事件，只理解看板。** 任何触发（task/member transport 事件、`POLL_TASK`、`SCHEDULER_SCAN` 回声、激活）都跑同一组五个幂等扫描；恢复 = 激活扫描本身，无独立恢复路径。事件仅有两个例外职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次，扫描推不出"刚刚发生"）。
+1. **调度器不理解事件，只理解看板。** 任何触发（task/member transport 事件、`POLL_TASK`、`SCHEDULER_SCAN` 回声、激活）都跑同一组五个幂等扫描；恢复 = 激活扫描本身，无独立恢复路径。事件仅有两个例外职责：终态摘要与 `TASK_LIST_DRAINED` 收尾（事件只发一次，扫描推不出"刚刚发生"）。收尾标志在扫描看到看板又有未终结任务时复位，所以是"每次看板清空收尾一次"，不是整个生命周期一次；清空事件晚到、看板已有未终结任务时不发收尾（B_09）。
 2. **交接 = leader 身份邮箱消息，投递即启动。** `_send_as_leader` 先落邮箱行（持久，离线成员首次 sweep 补投）再 `host.auto_start_member`（复用 `UNSTARTED→STARTING` CAS，幂等）。成员在线与否**不是**开工前置条件，调度器不做在线过滤。
 3. **发送存意图，投递才成文（F_63）。** 邮箱行的 `content` 恒空，`meta` 带模板 key + `refs`；文案由 `message_template.expand_message` 在**投递时刻**按收件人语言渲染，`{{task.*}}` 取的是**当时**的任务行——所以队列里躺了很久的交接不会投出过期的任务简报，leader 中途 `update_task` 也立刻对未投递消息生效。能表查的一律进 `refs` 现查；`params` 只放表答不出的瞬时值（某轮 fail feedback 聚合、解析后的轮数上限）。**不要**为了"省一次查询"把任务正文快照进消息。
 4. **`SchedulerHost.deliver_input` 只准注入 leader 自身**（终态摘要 / 升级 / 收尾），对成员永不直投。
