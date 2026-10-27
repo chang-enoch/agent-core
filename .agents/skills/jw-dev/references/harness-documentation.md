@@ -1,6 +1,6 @@
 # Harness 开发文档约定
 
-原规则迁自 `openjiuwen/harness/docs/AGENTS.md`。Harness 的长期文档位于仓库根 `.agents/agent-docs/specs/harness/` 与 `.agents/agent-docs/features/harness/`；代码看 `git log` / 模块内 AGENTS.md。
+原规则迁自 `openjiuwen/harness/docs/AGENTS.md`。Harness 的长期文档位于仓库根 `.agents/agent-docs/specs/harness/` 与 `.agents/agent-docs/features/`；代码看 `git log` / 模块内 AGENTS.md。
 
 ## 目录用途
 
@@ -14,7 +14,7 @@
 ## 命名与位置
 
 - spec：`.agents/agent-docs/specs/harness/S_NN_<slug>.md`，沿用已有编号；新增时取历史最大已用编号加一，不复用旧号。
-- feature：`.agents/agent-docs/features/harness/F_YYYYMMDD_HHMM_<slug>.md`，时间采用 Asia/Singapore，精确到分钟。
+- feature：`.agents/agent-docs/features/F_YYYYMMDD_HHMM_<slug>.md`，时间采用 Asia/Singapore，精确到分钟。
 - slug 使用小写英文与短横线，创建后标识不变；完整名称重名时确认是否同一记录，否则细化主题，不能覆盖。
 - 已有文件不重命名。修订 spec 更新最近修订日期，feature 记录归档日期；不分配新的 feature 递增号。
 
@@ -60,3 +60,15 @@
 - **N 多个小 feature 文档**：一次连贯的设计变动归档为**一份** feature 文档，不要拆碎。
 - **在元信息里写 commit hash**：spec / feature 元信息只写日期（`YYYY-MM-DD`）。
 
+
+## 决策与行为证据
+
+决策续写/替代按 [决策归属](../../jw-design/references/decision-records.md) 维护；本模块既有 spec/feature 归档与提交组织要求继续适用。
+按 [行为证据](behavior-evidence.md) 验证实际公开构造、manifest 装配、Rail 回调/热更新与受影响的 provider/adapter 路径；
+仅手工实例化 Rail 或绕过工厂的内部测试不能证明集成可用。模型可见内容从实际请求/工具结果核对，文件/进程副作用独立读取。
+影响到下游宿主时记录实际验证的版本与消费者，仓内测试不能证明所有应用渠道已通过。
+有证据支持的故障类别按 [防错模式](defensive-patterns.md) 更新本模块 AGENTS/spec，避免把某个 Rail 的异常或清理语义扩展到全部框架。
+
+按 [上下文与流程](context-and-flows.md) 区分实际框架执行、宿主策略与下游可见结果，
+沿公开装配、运行状态、事件/结果和 checkpoint/恢复说明状态权威及消费者；本次核对不到的下游版本单列待核实。
+验证后只同步相关模块 AGENTS/spec 和已有分析资料，不把局部库测试扩写为所有宿主的通过结论。
