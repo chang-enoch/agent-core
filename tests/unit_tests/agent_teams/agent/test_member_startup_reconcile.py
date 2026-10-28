@@ -40,7 +40,7 @@ def _spawning_backend(agent: TeamAgent, **extra) -> SimpleNamespace:
         await on_created(member_name)
         return True
 
-    async def startup(on_created) -> list[str]:
+    async def startup(on_created, *, include_idle_task_scoped: bool = False) -> list[str]:
         started = []
         for member_name in ("dev-1", "dev-2"):
             await on_created(member_name)

@@ -1901,6 +1901,10 @@ class TeamAgent(BaseAgent):
     async def auto_start_all(self) -> list[str]:
         """Start all UNSTARTED members via TeamBackend.startup.
 
+        Only the interact broadcast (``@all`` / untargeted operator message)
+        calls this, so task-scoped members with no open task are started too:
+        the broadcast is addressed to them as well.
+
         Best-effort: failure is logged but does not raise.
         Returns list of member names that were started.
         """
@@ -1908,7 +1912,7 @@ class TeamAgent(BaseAgent):
         if backend is None or not backend.is_leader:
             return []
         try:
-            started = await backend.startup(on_created=self._start_teammate_runtime)
+            started = await backend.startup(on_created=self._start_teammate_runtime, include_idle_task_scoped=True)
             if started:
                 team_logger.info("Auto-started members via interact broadcast: {}", started)
             return started

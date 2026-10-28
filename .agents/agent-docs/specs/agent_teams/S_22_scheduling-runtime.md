@@ -20,8 +20,8 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/agent/scheduling/` |
-| 最近一次修订日期 | 2026-10-27 |
-| 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接）、`B_09_all-done-prompt-stalls-remaining-work.md`（收尾文案不再暗示工作已结束；看板重新出现未终结任务时复位 `_all_done_announced`）、`F_129_task-revision-and-staleness.md`（第五个幂等扫描：把修改后的最新内容推给没看到的执行者、挂起父任务的子任务复核；调度模式编辑不再走事件 steer） |
+| 最近一次修订日期 | 2026-10-28 |
+| 关联 feature | `F_62_scheduled-dispatch-runtime-and-review-voting.md`、`F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）、`F_65_runtime-idle-clock-stall-nudge.md`（自主模式改用 idle 时钟后，本模式 stale 计时的钉住策略与遗留）、`F_73_reviewer-feedback-skill-evolution-boundaries.md`（失败 feedback 与团队终态的可选宿主 callback）、`F_118_task-scoped-member-lifetime.md`（第三个幂等扫描：任务内联成员的退场请求；交接消息的上下游简述）、`F_119_scheduled-completion-handoff-via-note.md`（完成交接改走任务行 `summary` / `note`、leader 摘要带完成摘要、验收通过延迟告知）、`F_122_framework-bootstrapped-generic-team.md`（框架建队：第三个激活来源）、`F_128_scheduled-member-subtasks.md`（成员子任务：父任务恢复交接与开工优先、子任务不发 leader 终态摘要）；bugfix `B_06_scheduled-reassign-active-task-handoff-gap.md`（第四个幂等扫描：改派活跃任务后给新 owner 补发开工交接）、`B_09_all-done-prompt-stalls-remaining-work.md`（收尾文案不再暗示工作已结束；看板重新出现未终结任务时复位 `_all_done_announced`）、`F_129_task-revision-and-staleness.md`（第五个幂等扫描：把修改后的最新内容推给没看到的执行者、挂起父任务的子任务复核；调度模式编辑不再走事件 steer）、`B_10_task-assigned-to-retired-member-stalls.md`（开工 / 交接补发扫描跳过已退役负责人；任务级负责人的搁浅任务升级 leader） |
 
 ## 范围 / 边界
 
@@ -54,7 +54,7 @@ author_email: chengshuo5@huawei.com
 10. **投票判定策略在调度器，票据事实在 DB**：`verify_task`（scheduled 团队）只追加票行 + 发 `TASK_REVIEW_VOTE`，不翻转状态；autonomous 团队维持首裁即决。工具描述随语义分离（desc_key：`verify_task` / `verify_task_scheduled`）。策略更换 = 替换 `verdict.judge`，不碰票表与状态机。
 11. **leader 自发事件经 `SCHEDULER_SCAN` 回声可见**：`kernel._filter_self` 丢弃 self 事件时，若调度器激活且事件是 `task_*`，改投 `InnerEventType.SCHEDULER_SCAN`。coordination 无 handler 监听该 inner 事件；调度器视其为纯扫描提示。
 12. **异常语义**：`TeamScheduler.on_event` 吞普通异常（log + 下次触发重试幂等扫描），绝不让 bus loop 挂掉——与 `AsyncCallbackFramework.trigger` 的 swallow 语义对齐。
-13. **内存记账不持久化**：送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对（`_handoff_known`）/ 已推送版本（`_revision_pushed`）都是进程内状态；leader 重启最坏重发一次送审或升级、每个活跃任务多读一次邮箱。看板真相只在 DB，交接真相在邮箱。
+13. **内存记账不持久化**：送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对（`_handoff_known`）/ 已推送版本（`_revision_pushed`）/ 搁浅已升级对（`_stranded_escalated`）都是进程内状态；leader 重启最坏重发一次送审或升级、每个活跃任务多读一次邮箱。看板真相只在 DB，交接真相在邮箱。
 14. **各分发模式拥有自己的 task-board / stale handler 类，选择只发生在装配点**：
     `ScheduledTaskBoardHandler` / `ScheduledStaleTaskHandler` 是调度模式的 task-board / stale
     handler（verify 闸三事件与 `TASK_REVIEW_VOTE` 一律路由到 resume_polls-only 的
@@ -106,13 +106,29 @@ author_email: chengshuo5@huawei.com
 
 19. **修改推送扫描：执行者一定能拿到任务的最新版本**（F_129）。任务每次改标题 / 内容 `revision` 加一，
     `observed_revision` 是当前执行者**确实被展示过**的版本（邮件投递渲染时推进，见 `S_12`）。
-    `_reconcile_revisions` 与其余四个扫描并列，只读一次窄投影 `unseen_revisions()`（有执行者、未终态、
+    `_reconcile_revisions` 与其余扫描并列，只读一次窄投影 `unseen_revisions()`（有执行者、未终态、
     `revision > observed_revision`）：`PLANNING` / `IN_PROGRESS` → `_send_as_leader(owner, meta_task_revised)`
     推送最新完整内容；`BLOCKED` 且 `resume_pending`（挂起中的父任务）→ `meta_subtask_review` 请它复核过期子任务；
     其余（`PENDING` / 普通 `BLOCKED`）不发——开工交接投递时本来就渲染最新版本。投递即推进 `observed_revision`，
     条件随之消失，连改多次只发一封、内容是最终版本。进程内 `_revision_pushed`（`(task_id, revision)`）只防投递前
     重发；开工 / 恢复交接发出时同样记账，避免同一扫描里再补一封修改推送。邮件持久、懒启动收件人，离线成员与
     整队重启都由既有机制覆盖。调度器不消费 `TASK_UPDATED` 本身：编辑的 self 回声只是一次扫描提示。
+
+20. **已退役负责人的任务不开工、不补发；意外搁浅的交给 leader**（B_10）。`SHUTDOWN` 是永久退场，任何拉起
+    路径都不复活它（`startup_member` 只认 `UNSTARTED`，`recover_member` 只认 `ERROR` / `DORMANT`），负责人
+    也就没有运行时去跑自己的 stale 自催（不变量 14 的调度类 handler 只在成员自己身上）。每次扫描在多遍
+    循环之前取一次 `TeamBackend.list_retired_members()`（`SHUTDOWN` 成员 → `lifetime` 的窄投影，DAO
+    `list_shutdown_members`），开工扫描与交接补发扫描在各自遍历到这些负责人的任务时经
+    `_skip_retired_owner` 跳过：`PENDING` 任务保持 `PENDING`（改派后开工扫描照常接手），活跃任务不补发。
+    是否告诉 leader 看负责人怎么离开的：**任务级成员**（`lifetime` 非空）只会在名下无未结束任务时被退场扫描
+    回收（不变量 17），它名下再出现未结束任务只可能是离开之后才交给它的，按 `(task_id, owner)` 向 leader
+    `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`（改派形成新键；进程内
+    `_stranded_escalated` 不持久化，重启后每个仍搁浅的任务至多再提醒一次）；**常驻成员**只会经 leader 自己的
+    `shutdown_member` 离开，那个工具的约定是遗留任务由 leader 处置，所以只跳过不升级——临时团队收尾时先关停
+    成员再 `clean_team` 也不会被提醒打扰。`IN_REVIEW` 不在两个扫描的遍历范围内——验收由 reviewer 推进，返工
+    回到 `IN_PROGRESS` 后再接住。`DORMANT` 不算退役：交接经 `auto_start_member` 唤醒它（不变量 17）。源头
+    另有一道闸：`create_task` / `update_task` 的指派校验拒绝 `SHUTDOWN` 与将落定为 `SHUTDOWN` 的
+    `SHUTDOWN_REQUESTED` 负责人（`S_08` 不变量 23）。
 
 ## 接口契约
 

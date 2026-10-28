@@ -234,6 +234,11 @@ STRINGS: dict[str, dict[str, str]] = {
             "已投票 {voted}；未投票 {pending}。任务停在 in_review。"
             "可用 send_message 催促验证者，或 update_task 调整验证者/处置任务。"
         ),
+        "scheduler.leader_escalation_retired_owner": (
+            "[调度器·需你处置] 任务 [{task_id}]「{title}」的承担者 {owner} 已退出团队（shut_down），"
+            "无法再被拉起，任务停在 {status}，没有人在做。"
+            "请用 spawn_teammate / spawn_expert 新建成员后 update_task 改派，或改派给其他在队成员，或取消该任务。"
+        ),
         "scheduler.leader_all_done": (
             "[调度器] 任务看板上已没有未终结的任务（共 {count} 个任务）。这只表示看板清空，不代表目标已经达成。"
             "先对照用户目标检查是否还有剩余工作（返工、新一轮检视或验证、下一阶段等）：有就用 create_task 建任务。"
@@ -695,6 +700,12 @@ STRINGS: dict[str, dict[str, str]] = {
             "stalled for over {minutes} minute(s): voted {voted}; pending {pending}. The task "
             "stays in_review. Nudge the reviewers via send_message, or adjust reviewers / settle "
             "the task via update_task."
+        ),
+        "scheduler.leader_escalation_retired_owner": (
+            "[Scheduler · Action Needed] Task [{task_id}] \"{title}\" is assigned to {owner}, who has "
+            "left the team (shut_down) and cannot be started again; the task stays {status} with nobody "
+            "working on it. Spawn a new member with spawn_teammate / spawn_expert and reassign the task "
+            "via update_task, reassign it to another live member, or cancel it."
         ),
         "scheduler.leader_all_done": (
             "[Scheduler] No task on the board is open any more ({count} task(s) total). An empty board does "

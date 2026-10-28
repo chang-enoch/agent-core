@@ -129,6 +129,11 @@ def _build_scheduler(
     )
     spec.agents = None
     infra.team_backend = AsyncMock(team_name=TEAM)
+
+    async def _retired_members() -> dict[str, str | None]:
+        return await db.member.list_shutdown_members(TEAM)
+
+    infra.team_backend.list_retired_members = AsyncMock(side_effect=_retired_members)
     blueprint = SimpleNamespace(spec=spec, team_name=TEAM)
     host = FakeHost()
     if review_feedback_rail is not None:
@@ -877,6 +882,106 @@ async def test_handoff_to_dormant_member_wakes_it_through_auto_start(db, bus):
 
     assert (await tm.get("z")).status == TaskStatus.IN_PROGRESS.value
     assert host.started_members == ["dev-1"]
+
+
+# ---------------------------------------------------------------------------
+# Stranded tasks: open work owned by a member that has shut down
+# ---------------------------------------------------------------------------
+
+
+async def _shut_down(db, member_name: str, *, lifetime: str | None = "shutdown") -> None:
+    """Force ``member_name`` to SHUTDOWN, task-scoped unless ``lifetime`` is None.
+
+    The fixture seeds a non-canonical "READY", so no CAS path applies.
+    """
+    from openjiuwen.agent_teams.tools.models import TeamMember
+
+    options = json.dumps({"lifetime": lifetime}) if lifetime else None
+    async with db.session_local() as session:
+        await session.execute(
+            update(TeamMember)
+            .where(TeamMember.team_name == TEAM, TeamMember.member_name == member_name)
+            .values(status=MemberStatus.SHUTDOWN.value, options=options)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_pending_task_of_shut_down_owner_is_not_started_and_escalated_once(db, bus):
+    """No startup path brings a SHUTDOWN owner back: keep the task PENDING and tell the leader once."""
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await _shut_down(db, "dev-1")
+    await tm.add_graph([TaskGraphSpec(title="orphan", content="c", task_id="a", assignee="dev-1")])
+
+    await scheduler.activate()
+    for _ in range(2):
+        await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+
+    assert (await tm.get("a")).status == TaskStatus.PENDING.value
+    assert _dm_targets(mm) == []
+    assert host.started_members == []
+    assert len(host.leader_inputs) == 1
+    assert "[a]" in host.leader_inputs[0] and "dev-1" in host.leader_inputs[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_open_tasks_of_a_resident_member_the_leader_shut_down_are_not_escalated(db, bus):
+    """The leader's own shutdown_member leaves leftovers to the leader: skip, but stay quiet."""
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await tm.add_graph(
+        [
+            TaskGraphSpec(title="one", content="c", task_id="a", assignee="dev-1"),
+            TaskGraphSpec(title="two", content="c", task_id="b", assignee="dev-1"),
+        ]
+    )
+    await scheduler.activate()
+    host.leader_inputs.clear()
+
+    await _shut_down(db, "dev-1", lifetime=None)
+    scheduler._handoff_known.clear()
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+
+    assert (await tm.get("b")).status == TaskStatus.PENDING.value
+    assert [target for target, _ in _dm_targets(mm)] == ["dev-1"]
+    assert host.leader_inputs == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_reassigning_stranded_task_to_a_live_member_starts_it(db, bus):
+    """Once the leader reassigns, the start scan picks the task up for the new owner."""
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await _shut_down(db, "dev-1")
+    await tm.add_graph([TaskGraphSpec(title="orphan", content="c", task_id="a", assignee="dev-1")])
+    await scheduler.activate()
+
+    assert (await tm.reassign("a", "dev-2")).ok
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+
+    assert (await tm.get("a")).status == TaskStatus.IN_PROGRESS.value
+    assert _dm_targets(mm) == [("dev-2", {"template": "scheduler_task_start", "refs": {"task": "a"}})]
+    assert host.started_members == ["dev-2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_active_task_of_shut_down_owner_gets_no_handoff_and_is_escalated(db, bus):
+    """An IN_PROGRESS task whose owner shut down mid-way is surfaced to the leader, not re-handed."""
+    scheduler, host, mm, tm = _build_scheduler(db, bus)
+    await tm.add_graph([TaskGraphSpec(title="one", content="c", task_id="a", assignee="dev-1")])
+    await scheduler.activate()
+    assert (await tm.get("a")).status == TaskStatus.IN_PROGRESS.value
+    host.leader_inputs.clear()
+
+    await _shut_down(db, "dev-1")
+    scheduler._handoff_known.clear()  # a restarted leader re-learns handoffs from the mailbox
+    await scheduler.on_event(InnerEventMessage(event_type=InnerEventType.SCHEDULER_SCAN))
+
+    assert [target for target, _ in _dm_targets(mm)] == ["dev-1"]
+    assert len(host.leader_inputs) == 1
+    assert "dev-1" in host.leader_inputs[0]
 
 
 # ---------------------------------------------------------------------------

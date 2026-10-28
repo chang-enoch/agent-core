@@ -980,29 +980,52 @@ class TeamBackend:
     async def startup(
         self,
         on_created: Callable[[str], Awaitable[None]],
+        *,
+        include_idle_task_scoped: bool = False,
     ) -> list[str]:
-        """Start all unstarted members.
+        """Start all unstarted members that have something to do.
 
         Finds every member whose status is UNSTARTED and starts
         each via startup_member (which uses STARTING CAS guard).
         On spawn failure, startup_member rolls back STARTING→UNSTARTED
         and re-raises.
 
+        A task-scoped member (``options.lifetime`` set) with no open task
+        is left UNSTARTED: it exists only for its task, so starting it
+        with an empty board just runs one idle round before the scheduler
+        retires it — for ``lifetime="shutdown"`` for good, which strands
+        any task the leader hands it later. It stays assignable; the
+        scheduler's start handoff, or a message addressed to it
+        (``wake_member``), brings it up when there is work. A broadcast
+        addresses it too, so broadcast paths pass
+        ``include_idle_task_scoped=True``.
+
         Args:
             on_created: Callback that receives a member_name and
                 launches the corresponding agent process.
+            include_idle_task_scoped: Also start task-scoped members that
+                have no open task (the start is for a broadcast they must read).
 
         Returns:
             List of member_names that were started.
         """
+        from openjiuwen.agent_teams.tools.member_options import get_member_lifetime
+
         unstarted = await self.db.member.get_team_members(self.team_name, status=MemberStatus.UNSTARTED)
+        open_counts: dict[str, int] | None = None
         started: list[str] = []
         for member in unstarted:
+            if not include_idle_task_scoped and get_member_lifetime(member) is not None:
+                if open_counts is None:
+                    open_counts = await self.task_manager.open_task_counts_by_assignee()
+                if not open_counts.get(member.member_name):
+                    team_logger.debug("Skip starting task-scoped member {} with no open task", member.member_name)
+                    continue
             await self.startup_member(member.member_name, on_created)
             started.append(member.member_name)
         return started
 
-    async def autostart_unstarted(self) -> list[str]:
+    async def autostart_unstarted(self, *, include_idle_task_scoped: bool = False) -> list[str]:
         """Start every UNSTARTED member using the injected spawn callback.
 
         The shared entry point for the auto-start funnel: work that is about
@@ -1018,13 +1041,21 @@ class TeamBackend:
         repeated calls idempotent: whoever gets there second finds nothing in
         UNSTARTED and does nothing.
 
+        Args:
+            include_idle_task_scoped: Passed to ``startup``; broadcast paths set
+                it so task-scoped members with no open task still read the
+                broadcast.
+
         Returns:
             The member names started by this call; empty when there was
             nothing to start or this backend does not own spawning.
         """
         if not self.is_leader or self._on_member_started is None:
             return []
-        return await self.startup(on_created=self._on_member_started)
+        return await self.startup(
+            on_created=self._on_member_started,
+            include_idle_task_scoped=include_idle_task_scoped,
+        )
 
     async def wake_member(self, member_name: str) -> bool:
         """Bring up one named member so the message just addressed to it gets read.
@@ -1036,8 +1067,10 @@ class TeamBackend:
         recipients. A member that is already running is left alone after one
         status read, so the common case writes nothing.
 
-        Leader-only and callback-gated like ``autostart_unstarted``; the CAS in
-        ``startup_member`` / ``recover_member`` settles races with the other
+        Leader-only; each branch is gated on its own callback — starting needs
+        the spawn callback, recovering needs the restart callback. The status
+        is read once and handed to the recovery step; the CAS in
+        ``startup_member`` / ``_recover_from`` settles races with the other
         startup paths.
 
         Args:
@@ -1046,14 +1079,14 @@ class TeamBackend:
         Returns:
             True when this call started or recovered the member.
         """
-        if not self.is_leader or self._on_member_started is None:
+        if not self.is_leader:
             return False
         status = await self.get_member_status(member_name)
         if status == MemberStatus.UNSTARTED.value:
+            if self._on_member_started is None:
+                return False
             return await self.startup_member(member_name, self._on_member_started)
-        if status in {source.value for source in self._RECOVERABLE_STATUSES}:
-            return await self.recover_member(member_name)
-        return False
+        return await self._recover_from(member_name, status)
 
     async def startup_member(
         self,
@@ -1121,9 +1154,17 @@ class TeamBackend:
         """
         if not self.is_leader or self._on_member_restarted is None:
             return False
-
         current = await self.db.member.get_member_status(self.team_name, member_name)
-        if current is None:
+        return await self._recover_from(member_name, current)
+
+    async def _recover_from(self, member_name: str, current: str | None) -> bool:
+        """Claim ``member_name`` out of its already-read status ``current`` and restart it.
+
+        Shared by ``recover_member`` and ``wake_member`` so a caller that has
+        just read the status does not read it a second time. The CAS still
+        guards against the status having moved since that read.
+        """
+        if not self.is_leader or self._on_member_restarted is None or current is None:
             return False
         try:
             source = MemberStatus(current)
@@ -2657,6 +2698,16 @@ class TeamBackend:
     async def list_retirable_members(self) -> list[tuple[str, str, str]]:
         """``(member_name, status, lifetime)`` for live members carrying a retirement policy."""
         return await self.db.member.list_retirable_members(self.team_name)
+
+    async def list_retired_members(self) -> dict[str, str | None]:
+        """``member_name -> lifetime`` for members that left the team for good (``SHUTDOWN``).
+
+        No startup path brings a ``SHUTDOWN`` member back, so work still
+        assigned to one has nobody to run it until the leader reassigns it.
+        The lifetime (None = resident) lets the scheduler tell a task-scoped
+        member retired by policy from one the leader shut down on purpose.
+        """
+        return await self.db.member.list_shutdown_members(self.team_name)
 
     async def delete_unstarted_member(self, member_name: str) -> bool:
         """Roll back an inline member that never left UNSTARTED (F_118).

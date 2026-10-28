@@ -409,8 +409,14 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     `on_member_started` 回调并自带 leader 门与回调门，**调用方不再各自捎带 spawn 回调**；
     幂等由下层 `startup_member` 的 CAS 保证。
     单播/多播的具体收件人若是 `ERROR` 或 `DORMANT`（F_118），这次定向投递本身构成显式恢复 /
-    唤醒请求：写库前经 `recover_member` 的 `{ERROR, DORMANT}→RESTARTING` CAS 重建 runtime
-    （失败回滚到被认领时的原状态）；广播不批量恢复，避免一条泛化消息触发全队 restart storm，
+    唤醒请求：写库前经 `wake_member` → `recover_member` 的 `{ERROR, DORMANT}→RESTARTING` CAS 重建 runtime
+    （失败回滚到被认领时的原状态）；收件人若是被撒网拉起跳过的 UNSTARTED 任务级成员（B_10，见 `S_05`
+    不变量 1），同一个 `wake_member` 经 `startup_member` 拉起它。反方向的闸也在这里：把任务交给一个
+    `SHUTDOWN` 成员等于交给没人——`create_task` 的 `_validate_assignees` 与 `update_task` 改派在写库前
+    拒绝 `SHUTDOWN` 负责人，以及 lifetime 不是 `"dormant"`、因而会落定为 `SHUTDOWN` 的
+    `SHUTDOWN_REQUESTED` 负责人（共用 `_retired_assignee_error`），提示新建成员或改派；`DORMANT` 与
+    退向 `DORMANT` 的成员仍可指派。`update_task` 只在真的换人时检查（取消、或重复写当前负责人不算），
+    检查早于任何编辑落库，被拒时整次调用不留半截修改（B_10）；广播不批量恢复，避免一条泛化消息触发全队 restart storm，
     也**永远不唤醒休眠成员**。成员发出的消息（autonomous 成员与开启成员间通信的 scheduled 成员）
     工具侧拉不起人——成员 backend 没有 spawn 回调——由 leader 的 `MessageHandler._wake_peer_recipients`
     观察事件后按同一规则代为拉起（`TeamBackend.wake_member` / `autostart_unstarted`，F_126 后续修复），

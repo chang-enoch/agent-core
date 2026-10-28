@@ -31,12 +31,14 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 
 12. **修改以版本差为真相，调度器推送最新内容**（F_129）：`_reconcile_revisions` 读窄投影 `unseen_revisions()`（有执行者、未终态、`revision > observed_revision`），执行中任务发 `scheduler_task_revised`（修改说明 + 最新完整内容 + 长内容差异），挂起中的父任务发 `scheduler_subtask_review`（加子任务列表，过期标出），没开工的不发——开工交接本来就带最新版本。投递渲染即推进 `observed_revision`，条件自然消失；`_revision_pushed` 只防投递前重发，开工 / 恢复交接发出时也记一笔。调度器不消费 `TASK_UPDATED` 本身。
 
+13. **已退役负责人的任务不开工、不补发**（B_10）：`SHUTDOWN` 成员无法被任何路径拉起。每次扫描在多遍循环前取一次 `TeamBackend.list_retired_members()`（名字 → lifetime 的窄投影），开工与交接补发扫描经 `_skip_retired_owner` 跳过这些负责人的任务。负责人是任务级成员（`lifetime` 非空）时，按 `(task_id, owner)` 向 leader `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`——它只在名下清空时才会被退场，名下的未结束任务一定是离开后才交给它的；常驻成员只会被 leader 自己 `shutdown_member`，遗留任务归 leader 处置，不升级。`DORMANT` 不算退役。
+
 ## 生命周期（kernel 接线）
 
 - `CoordinationKernel.setup` 仅在 `spec.dispatch_mode == "scheduled"` 的 leader 上构造（休眠态）；其余 kernel 不构造。
 - 激活点两个：`notify_team_built()`（build_team 成功回调，先于任何 spawn / create_task）与 `kernel.start()`（team 行已存在——warm resume / 冷恢复）。
 - wake 路径：`kernel._build_wake_callback()` 组合 "coordination dispatch → scheduler.on_event"。
-- `pause()` / `stop()` 即 `deactivate()`；内存记账（送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对 / 已推送版本）不持久化——重启后最坏重发一次送审或升级、每个活跃任务多读一次邮箱，board 真相在 DB。
+- `pause()` / `stop()` 即 `deactivate()`；内存记账（送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对 / 已推送版本 / 搁浅已升级对）不持久化——重启后最坏重发一次送审或升级、每个活跃任务多读一次邮箱，board 真相在 DB。
 - task review feedback callback 不进入状态机关键路径；团队终态 callback 是旁路汇总边界，不改变
   all-done 摘要与 pause/stop 决策。
 
@@ -47,5 +49,5 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 设计上下文见 `.agents/agent-docs/features/agent_teams/F_62_scheduled-dispatch-runtime-and-review-voting.md`（调度器 + 投票）、
 `.agents/agent-docs/features/agent_teams/F_63_scheduler-message-templating-and-delivery-render.md`（交接消息的两阶段渲染）与
 `.agents/agent-docs/features/agent_teams/F_73_reviewer-feedback-skill-evolution-boundaries.md`（review feedback 外部接入边界）、
-`.agents/agent-docs/bugfix/agent_teams/B_06_scheduled-reassign-active-task-handoff-gap.md`（改派活跃任务的交接缺口）及
+`.agents/agent-docs/bugfix/agent_teams/B_06_scheduled-reassign-active-task-handoff-gap.md`（改派活跃任务的交接缺口）、`.agents/agent-docs/bugfix/agent_teams/B_10_task-assigned-to-retired-member-stalls.md`（任务派给已退役成员后无人执行）及
 `.agents/agent-docs/specs/agent_teams/S_22_scheduling-runtime.md`。

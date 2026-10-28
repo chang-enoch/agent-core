@@ -622,7 +622,7 @@ class MessageHandler(BaseCoordinationHandler):
             return
         try:
             if event.event_type == TeamEvent.BROADCAST:
-                started = await backend.autostart_unstarted()
+                started = await backend.autostart_unstarted(include_idle_task_scoped=True)
                 if started:
                     team_logger.info("Started members for a broadcast from {}: {}", sender, started)
                 return
