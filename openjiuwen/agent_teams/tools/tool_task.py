@@ -6,7 +6,7 @@
 from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.agent_teams.message_template import task_links, upstream_lines
-from openjiuwen.agent_teams.schema.status import MemberStatus, TaskStatus
+from openjiuwen.agent_teams.schema.status import MEMBER_DEPARTED_STATUSES, MemberStatus, TaskStatus
 from openjiuwen.agent_teams.schema.task import TaskGraphSpec
 from openjiuwen.agent_teams.timefmt import format_time_context
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
@@ -461,9 +461,9 @@ async def _validate_assignees(
 
     A ``SHUTDOWN`` member left the team for good: no startup path can bring
     it back, so a task handed to it would sit on the board with nobody to
-    work it; one still settling into ``SHUTDOWN`` is refused the same way
-    (see ``_retired_assignee_error``). A ``DORMANT`` member stays assignable
-    — the start handoff wakes it.
+    work it; one still shutting down is refused too (see
+    ``_retired_assignee_error``). A ``DORMANT`` member stays assignable — the
+    start handoff wakes it.
 
     Args:
         agent_team: Backend used for the leader lookup and the roster probe.
@@ -493,27 +493,27 @@ async def _validate_assignees(
         status = await agent_team.get_member_status(assignee)
         if status is None:
             return f"Task {_spec_label(spec)!r}: member {assignee!r} not found in the team"
-        error = await _retired_assignee_error(agent_team, _spec_label(spec), assignee, status)
+        error = _retired_assignee_error(_spec_label(spec), assignee, status)
         if error:
             return error
     return None
 
 
-async def _retired_assignee_error(
-    agent_team: TeamBackend,
-    label: str,
-    assignee: str,
-    status: str | None,
-) -> str | None:
-    """Refuse handing a task to a member that has left, or is leaving, for good.
+#: Persisted values of ``MEMBER_DEPARTED_STATUSES``; rows may hold strings no enum member matches.
+_DEPARTED_STATUS_VALUES = frozenset(status.value for status in MEMBER_DEPARTED_STATUSES)
 
-    ``SHUTDOWN`` is final: no startup path brings it back. ``SHUTDOWN_REQUESTED``
-    settles into ``SHUTDOWN`` unless the member's lifetime is ``"dormant"``
-    (then it settles ``DORMANT`` and the start handoff wakes it), so a task
-    accepted in that window would be started on a member that is about to go.
+
+def _retired_assignee_error(label: str, assignee: str, status: str | None) -> str | None:
+    """Refuse handing a task to a member that has left the team or is leaving it.
+
+    ``SHUTDOWN`` is final: no startup path brings it back. A member still
+    shutting down (``SHUTDOWN_REQUESTED``) is refused as well: it may settle
+    into ``SHUTDOWN`` — a leader force shutdown does so even for a
+    ``"dormant"`` lifetime — and a task accepted in that window would be
+    started on a member that is gone. One settling into ``DORMANT`` can take
+    the task once it has settled.
 
     Args:
-        agent_team: Backend used for the lifetime lookup of a settling member.
         label: Task label for the error message.
         assignee: The member the task would be handed to.
         status: ``assignee``'s current persisted status.
@@ -521,14 +521,16 @@ async def _retired_assignee_error(
     Returns:
         The error message, or None when the member can take the task.
     """
-    if status == MemberStatus.SHUTDOWN_REQUESTED.value:
-        if await agent_team.get_member_lifetime(assignee) == "dormant":
-            return None
-    elif status != MemberStatus.SHUTDOWN.value:
+    if status not in _DEPARTED_STATUS_VALUES:
         return None
+    if status == MemberStatus.SHUTDOWN.value:
+        return (
+            f"Task {label!r}: member {assignee!r} has shut down and cannot be started again; "
+            f"spawn a new member for this task or assign it to another live member"
+        )
     return (
-        f"Task {label!r}: member {assignee!r} has shut down (or is shutting down) and cannot be started again; "
-        f"spawn a new member for this task or assign it to another live member"
+        f"Task {label!r}: member {assignee!r} is shutting down; if it is settling into dormant, "
+        f"assign the task once it has settled, otherwise spawn a new member or assign it to another live member"
     )
 
 
@@ -1705,8 +1707,7 @@ class UpdateTaskTool(TeamTool):
         # half-applied update behind. Only a real hand-over is checked — a
         # cancel, or naming the current owner again, hands nothing to anyone.
         if assignee and assignee != task.assignee and status != "cancelled":
-            error = await _retired_assignee_error(
-                self.agent_team,
+            error = _retired_assignee_error(
                 task_id,
                 assignee,
                 await self.agent_team.get_member_status(assignee),

@@ -54,7 +54,7 @@ author_email: chengshuo5@huawei.com
 10. **投票判定策略在调度器，票据事实在 DB**：`verify_task`（scheduled 团队）只追加票行 + 发 `TASK_REVIEW_VOTE`，不翻转状态；autonomous 团队维持首裁即决。工具描述随语义分离（desc_key：`verify_task` / `verify_task_scheduled`）。策略更换 = 替换 `verdict.judge`，不碰票表与状态机。
 11. **leader 自发事件经 `SCHEDULER_SCAN` 回声可见**：`kernel._filter_self` 丢弃 self 事件时，若调度器激活且事件是 `task_*`，改投 `InnerEventType.SCHEDULER_SCAN`。coordination 无 handler 监听该 inner 事件；调度器视其为纯扫描提示。
 12. **异常语义**：`TeamScheduler.on_event` 吞普通异常（log + 下次触发重试幂等扫描），绝不让 bus loop 挂掉——与 `AsyncCallbackFramework.trigger` 的 swallow 语义对齐。
-13. **内存记账不持久化**：送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对（`_handoff_known`）/ 已推送版本（`_revision_pushed`）/ 搁浅已升级对（`_stranded_escalated`）都是进程内状态；leader 重启最坏重发一次送审或升级、每个活跃任务多读一次邮箱。看板真相只在 DB，交接真相在邮箱。
+13. **内存记账不持久化**：送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对（`_handoff_known`）/ 已推送版本（`_revision_pushed`）/ 按策略退场的成员（`_policy_retired`）/ 搁浅已升级对（`_stranded_escalated`）都是进程内状态；leader 重启最坏重发一次送审或升级、每个活跃任务多读一次邮箱，按策略退场者名下的搁浅任务不再提醒。看板真相只在 DB，交接真相在邮箱。
 14. **各分发模式拥有自己的 task-board / stale handler 类，选择只发生在装配点**：
     `ScheduledTaskBoardHandler` / `ScheduledStaleTaskHandler` 是调度模式的 task-board / stale
     handler（verify 闸三事件与 `TASK_REVIEW_VOTE` 一律路由到 resume_polls-only 的
@@ -117,18 +117,21 @@ author_email: chengshuo5@huawei.com
 20. **已退役负责人的任务不开工、不补发；意外搁浅的交给 leader**（B_10）。`SHUTDOWN` 是永久退场，任何拉起
     路径都不复活它（`startup_member` 只认 `UNSTARTED`，`recover_member` 只认 `ERROR` / `DORMANT`），负责人
     也就没有运行时去跑自己的 stale 自催（不变量 14 的调度类 handler 只在成员自己身上）。每次扫描在多遍
-    循环之前取一次 `TeamBackend.list_retired_members()`（`SHUTDOWN` 成员 → `lifetime` 的窄投影，DAO
+    循环之前取一次 `TeamBackend.list_retired_members()`（`SHUTDOWN` 成员名字的窄投影，DAO
     `list_shutdown_members`），开工扫描与交接补发扫描在各自遍历到这些负责人的任务时经
-    `_skip_retired_owner` 跳过：`PENDING` 任务保持 `PENDING`（改派后开工扫描照常接手），活跃任务不补发。
-    是否告诉 leader 看负责人怎么离开的：**任务级成员**（`lifetime` 非空）只会在名下无未结束任务时被退场扫描
-    回收（不变量 17），它名下再出现未结束任务只可能是离开之后才交给它的，按 `(task_id, owner)` 向 leader
-    `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`（改派形成新键；进程内
-    `_stranded_escalated` 不持久化，重启后每个仍搁浅的任务至多再提醒一次）；**常驻成员**只会经 leader 自己的
-    `shutdown_member` 离开，那个工具的约定是遗留任务由 leader 处置，所以只跳过不升级——临时团队收尾时先关停
-    成员再 `clean_team` 也不会被提醒打扰。`IN_REVIEW` 不在两个扫描的遍历范围内——验收由 reviewer 推进，返工
+    `_skip_retired_owner` 跳过：`PENDING` 任务保持 `PENDING`（改派后开工扫描照常接手），活跃任务不补发；
+    交接补发扫描先判退役、再查 `_handoff_known`，所以交接已落邮箱后才退役的负责人同样被接住。
+    是否告诉 leader 看是谁让负责人离开的：**调度器按策略退场**的（`_reconcile_retirements` 对
+    `lifetime="shutdown"` 成员的请求成功时记进进程内 `_policy_retired`）只会在名下无未结束任务时被回收
+    （不变量 17），它名下再出现未结束任务只可能是离开之后才交给它的，按 `(task_id, owner)` 向 leader
+    `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`；**leader 自己 `shutdown_member`** 的
+    （常驻成员，或被 leader 主动 / force 关停的任务级成员）遗留任务按该工具的约定归 leader 处置，只跳过不升级——
+    临时团队收尾时先关停成员再 `clean_team` 也不会被提醒打扰。退场原因不从 `lifetime` 推断：leader 也可能关停
+    任务级成员。`_policy_retired` 不持久化，leader 重启后这些成员名下的搁浅任务只跳过、不再提醒（源头校验已挡住
+    绝大多数情况）；`_stranded_escalated` 每次扫描结束时只保留本次仍遇到的搁浅对，改派或结束的任务自然出局。`IN_REVIEW` 不在两个扫描的遍历范围内——验收由 reviewer 推进，返工
     回到 `IN_PROGRESS` 后再接住。`DORMANT` 不算退役：交接经 `auto_start_member` 唤醒它（不变量 17）。源头
-    另有一道闸：`create_task` / `update_task` 的指派校验拒绝 `SHUTDOWN` 与将落定为 `SHUTDOWN` 的
-    `SHUTDOWN_REQUESTED` 负责人（`S_08` 不变量 23）。
+    另有一道闸：`create_task` / `update_task` 的指派校验拒绝 `SHUTDOWN` 与正在退出的 `SHUTDOWN_REQUESTED`
+    负责人（`S_08` 不变量 23）。
 
 ## 接口契约
 

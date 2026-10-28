@@ -322,7 +322,7 @@ async def test_broadcast_leaves_dormant_members_asleep(db):
     assert (await db.member.get_member("sleepy", TEAM_NAME)).status == MemberStatus.DORMANT.value
 
 
-async def _idle_task_scoped_member(db, member_name: str) -> TeamBackend:
+async def _idle_task_scoped_member(db: TeamDatabase, member_name: str) -> TeamBackend:
     """A leader backend over the team plus an UNSTARTED task-scoped member with no open task."""
     on_created = AsyncMock()
     backend = TeamBackend(

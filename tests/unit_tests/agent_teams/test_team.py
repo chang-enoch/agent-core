@@ -1606,7 +1606,12 @@ async def test_autostart_unstarted_noop_for_teammate(db, message_bus):
     on_created.assert_not_awaited()
 
 
-async def _task_scoped_backend(db, message_bus, team_id: str, on_created: AsyncMock) -> TeamBackend:
+async def _task_scoped_backend(
+    db: TeamDatabase,
+    message_bus: Messager,
+    team_id: str,
+    on_created: AsyncMock,
+) -> TeamBackend:
     """A leader backend holding UNSTARTED ``dev-1`` (resident) and ``tmp-1`` (lifetime=shutdown)."""
     await db.team.create_team(team_name=team_id, display_name=team_id, leader_member_name="leader1")
     backend = TeamBackend(
@@ -1707,7 +1712,7 @@ async def test_wake_member_recovers_without_spawn_callback(db, message_bus):
 @pytest.mark.asyncio
 @pytest.mark.level1
 async def test_list_retired_members_returns_only_shutdown(db, message_bus):
-    """Only SHUTDOWN counts as retired (DORMANT can still be woken); each maps to its lifetime."""
+    """Only SHUTDOWN counts as retired (DORMANT can still be woken), whatever the lifetime."""
     team_id = "retired_list_team"
     await db.team.create_team(team_name=team_id, display_name=team_id, leader_member_name="leader1")
     backend = TeamBackend(team_name=team_id, member_name="leader1", db=db, messager=message_bus, is_leader=True)
@@ -1723,7 +1728,7 @@ async def test_list_retired_members_returns_only_shutdown(db, message_bus):
     await backend.spawn_member(member_name="napping", display_name="Nap", agent_card=card, status=MemberStatus.DORMANT)
     await backend.spawn_member(member_name="dev-1", display_name="Dev 1", agent_card=card)
 
-    assert await backend.list_retired_members() == {"gone": None, "scoped": "shutdown"}
+    assert await backend.list_retired_members() == {"gone", "scoped"}
 
 
 @pytest.mark.asyncio

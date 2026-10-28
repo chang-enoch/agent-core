@@ -131,9 +131,14 @@ class TeamScheduler:
         # active task on every wake; after a restart each pair costs exactly
         # one query to re-learn.
         self._handoff_known: set[tuple[str, str]] = set()
+        # Members this process retired by policy into SHUTDOWN (lifetime
+        # "shutdown"). Only their stranded tasks are escalated: an open task
+        # on one was handed over after it left. A leader restart forgets them,
+        # so their stranded tasks are then skipped without a word.
+        self._policy_retired: set[str] = set()
         # (task_id, owner) pairs already escalated to the leader because the
-        # owner has shut down. Reassignment makes a new pair; a leader restart
-        # re-escalates each still-stranded task once.
+        # owner was retired by policy. Pruned each scan to the pairs still
+        # stranded, so a reassigned or finished task drops out.
         self._stranded_escalated: set[tuple[str, str]] = set()
         # (task_id, revision) pairs whose revision mail this process sent
         # (F_129). The mailbox delivery records the revision as seen, which
@@ -221,21 +226,25 @@ class TeamScheduler:
         """Run the five reconcile passes to a bounded fixpoint.
 
         The retired roster is read once per scan: no pass brings a
-        ``SHUTDOWN`` member back, so it cannot change between passes.
+        ``SHUTDOWN`` member back, so it cannot change between passes. The
+        stranded pairs the passes run into replace the escalation memo at the
+        end, so it never outgrows the tasks still stranded.
         """
         task_manager = self._infra.task_manager
         if task_manager is None:
             return
         await self._rearm_all_done(task_manager)
         retired = await self._retired_members()
+        stranded: set[tuple[str, str]] = set()
         for _ in range(_MAX_SCAN_PASSES):
-            acted = await self._reconcile_starts(task_manager, retired)
-            acted = await self._reconcile_handoffs(task_manager, retired) or acted
+            acted = await self._reconcile_starts(task_manager, retired, stranded)
+            acted = await self._reconcile_handoffs(task_manager, retired, stranded) or acted
             acted = await self._reconcile_reviews(task_manager) or acted
             acted = await self._reconcile_retirements(task_manager) or acted
             acted = await self._reconcile_revisions(task_manager) or acted
             if not acted:
-                return
+                break
+        self._stranded_escalated &= stranded
 
     async def _rearm_all_done(self, task_manager) -> None:
         """Re-arm the wrap-up once the board holds open work again.
@@ -324,6 +333,8 @@ class TeamScheduler:
                     result.reason,
                 )
                 continue
+            if lifetime == "shutdown":
+                self._policy_retired.add(member_name)
             team_logger.info(
                 "[scheduler] retirement requested for %s (lifetime=%s, was %s)",
                 member_name,
@@ -333,39 +344,41 @@ class TeamScheduler:
             acted = True
         return acted
 
-    async def _retired_members(self) -> dict[str, str | None]:
-        """``SHUTDOWN`` members (name -> lifetime); empty without a team backend."""
+    async def _retired_members(self) -> set[str]:
+        """Names of ``SHUTDOWN`` members; empty without a team backend."""
         backend = self._infra.team_backend
         if backend is None:
-            return {}
+            return set()
         return await backend.list_retired_members()
 
-    async def _skip_retired_owner(self, task, retired: dict[str, str | None]) -> bool:
+    async def _skip_retired_owner(self, task, retired: set[str], stranded: set[tuple[str, str]]) -> bool:
         """Whether ``task``'s owner has shut down; escalate it to the leader when unexpected.
 
         No startup path brings a ``SHUTDOWN`` member back, so the start and
         handoff scans leave its tasks alone — starting one would only park it
         ``IN_PROGRESS`` with nobody running it, and the owner has no runtime
-        for its own stale sweep. Whether the leader needs telling depends on
-        how the owner left:
+        for its own stale sweep. Each such (task, owner) pair is added to
+        ``stranded``. Whether the leader needs telling depends on who retired
+        the owner:
 
-        * a task-scoped member (``lifetime`` set) is retired by the scheduler
-          only once its board is empty, so an open task on it was handed over
-          after it left — nobody expects it, the leader is told once per
-          (task, owner);
-        * a resident member only leaves through the leader's own
-          ``shutdown_member``, whose contract leaves the leftovers to the
-          leader — no escalation, which keeps a teardown that shuts members
-          down before ``clean_team`` quiet.
+        * the scheduler, by policy (``_policy_retired``) — it does so only once
+          the member's board is empty, so an open task on it was handed over
+          after it left; nobody expects it, the leader is told once per pair;
+        * the leader, through ``shutdown_member`` — that tool's contract
+          leaves the leftovers to the leader, so no escalation, which also
+          keeps a teardown that shuts members down before ``clean_team`` quiet.
 
-        A reassignment makes a new pair; a leader restart re-tells at most once.
+        A reassignment makes a new pair; a leader restart forgets the policy
+        retirements and skips their tasks without a word.
         """
         owner = task.assignee
         if owner not in retired:
             return False
-        if retired[owner] is None or (task.task_id, owner) in self._stranded_escalated:
+        pair = (task.task_id, owner)
+        stranded.add(pair)
+        if owner not in self._policy_retired or pair in self._stranded_escalated:
             return True
-        self._stranded_escalated.add((task.task_id, owner))
+        self._stranded_escalated.add(pair)
         team_logger.warning(
             "[scheduler] task %s (%s) is assigned to shut-down member %s; escalating to the leader",
             task.task_id,
@@ -378,7 +391,7 @@ class TeamScheduler:
         )
         return True
 
-    async def _reconcile_starts(self, task_manager, retired: dict[str, str | None]) -> bool:
+    async def _reconcile_starts(self, task_manager, retired: set[str], stranded: set[tuple[str, str]]) -> bool:
         """Start each idle member's earliest assigned PENDING task.
 
         Owners in ``retired`` are skipped (see ``_skip_retired_owner``): their
@@ -387,7 +400,7 @@ class TeamScheduler:
         pending = await task_manager.list_tasks(status=TaskStatus.PENDING.value, with_content=False)
         queue_by_member: dict[str, list] = {}
         for task in pending:
-            if not task.assignee or await self._skip_retired_owner(task, retired):
+            if not task.assignee or await self._skip_retired_owner(task, retired, stranded):
                 continue
             queue_by_member.setdefault(task.assignee, []).append(task)
 
@@ -419,7 +432,7 @@ class TeamScheduler:
             acted = True
         return acted
 
-    async def _reconcile_handoffs(self, task_manager, retired: dict[str, str | None]) -> bool:
+    async def _reconcile_handoffs(self, task_manager, retired: set[str], stranded: set[tuple[str, str]]) -> bool:
         """Hand every active task to an owner that never received its start.
 
         The start scan hands a task over exactly when it flips it out of
@@ -441,7 +454,8 @@ class TeamScheduler:
         mailbox itself plus the in-process ``_handoff_known`` memo; a
         restarted leader re-learns each pair with one mailbox read. Owners in
         ``retired`` are skipped — no handoff can start them (see
-        ``_skip_retired_owner``).
+        ``_skip_retired_owner``); that check runs before the memo, so an
+        owner that leaves after its handoff landed is still caught.
         """
         message_manager = self._infra.message_manager
         if message_manager is None:
@@ -452,9 +466,9 @@ class TeamScheduler:
         acted = False
         for task in active:
             owner = task.assignee
-            if not owner or (task.task_id, owner) in self._handoff_known:
+            if not owner or await self._skip_retired_owner(task, retired, stranded):
                 continue
-            if await self._skip_retired_owner(task, retired):
+            if (task.task_id, owner) in self._handoff_known:
                 continue
             if await self._owner_has_start_handoff(message_manager, owner, task.task_id):
                 self._handoff_known.add((task.task_id, owner))

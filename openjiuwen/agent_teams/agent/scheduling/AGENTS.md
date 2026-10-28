@@ -31,14 +31,14 @@ leader 侧的调度分发 runtime，与 `coordination/`（唤醒层）平齐：c
 
 12. **修改以版本差为真相，调度器推送最新内容**（F_129）：`_reconcile_revisions` 读窄投影 `unseen_revisions()`（有执行者、未终态、`revision > observed_revision`），执行中任务发 `scheduler_task_revised`（修改说明 + 最新完整内容 + 长内容差异），挂起中的父任务发 `scheduler_subtask_review`（加子任务列表，过期标出），没开工的不发——开工交接本来就带最新版本。投递渲染即推进 `observed_revision`，条件自然消失；`_revision_pushed` 只防投递前重发，开工 / 恢复交接发出时也记一笔。调度器不消费 `TASK_UPDATED` 本身。
 
-13. **已退役负责人的任务不开工、不补发**（B_10）：`SHUTDOWN` 成员无法被任何路径拉起。每次扫描在多遍循环前取一次 `TeamBackend.list_retired_members()`（名字 → lifetime 的窄投影），开工与交接补发扫描经 `_skip_retired_owner` 跳过这些负责人的任务。负责人是任务级成员（`lifetime` 非空）时，按 `(task_id, owner)` 向 leader `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`——它只在名下清空时才会被退场，名下的未结束任务一定是离开后才交给它的；常驻成员只会被 leader 自己 `shutdown_member`，遗留任务归 leader 处置，不升级。`DORMANT` 不算退役。
+13. **已退役负责人的任务不开工、不补发**（B_10）：`SHUTDOWN` 成员无法被任何路径拉起。每次扫描在多遍循环前取一次 `TeamBackend.list_retired_members()`（名字的窄投影），开工与交接补发扫描经 `_skip_retired_owner` 跳过这些负责人的任务（交接补发扫描先判退役、再查 `_handoff_known`）。负责人是本进程按策略退场的（`_reconcile_retirements` 对 `lifetime="shutdown"` 成员请求成功时记入 `_policy_retired`）时，按 `(task_id, owner)` 向 leader `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`——它只在名下清空时才会被退场，名下的未结束任务一定是离开后才交给它的；leader 自己 `shutdown_member` 的成员（不论 lifetime）遗留任务归 leader 处置，不升级。`_stranded_escalated` 每次扫描后只保留仍搁浅的对。`DORMANT` 不算退役。
 
 ## 生命周期（kernel 接线）
 
 - `CoordinationKernel.setup` 仅在 `spec.dispatch_mode == "scheduled"` 的 leader 上构造（休眠态）；其余 kernel 不构造。
 - 激活点两个：`notify_team_built()`（build_team 成功回调，先于任何 spawn / create_task）与 `kernel.start()`（team 行已存在——warm resume / 冷恢复）。
 - wake 路径：`kernel._build_wake_callback()` 组合 "coordination dispatch → scheduler.on_event"。
-- `pause()` / `stop()` 即 `deactivate()`；内存记账（送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对 / 已推送版本 / 搁浅已升级对）不持久化——重启后最坏重发一次送审或升级、每个活跃任务多读一次邮箱，board 真相在 DB。
+- `pause()` / `stop()` 即 `deactivate()`；内存记账（送审去重 / 催办节流 / 升级去重 / 摘要去重 / 交接已知对 / 已推送版本 / 按策略退场成员 / 搁浅已升级对）不持久化——重启后最坏重发一次送审或升级、每个活跃任务多读一次邮箱、按策略退场者名下的搁浅任务不再提醒，board 真相在 DB。
 - task review feedback callback 不进入状态机关键路径；团队终态 callback 是旁路汇总边界，不改变
   all-done 摘要与 pause/stop 决策。
 

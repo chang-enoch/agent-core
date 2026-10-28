@@ -7,7 +7,7 @@
 | 日期 | 2026-10-28 |
 | 严重程度 | 高：任务停在 `in_progress`、负责人不存在，没有任何检查报警，团队停摆约 10 小时直到用户手动介入 |
 | 范围 | `tools/tool_task.py`（指派校验）、`tools/team.py`（`startup` / `wake_member` / `list_retired_members`）、`tools/database/member_dao.py`（`list_shutdown_members`）、`tools/tool_message.py`（直接收件人唤醒、广播）、`agent/coordination/handlers/message.py` / `agent/team_agent.py`（广播拉起）、`agent/scheduling/scheduler.py`（跳过退役负责人 + 升级 leader）、`i18n.py` |
-| 测试基线 | `tests/unit_tests/agent_teams/` 4112 passed / 36 skipped / 2 xfailed / 1 failed（既有失败，见「验证」） |
+| 测试基线 | `tests/unit_tests/agent_teams/` 4115 passed / 36 skipped / 2 xfailed / 1 failed（既有失败，见「验证」） |
 | 关联 spec | `S_22_scheduling-runtime.md`、`S_05_member-spawn-and-stream.md`、`S_08_team-tools-contract.md` |
 | 关联 feature | `F_118_task-scoped-member-lifetime.md`、`F_62_scheduled-dispatch-runtime-and-review-voting.md` |
 
@@ -43,18 +43,23 @@
 
 ## 决策
 
-1. **指派校验拒绝已退役与正在退向 `SHUTDOWN` 的负责人。** `_validate_assignees` 改读 `get_member_status`：
-   不存在报 not found；`SHUTDOWN`，以及 lifetime 不是 `"dormant"`、因而会落定为 `SHUTDOWN` 的
-   `SHUTDOWN_REQUESTED`，报「已退出（或正在退出）、无法再拉起，请新建成员或改派」。`update_task` 只在真的换人时
+1. **指派校验拒绝已退役与正在退出的负责人。** `_validate_assignees` 改读 `get_member_status`：
+   不存在报 not found；`MEMBER_DEPARTED_STATUSES` 里的报错——`SHUTDOWN` 提示「已退出、无法再拉起，请新建成员
+   或改派」，`SHUTDOWN_REQUESTED` 提示「正在退出，退向休眠的等落定后再指派，否则改派」。正在退出的一律拒绝、
+   不看 lifetime：leader force 关停休眠类成员同样落 `SHUTDOWN`，lifetime 推断不出终态；代价是退向休眠的成员在
+   退出的那几秒里被拒，leader 稍后重试即可。`update_task` 只在真的换人时
    （非取消、非重复写当前负责人）在任何编辑落库之前做同一检查（共用 `_retired_assignee_error`，不顺带引入 leader /
-   不存在等其它校验，保持改派路径原有行为）。`DORMANT` 与退向 `DORMANT` 的成员仍可指派——开工交接会唤醒它。
+   不存在等其它校验，保持改派路径原有行为）。`DORMANT` 成员仍可指派——开工交接会唤醒它。
 2. **调度器跳过退役负责人；意外搁浅的告诉 leader。** 新增 `TeamBackend.list_retired_members()`（DAO
-   `list_shutdown_members`，只投影名字与 `options`，返回名字 → lifetime）；每次扫描在多遍循环之前取一次。开工扫描与
-   交接补发扫描在各自已有的遍历里经 `_skip_retired_owner` 跳过这些负责人的任务：`PENDING` 保持 `PENDING`（改派后
-   开工扫描照常接手），活跃任务不补发。负责人是任务级成员（`lifetime` 非空）时按 `(task_id, owner)` 向 leader
-   `deliver_input` 一次 `scheduler.leader_escalation_retired_owner`：退场扫描只在名下清空时回收它，所以名下再出现
-   未结束任务一定是离开后才交给它的，没人预期。常驻成员只会被 leader 自己 `shutdown_member`，那个工具的约定是遗留
-   任务归 leader 处置，只跳过不升级——临时团队收尾时先关停成员再 `clean_team` 不会被提醒打扰。
+   `list_shutdown_members`，只投影名字）；每次扫描在多遍循环之前取一次。开工扫描与交接补发扫描在各自已有的遍历里经
+   `_skip_retired_owner` 跳过这些负责人的任务：`PENDING` 保持 `PENDING`（改派后开工扫描照常接手），活跃任务不补发；
+   交接补发扫描先判退役、再查 `_handoff_known`，交接已落邮箱后才退役的负责人同样被接住，结果不随 leader 重启而变。
+   是否升级看**是谁让它离开的**：`_reconcile_retirements` 对 `lifetime="shutdown"` 成员的退场请求成功时把它记进
+   进程内 `_policy_retired`，只有这些负责人的搁浅任务按 `(task_id, owner)` 向 leader `deliver_input` 一次
+   `scheduler.leader_escalation_retired_owner`（文案只推荐始终挂载的 `spawn_teammate`）：退场扫描只在名下清空时
+   回收它，所以名下再出现未结束任务一定是离开后才交给它的，没人预期。leader 自己 `shutdown_member` 的成员（常驻，
+   或被主动 / force 关停的任务级成员）遗留任务按该工具的约定归 leader 处置，只跳过不升级——临时团队收尾时先关停
+   成员再 `clean_team` 不会被提醒打扰。`_stranded_escalated` 每次扫描结束时只保留本次仍遇到的搁浅对。
 3. **撒网拉起跳过没有未结束任务的任务级成员。** `TeamBackend.startup()` 对 `options.lifetime` 非空、名下没有未结束
    任务的 `UNSTARTED` 成员不拉起，让它留在 `UNSTARTED`——`UNSTARTED` 不在退场候选里，leader 之后仍可把任务派给
    它，开工交接经 `startup_member` 拉起。广播是例外：它也发给这类成员，所以三条广播路径（leader
@@ -77,6 +82,12 @@
   不开；spawn 本身失败已有 `_report_member_startup_failure` 通知 leader（B_08）。按状态判断更准确。
 - **把调度模式的 stale 检查搬到 leader 侧，按 `updated_at` 判超时。** 只能在十分钟后发现问题，而且负责人
   活着但干得慢时会误报；本例的问题是「负责人不可能被拉起」，状态一读就知道，不需要等超时。
+- **按 `lifetime` 推断退场原因（任务级成员一律视为按策略退场）。** 第一版就是这样，但 leader 也可以主动
+  `shutdown_member` 一个任务级成员，那时遗留任务本归 leader 处置，却会被误报成「意外搁浅」。改为在调度器发起
+  退场的那一刻记下来。
+- **把退场原因持久化进成员 `options`（`shutdown_member` 加 `by_policy`、DAO 写字段）。** 重启后仍能区分、继续
+  提醒，但要给 `shutdown_member` 与 DAO 加参数和字段；源头校验已挡住绝大多数情况，重启后只跳过不提醒的代价
+  可以接受，选了只记在调度器内存里的轻量方案。
 - **所有已退役负责人的未结束任务都升级 leader。** 最初的实现就是这样，会把 leader 自己 `shutdown_member`
   留下的遗留任务也逐条报回去，临时团队收尾（先关停成员再 `clean_team`）时提醒排在 `clean_team` 后面，又把 leader
   拉起一轮。按成员行的退场时间区分也不可行：`team_member.updated_at` 在状态变化时不更新，改它会影响名册版本探测。
@@ -91,16 +102,18 @@
 - 新增用例：
   - `tests/unit_tests/agent_teams/tools/test_tool_task.py`：`test_create_task_rejects_shut_down_assignee`、
     `test_create_task_accepts_dormant_assignee`、`test_create_task_rejects_member_settling_into_shutdown`、
+    `test_create_task_rejects_dormant_lifetime_member_force_shut_down`、
     `test_update_task_rejects_reassigning_to_shut_down_member`、
     `test_update_task_rejected_reassignment_leaves_the_edit_unapplied`、
     `test_update_task_can_cancel_a_task_whose_owner_shut_down`；
   - `tests/unit_tests/agent_teams/tools/test_tool_message.py`：`test_direct_message_starts_idle_task_scoped_recipient`、
     `test_broadcast_starts_idle_task_scoped_member`；
   - `tests/unit_tests/agent_teams/agent/test_team_scheduler.py`：
-    `test_pending_task_of_shut_down_owner_is_not_started_and_escalated_once`、
-    `test_open_tasks_of_a_resident_member_the_leader_shut_down_are_not_escalated`、
-    `test_reassigning_stranded_task_to_a_live_member_starts_it`、
-    `test_active_task_of_shut_down_owner_gets_no_handoff_and_is_escalated`（测试辅助 `_build_scheduler` 的
+    `test_pending_task_of_policy_retired_owner_is_not_started_and_escalated_once`、
+    `test_only_lifetime_shutdown_retirements_are_recorded_as_policy`、
+    `test_open_tasks_of_a_member_the_leader_shut_down_are_not_escalated`（常驻 / 任务级各一）、
+    `test_reassigning_stranded_task_to_a_live_member_starts_it`（含升级记账随改派清除）、
+    `test_active_task_whose_handoff_landed_is_escalated_when_its_owner_is_retired`（测试辅助 `_build_scheduler` 的
     假 backend 把 `list_retired_members` 接到真实 DB 的 `list_shutdown_members`）；
   - `tests/unit_tests/agent_teams/test_team.py`：
     `test_autostart_unstarted_skips_task_scoped_member_without_open_task`、
@@ -110,11 +123,14 @@
     `test_wake_member_recovers_without_spawn_callback`、`test_list_retired_members_returns_only_shutdown`。
 - 既有 `test_direct_message_recovers_error_recipient_before_delivery` 不改，验证第 4 条拆分回调门后行为不变；
   `test_member_startup_reconcile.py` 的 backend 桩同步 `startup` 的新关键字参数。
-- `pytest tests/unit_tests/agent_teams/` → 4112 passed / 36 skipped / 2 xfailed / 1 failed。唯一失败
+- `pytest tests/unit_tests/agent_teams/` → 4115 passed / 36 skipped / 2 xfailed / 1 failed。唯一失败
   `agent/test_member_activity.py::test_observe_member_status_emits_after_the_debounce` 在未改动的基线上同样稳定失败，
   与本次修改无关。
 
 ## 已知遗留
+
+- **leader 重启后不再提醒。** `_policy_retired` 只在调度器内存里，重启后按策略退场者名下的搁浅任务只跳过、不提醒；
+  源头校验已挡住正常路径上的指派，剩下的是校验与退场之间的竞态。
 
 - **负责人活着但运行时意外消失（非 `SHUTDOWN`）** 仍依赖崩溃恢复与 B_08 的启动失败通知；本次只覆盖「负责人
   已退役」这一种可由状态直接判定的搁浅。

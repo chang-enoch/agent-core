@@ -157,7 +157,7 @@ async def test_scheduled_create_task_starts_nobody(db):
     on_created.assert_not_awaited()
 
 
-async def _set_status(db, member_name: str, *statuses: MemberStatus) -> None:
+async def _set_status(db: TeamDatabase, member_name: str, *statuses: MemberStatus) -> None:
     for status in statuses:
         assert await db.member.update_member_status(member_name, TEAM_NAME, status.value)
 
@@ -213,7 +213,7 @@ async def test_update_task_rejects_reassigning_to_shut_down_member(db):
 @pytest.mark.asyncio
 @pytest.mark.level0
 async def test_create_task_rejects_member_settling_into_shutdown(db):
-    """SHUTDOWN_REQUESTED with a non-dormant lifetime ends in SHUTDOWN: refuse it like SHUTDOWN."""
+    """A member still shutting down may end in SHUTDOWN: refuse it until it has settled."""
     backend = _leader_backend(db, AsyncMock(), dispatch_mode="scheduled")
     await _set_status(db, DEV_1, MemberStatus.STARTING, MemberStatus.READY, MemberStatus.SHUTDOWN_REQUESTED)
     tool = ScheduledTaskCreateTool(backend, make_translator("cn"))
@@ -221,7 +221,32 @@ async def test_create_task_rejects_member_settling_into_shutdown(db):
     result = await tool.invoke({"tasks": [{"title": "T1", "content": "C1", "assignee": DEV_1}]})
 
     assert result.success is False
-    assert DEV_1 in result.error
+    assert DEV_1 in result.error and "shutting down" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.level1
+async def test_create_task_rejects_dormant_lifetime_member_force_shut_down(db):
+    """A force shutdown ends in SHUTDOWN even for a dormant lifetime, so the settling window is refused too."""
+    from sqlalchemy import update
+
+    from openjiuwen.agent_teams.tools.models import TeamMember
+
+    backend = _leader_backend(db, AsyncMock(), dispatch_mode="scheduled")
+    async with db.session_local() as session:
+        await session.execute(
+            update(TeamMember)
+            .where(TeamMember.team_name == TEAM_NAME, TeamMember.member_name == DEV_1)
+            .values(options='{"lifetime": "dormant"}')
+        )
+        await session.commit()
+    await _set_status(db, DEV_1, MemberStatus.STARTING, MemberStatus.READY, MemberStatus.SHUTDOWN_REQUESTED)
+    tool = ScheduledTaskCreateTool(backend, make_translator("cn"))
+
+    result = await tool.invoke({"tasks": [{"title": "T1", "content": "C1", "assignee": DEV_1}]})
+
+    assert result.success is False
+    assert await backend.task_manager.open_task_counts_by_assignee() == {}
 
 
 @pytest.mark.asyncio

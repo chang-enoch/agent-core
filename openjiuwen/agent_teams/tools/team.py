@@ -1152,8 +1152,6 @@ class TeamBackend:
         Returns:
             True when this call restarted the member, otherwise False.
         """
-        if not self.is_leader or self._on_member_restarted is None:
-            return False
         current = await self.db.member.get_member_status(self.team_name, member_name)
         return await self._recover_from(member_name, current)
 
@@ -2699,13 +2697,11 @@ class TeamBackend:
         """``(member_name, status, lifetime)`` for live members carrying a retirement policy."""
         return await self.db.member.list_retirable_members(self.team_name)
 
-    async def list_retired_members(self) -> dict[str, str | None]:
-        """``member_name -> lifetime`` for members that left the team for good (``SHUTDOWN``).
+    async def list_retired_members(self) -> set[str]:
+        """Names of members that left the team for good (``SHUTDOWN``).
 
         No startup path brings a ``SHUTDOWN`` member back, so work still
         assigned to one has nobody to run it until the leader reassigns it.
-        The lifetime (None = resident) lets the scheduler tell a task-scoped
-        member retired by policy from one the leader shut down on purpose.
         """
         return await self.db.member.list_shutdown_members(self.team_name)
 

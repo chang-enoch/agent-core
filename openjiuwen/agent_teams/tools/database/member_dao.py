@@ -365,22 +365,19 @@ class MemberDao:
                 out.append((row.member_name, row.status, lifetime))
         return out
 
-    async def list_shutdown_members(self, team_name: str) -> dict[str, str | None]:
-        """Project ``member_name -> lifetime`` (None = resident) for ``SHUTDOWN`` members.
+    async def list_shutdown_members(self, team_name: str) -> set[str]:
+        """Project the names of ``SHUTDOWN`` members.
 
         Feeds the scheduler's stranded-task check on every wake, so it reads
-        only the name and the ``options`` JSON the lifetime lives in — never
-        the serialized card or private prompt.
+        only the name — never the serialized card or private prompt.
         """
-        from openjiuwen.agent_teams.tools.member_options import load_member_options
-
         async with self._sessions.read() as session:
-            stmt = select(TeamMember.member_name, TeamMember.options).where(
+            stmt = select(TeamMember.member_name).where(
                 TeamMember.team_name == team_name,
                 TeamMember.status == MemberStatus.SHUTDOWN.value,
             )
             rows = (await session.execute(stmt)).all()
-        return {row.member_name: load_member_options(row.options).lifetime for row in rows}
+        return {row.member_name for row in rows}
 
     async def get_member_lifetime(self, team_name: str, member_name: str) -> str | None:
         """Return one member's retirement policy (``options.lifetime``) or None."""
