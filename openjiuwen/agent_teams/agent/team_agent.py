@@ -1480,8 +1480,6 @@ class TeamAgent(BaseAgent):
                                 # creator's context. Falling back to full keeps the
                                 # behaviour consistent with the leader notification.
                                 ckpt_idx = None
-                                from openjiuwen.agent_teams.i18n import t
-
                                 await self._notify_fork_name_not_found(
                                     teammate_id,
                                     fork_value,
@@ -1624,8 +1622,6 @@ class TeamAgent(BaseAgent):
         exist, so a naming mismatch (missing name, or a name whose creator
         does not match ``fork_source``) is no longer silent.
         """
-        from openjiuwen.agent_teams.i18n import t
-
         available = ", ".join(sorted(self._named_checkpoints)) or "（无）"
         try:
             await self.message_manager.send_message(

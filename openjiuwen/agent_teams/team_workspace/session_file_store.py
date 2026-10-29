@@ -104,7 +104,8 @@ class SessionFileStore:
         if not tasks_dir.is_dir():
             return
         for path in tasks_dir.glob(f"{task_id}.r*.md"):
-            suffix = path.name[len(task_id) + 2 : -len(".md")]
+            start = len(task_id) + 2
+            suffix = path.name[start:-len(".md")]
             if suffix.isdigit() and int(suffix) < below:
                 path.unlink(missing_ok=True)
 

@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import hashlib
 import weakref
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar
 
@@ -817,7 +818,17 @@ class _TaskNoticeTracker:
         return True
 
     def _compact(self) -> None:
-        """Drop entries that can never match again (none by default)."""
+        """Drop the entries ``_superseded`` says can never match again."""
+        dropped = self._superseded(self._announced)
+        if not dropped:
+            return
+        self._announced = {entry: None for entry in self._announced if entry not in dropped}
+        self._pending = {entry: None for entry in self._pending if entry not in dropped}
+
+    @staticmethod
+    def _superseded(entries: Iterable[str]) -> set[str]:
+        """Entries that can never match again (none by default)."""
+        return set()
 
     async def _candidates(self, task_manager: Any) -> list[Any]:
         raise NotImplementedError
@@ -906,19 +917,18 @@ class TaskRevisionTracker(_TaskNoticeTracker):
     async def _candidates(self, task_manager: Any) -> list[Any]:
         return await task_manager.unseen_edits(self._member_name)
 
-    def _compact(self) -> None:
-        """Keep each task's newest revision only: revisions only grow, so older ones never match again."""
+    @staticmethod
+    def _superseded(entries: Iterable[str]) -> set[str]:
+        """All but each task's newest revision: revisions only grow, so older ones never match again."""
+        entries = list(entries)
         newest: dict[str, tuple[int, str]] = {}
-        for entry in self._announced:
+        for entry in entries:
             task_id, _, revision = entry.rpartition("@")
             number = int(revision) if revision.isdigit() else -1
             if task_id not in newest or number > newest[task_id][0]:
                 newest[task_id] = (number, entry)
-        if len(newest) == len(self._announced):
-            return
         keep = {entry for _number, entry in newest.values()}
-        self._announced = {entry: None for entry in self._announced if entry in keep}
-        self._pending = {entry: None for entry in self._pending if entry in keep}
+        return {entry for entry in entries if entry not in keep}
 
     def _entry(self, task: Any) -> str:
         return f"{task.task_id}@{task.revision}"
