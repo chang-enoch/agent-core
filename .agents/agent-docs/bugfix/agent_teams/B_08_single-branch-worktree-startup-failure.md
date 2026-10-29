@@ -1,3 +1,17 @@
+---
+title: 单分支仓库的 worktree 基线失效导致调查成员未启动
+author: MengHan18
+author_note: 按 Git 最早可追溯的文档新增提交署名；不代表代码 owner
+id: B_08_single-branch-worktree-startup-failure
+type: B
+modules:
+- openjiuwen/agent_teams
+files: []
+designs: null
+design_note: 历史设计关联待核实，不等同于没有关联设计
+author_email: hanmeng22@huawei.com
+---
+
 # 单分支仓库的 worktree 基线失效导致调查成员未启动
 
 ## 元信息

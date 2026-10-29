@@ -1,7 +1,7 @@
 ---
 title: D/F/B/S 文档总索引
-author: MengHan18
-author_email: hanmeng22@huawei.com
+author: alan_cheng
+author_email: chengshuo5@huawei.com
 generated: true
 ---
 
@@ -9,14 +9,14 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 266 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 272 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
 | 模块 | 文档数 |
 |---|---|
 | [agent_evolving](#module-1) | 1 |
-| [agent_teams](#module-2) | 193 |
+| [agent_teams](#module-2) | 199 |
 | [agent_teams/workflow](#module-3) | 15 |
 | [extensions/observability](#module-4) | 2 |
 | [harness](#module-5) | 54 |
@@ -88,6 +88,8 @@ generated: true
 | [F_125_team-expert-catalog-and-spawn](features/agent_teams/F_125_team-expert-catalog-and-spawn.md) | F | Team 专家目录与按模板拉起专家成员 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_126_scheduled-member-peer-messaging](features/agent_teams/F_126_scheduled-member-peer-messaging.md) | F | 调度模式：可配置的成员间通信 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_127_merge-spawn-external-cli-into-spawn-teammate](features/agent_teams/F_127_merge-spawn-external-cli-into-spawn-teammate.md) | F | `spawn_external_cli` 并入 `spawn_teammate` | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [F_128_scheduled-member-subtasks](features/agent_teams/F_128_scheduled-member-subtasks.md) | F | 调度模式：成员拆分子任务（父任务挂起 / 恢复） | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [F_129_task-revision-and-staleness](features/agent_teams/F_129_task-revision-and-staleness.md) | F | 任务版本与过期感知：任务被修改后，执行者一定能知道 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_12_multicast-full-roster-rejection](features/agent_teams/F_12_multicast-full-roster-rejection.md) | F | 禁止覆盖全员的组播，强制改用广播 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_13_human-agent-send-message](features/agent_teams/F_13_human-agent-send-message.md) | F | Human Agent — User-Driven `send_message` Relay | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_14_human-agent-team-event-rendering](features/agent_teams/F_14_human-agent-team-event-rendering.md) | F | Human Agent — Role-Aware Team Event Rendering | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
@@ -96,6 +98,7 @@ generated: true
 | [F_17_spawn-member-visibility-contract](features/agent_teams/F_17_spawn-member-visibility-contract.md) | F | spawn_member — Public / Private Visibility Contract in Tool Description | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_18_hide-human-agent-role-from-teammate](features/agent_teams/F_18_hide-human-agent-role-from-teammate.md) | F | Hide Human-Agent Role from Teammate Prompts (Switchable) | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_19_monitor-hide-dm-switch](features/agent_teams/F_19_monitor-hide-dm-switch.md) | F | Monitor `hide_dm` Switch | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [F_20261022_2319_inline-member-worktree-isolation](features/F_20261022_2319_inline-member-worktree-isolation.md) | F | 调度模式内联成员支持 worktree 隔离 | alan_cheng | openjiuwen/agent_teams | openjiuwen/agent_teams/tools/tool_task.py, openjiuwen/agent_teams/tools/locales/cn.py, openjiuwen/agent_teams/tools/locales/en.py, openjiuwen/agent_teams/tools/locales/descs/cn/fragments/create_task_inline_member.md, openjiuwen/agent_teams/tools/locales/descs/en/fragments/create_task_inline_member.md | 无独立 D：对 F_118 内联成员参数遗漏的小范围补齐，复用既有 `isolation` 契约，无独立设计 |
 | [F_20_human-agent-mailbox-unread-flip](features/agent_teams/F_20_human-agent-mailbox-unread-flip.md) | F | Human-Agent Mailbox: Flip Auto-Read Off | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_21_external-agent-access](features/agent_teams/F_21_external-agent-access.md) | F | External Agent Access: skill+cli / mcp Wrappers | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_21_team-completion-auto-pause](features/agent_teams/F_21_team-completion-auto-pause.md) | F | Team Completion Auto-Pause | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
@@ -198,6 +201,9 @@ generated: true
 | [B_05_paused-team-rebuilt-on-every-request](bugfix/agent_teams/B_05_paused-team-rebuilt-on-every-request.md) | B | 同一模型选择被判成"换模型"，paused 团队每次追问都被拆掉重建 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [B_06_scheduled-reassign-active-task-handoff-gap](bugfix/agent_teams/B_06_scheduled-reassign-active-task-handoff-gap.md) | B | 调度模式：改派一个已开工的任务给尚未启动的成员后，新 owner 永远收不到交接 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [B_07_team-interrupt-resume-entry-and-leader-ready](bugfix/agent_teams/B_07_team-interrupt-resume-entry-and-leader-ready.md) | B | 团队中断关闭流后无恢复入口：裸文本恢复静默失效，recovery 流伪造 "None" 轮次 | wangcan103 | openjiuwen/agent_teams | — | 待核实 |
+| [B_08_single-branch-worktree-startup-failure](bugfix/agent_teams/B_08_single-branch-worktree-startup-failure.md) | B | 单分支仓库的 worktree 基线失效导致调查成员未启动 | MengHan18 | openjiuwen/agent_teams | — | 待核实 |
+| [B_09_all-done-prompt-stalls-remaining-work](bugfix/agent_teams/B_09_all-done-prompt-stalls-remaining-work.md) | B | 看板清空的收尾提示让 leader 停止建任务，且之后再清空不再提示 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [B_10_task-assigned-to-retired-member-stalls](bugfix/agent_teams/B_10_task-assigned-to-retired-member-stalls.md) | B | 任务派给已退役的任务级成员后整夜无人执行 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [S_01_public-api-and-spec-flow](specs/agent_teams/S_01_public-api-and-spec-flow.md) | S | S_01 公开 API 表面与 Spec 流 | alan_cheng | openjiuwen/agent_teams | — | — |
 | [S_02_team-agent-architecture](specs/agent_teams/S_02_team-agent-architecture.md) | S | TeamAgent 架构规约 | alan_cheng | openjiuwen/agent_teams | — | — |
 | [S_03_coordination-protocol](specs/agent_teams/S_03_coordination-protocol.md) | S | Coordination Protocol | alan_cheng | openjiuwen/agent_teams | — | — |

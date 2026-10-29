@@ -1,3 +1,21 @@
+---
+id: F_20261022_2319_inline-member-worktree-isolation
+title: 调度模式内联成员支持 worktree 隔离
+type: F
+author: alan_cheng
+author_email: chengshuo5@huawei.com
+modules:
+- openjiuwen/agent_teams
+files:
+- openjiuwen/agent_teams/tools/tool_task.py
+- openjiuwen/agent_teams/tools/locales/cn.py
+- openjiuwen/agent_teams/tools/locales/en.py
+- openjiuwen/agent_teams/tools/locales/descs/cn/fragments/create_task_inline_member.md
+- openjiuwen/agent_teams/tools/locales/descs/en/fragments/create_task_inline_member.md
+designs: []
+design_note: 对 F_118 内联成员参数遗漏的小范围补齐，复用既有 `isolation` 契约，无独立设计
+---
+
 # 调度模式内联成员支持 worktree 隔离
 
 ## 元信息

@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: MengHan18
-author_email: hanmeng22@huawei.com
+author: alan_cheng
+author_email: chengshuo5@huawei.com
 generated: true
 ---
 
@@ -9,13 +9,13 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 177 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 180 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
 | 模块 | 文档数 |
 |---|---|
-| [agent_teams](#module-1) | 145 |
+| [agent_teams](#module-1) | 148 |
 | [harness](#module-2) | 32 |
 
 <a id="module-1"></a>
@@ -67,6 +67,8 @@ generated: true
 | [F_125_team-expert-catalog-and-spawn](agent_teams/F_125_team-expert-catalog-and-spawn.md) | F | Team 专家目录与按模板拉起专家成员 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_126_scheduled-member-peer-messaging](agent_teams/F_126_scheduled-member-peer-messaging.md) | F | 调度模式：可配置的成员间通信 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_127_merge-spawn-external-cli-into-spawn-teammate](agent_teams/F_127_merge-spawn-external-cli-into-spawn-teammate.md) | F | `spawn_external_cli` 并入 `spawn_teammate` | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [F_128_scheduled-member-subtasks](agent_teams/F_128_scheduled-member-subtasks.md) | F | 调度模式：成员拆分子任务（父任务挂起 / 恢复） | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [F_129_task-revision-and-staleness](agent_teams/F_129_task-revision-and-staleness.md) | F | 任务版本与过期感知：任务被修改后，执行者一定能知道 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_12_multicast-full-roster-rejection](agent_teams/F_12_multicast-full-roster-rejection.md) | F | 禁止覆盖全员的组播，强制改用广播 | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_13_human-agent-send-message](agent_teams/F_13_human-agent-send-message.md) | F | Human Agent — User-Driven `send_message` Relay | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_14_human-agent-team-event-rendering](agent_teams/F_14_human-agent-team-event-rendering.md) | F | Human Agent — Role-Aware Team Event Rendering | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
@@ -75,6 +77,7 @@ generated: true
 | [F_17_spawn-member-visibility-contract](agent_teams/F_17_spawn-member-visibility-contract.md) | F | spawn_member — Public / Private Visibility Contract in Tool Description | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_18_hide-human-agent-role-from-teammate](agent_teams/F_18_hide-human-agent-role-from-teammate.md) | F | Hide Human-Agent Role from Teammate Prompts (Switchable) | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_19_monitor-hide-dm-switch](agent_teams/F_19_monitor-hide-dm-switch.md) | F | Monitor `hide_dm` Switch | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
+| [F_20261022_2319_inline-member-worktree-isolation](F_20261022_2319_inline-member-worktree-isolation.md) | F | 调度模式内联成员支持 worktree 隔离 | alan_cheng | openjiuwen/agent_teams | openjiuwen/agent_teams/tools/tool_task.py, openjiuwen/agent_teams/tools/locales/cn.py, openjiuwen/agent_teams/tools/locales/en.py, openjiuwen/agent_teams/tools/locales/descs/cn/fragments/create_task_inline_member.md, openjiuwen/agent_teams/tools/locales/descs/en/fragments/create_task_inline_member.md | 无独立 D：对 F_118 内联成员参数遗漏的小范围补齐，复用既有 `isolation` 契约，无独立设计 |
 | [F_20_human-agent-mailbox-unread-flip](agent_teams/F_20_human-agent-mailbox-unread-flip.md) | F | Human-Agent Mailbox: Flip Auto-Read Off | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_21_external-agent-access](agent_teams/F_21_external-agent-access.md) | F | External Agent Access: skill+cli / mcp Wrappers | alan_cheng | openjiuwen/agent_teams | — | 待核实 |
 | [F_21_team-completion-auto-pause](agent_teams/F_21_team-completion-auto-pause.md) | F | Team Completion Auto-Pause | alan_cheng | openjiuwen/agent_teams | — | 待核实 |

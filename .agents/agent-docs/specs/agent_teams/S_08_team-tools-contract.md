@@ -38,7 +38,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
 | 最近一次修订日期 | 2026-10-28 |
-| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_127_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md、F_129_task-revision-and-staleness.md |
+| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_20261022_2319_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md、F_129_task-revision-and-staleness.md |
 
 ## 范围 / 边界
 
@@ -446,7 +446,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     `desc` / `prompt` / `model_name` 与 `spawn_teammate` 逐字相同 + 必填 `lifetime ∈
     {shutdown, dormant}` + 可选 `isolation`（取值同 `spawn_teammate`，只能是 `"worktree"`，经
     `register_teammate` 透传、走同一个 `validate_worktree_isolation` 闸；外部 CLI 内联成员——`cli_agent`
-    或外部运行时专家——带 `isolation` 在任何写库前拒绝，同 `spawn_expert`，F_127），与 `assignee` 二选一（同名 `assignee` 宽容放行 + 结果附提醒，见不变量 19）。
+    或外部运行时专家——带 `isolation` 在任何写库前拒绝，同 `spawn_expert`，F_20261022_2319_inline-member-worktree-isolation），与 `assignee` 二选一（同名 `assignee` 宽容放行 + 结果附提醒，见不变量 19）。
     `invoke` 顺序：批内纯校验（承担者冲突、命名模式、
     批内不重名、非 leader、lifetime 合法）→ 把 `member_name` 绑为 spec 的 `assignee` → 既有
     review / reviewer / assignee 校验 → `spawn_member(..., lifetime=)` 落 `UNSTARTED` 行 →

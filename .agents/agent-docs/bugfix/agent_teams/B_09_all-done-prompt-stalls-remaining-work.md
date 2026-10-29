@@ -1,3 +1,17 @@
+---
+title: 看板清空的收尾提示让 leader 停止建任务，且之后再清空不再提示
+author: alan_cheng
+author_note: 按 Git 最早可追溯的文档新增提交署名；不代表代码 owner
+id: B_09_all-done-prompt-stalls-remaining-work
+type: B
+modules:
+- openjiuwen/agent_teams
+files: []
+designs: null
+design_note: 历史设计关联待核实，不等同于没有关联设计
+author_email: chengshuo5@huawei.com
+---
+
 # 看板清空的收尾提示让 leader 停止建任务，且之后再清空不再提示
 
 ## 元信息
