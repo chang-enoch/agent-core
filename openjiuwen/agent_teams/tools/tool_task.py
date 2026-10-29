@@ -6,10 +6,11 @@
 from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.agent_teams.message_template import task_links, upstream_lines
-from openjiuwen.agent_teams.schema.status import TaskStatus
+from openjiuwen.agent_teams.schema.status import MEMBER_DEPARTED_STATUSES, MemberStatus, TaskStatus
 from openjiuwen.agent_teams.schema.task import TaskGraphSpec
 from openjiuwen.agent_teams.timefmt import format_time_context
 from openjiuwen.agent_teams.tools.database.engine import get_current_time
+from openjiuwen.agent_teams.tools.database.graph import TASK_TERMINAL_STATUSES, TASK_WORKING_STATUSES
 from openjiuwen.agent_teams.tools.locales import Translator
 from openjiuwen.agent_teams.tools.task_manager import TeamTaskManager
 from openjiuwen.agent_teams.tools.team import TeamBackend
@@ -92,7 +93,9 @@ def _inline_member_schema(
 
     The five public fields are ``spawn_teammate``'s, word for word — an inline
     member *is* a teammate row, only written by ``create_task`` — so their
-    descriptions are shared. ``lifetime`` is what makes it inline: a member
+    descriptions are shared. ``isolation`` is ``spawn_teammate``'s too, for a
+    native member that edits the repository; an external CLI member cannot
+    take it. ``lifetime`` is what makes it inline: a member
     declared with its task always carries a retirement policy.
     ``member_model_description`` overrides the plain ``model_name`` prose,
     e.g. with a model group's selectable catalog. ``expert_enabled`` (the host
@@ -114,6 +117,11 @@ def _inline_member_schema(
             "model_name": {
                 "type": "string",
                 "description": member_model_description or t("spawn_teammate", "model_name"),
+            },
+            "isolation": {
+                "type": "string",
+                "enum": ["worktree"],
+                "description": t("create_task_scheduled", "task.member.isolation"),
             },
             "lifetime": {
                 "type": "string",
@@ -255,6 +263,14 @@ def _validate_inline_members(
         error = _check_inline_external_cli(member, expert=expert, external_cli_enabled=external_cli_enabled)
         if error:
             return f"Task {_spec_label(spec)!r}: {error}"
+        isolation = member.get("isolation")
+        if isolation not in (None, "worktree") or (isolation and (member.get("cli_agent") or "").strip()):
+            reason = (
+                "must be 'worktree' or omitted"
+                if isolation not in (None, "worktree")
+                else "cannot be set for an external CLI member (member.cli_agent)"
+            )
+            return f"Task {_spec_label(spec)!r}: member.isolation {reason}"
         # An expert member takes its display name and description from the template.
         for key in () if expert else ("display_name", "desc"):
             if not (member.get(key) or "").strip():
@@ -368,6 +384,7 @@ async def _materialize_inline_members(
                 desc=desc,
                 prompt=prompt,
                 allocation=allocation,
+                isolation=member.get("isolation"),
                 lifetime=member["lifetime"],
                 agent_template=agent_template,
             )
@@ -394,7 +411,7 @@ async def _resolve_inline_experts(
     """Resolve every inline member's expert template before anything is written.
 
     As in ``spawn_expert``, ``external_cli`` is rejected for an expert that
-    runs natively.
+    runs natively, and ``isolation`` for one with an external runtime.
     """
     from openjiuwen.agent_teams.tools.tool_expert import ExpertUnavailable
 
@@ -413,6 +430,11 @@ async def _resolve_inline_experts(
             return {}, (
                 f"Task {_spec_label(spec)!r}: expert '{template.ref.label()}' runs natively; member.external_cli "
                 "applies only to experts with an external runtime — omit it"
+            )
+        if template.external_cli is not None and member.get("isolation") is not None:
+            return {}, (
+                f"Task {_spec_label(spec)!r}: member.isolation cannot be set for expert "
+                f"'{template.ref.label()}': it runs on an external CLI runtime"
             )
         templates[member["member_name"].strip()] = template
     return templates, None
@@ -435,7 +457,13 @@ async def _validate_assignees(
     required: bool,
     batch_members: frozenset[str] = frozenset(),
 ) -> str | None:
-    """Reject assignees that are missing, unknown, or point to the leader.
+    """Reject assignees that are missing, unknown, retired, or point to the leader.
+
+    A ``SHUTDOWN`` member left the team for good: no startup path can bring
+    it back, so a task handed to it would sit on the board with nobody to
+    work it; one still shutting down is refused too (see
+    ``_retired_assignee_error``). A ``DORMANT`` member stays assignable — the
+    start handoff wakes it.
 
     Args:
         agent_team: Backend used for the leader lookup and the roster probe.
@@ -462,9 +490,82 @@ async def _validate_assignees(
             )
         if assignee in batch_members:
             continue
-        if not await agent_team.member_exists(assignee):
+        status = await agent_team.get_member_status(assignee)
+        if status is None:
             return f"Task {_spec_label(spec)!r}: member {assignee!r} not found in the team"
+        error = _retired_assignee_error(_spec_label(spec), assignee, status)
+        if error:
+            return error
     return None
+
+
+#: Persisted values of ``MEMBER_DEPARTED_STATUSES``; rows may hold strings no enum member matches.
+_DEPARTED_STATUS_VALUES = frozenset(status.value for status in MEMBER_DEPARTED_STATUSES)
+
+
+def _retired_assignee_error(label: str, assignee: str, status: str | None) -> str | None:
+    """Refuse handing a task to a member that has left the team or is leaving it.
+
+    ``SHUTDOWN`` is final: no startup path brings it back. A member still
+    shutting down (``SHUTDOWN_REQUESTED``) is refused as well: it may settle
+    into ``SHUTDOWN`` — a leader force shutdown does so even for a
+    ``"dormant"`` lifetime — and a task accepted in that window would be
+    started on a member that is gone. One settling into ``DORMANT`` can take
+    the task once it has settled.
+
+    Args:
+        label: Task label for the error message.
+        assignee: The member the task would be handed to.
+        status: ``assignee``'s current persisted status.
+
+    Returns:
+        The error message, or None when the member can take the task.
+    """
+    if status not in _DEPARTED_STATUS_VALUES:
+        return None
+    if status == MemberStatus.SHUTDOWN.value:
+        return (
+            f"Task {label!r}: member {assignee!r} has shut down and cannot be started again; "
+            f"spawn a new member for this task or assign it to another live member"
+        )
+    return (
+        f"Task {label!r}: member {assignee!r} is shutting down; if it is settling into dormant, "
+        f"assign the task once it has settled, otherwise spawn a new member or assign it to another live member"
+    )
+
+
+async def _unseen_revision_error(task_manager: TeamTaskManager, task: Any) -> str | None:
+    """Refuse to complete a task edited since its assignee last saw it (F_129 / D4).
+
+    Optimistic concurrency on the task body: the submission is based on the
+    revision the assignee was shown, so a newer one must be read first.
+    Reading it (``view_task(action=get)``) records it as seen. A human
+    assignee reads the task on its own screen, not through the notices that
+    record a revision as seen, so it is never held back here.
+    """
+    observed = int(getattr(task, "observed_revision", 0) or 0)
+    revision = int(getattr(task, "revision", 0) or 0)
+    if revision <= observed:
+        return None
+    member_dao = task_manager.db.member
+    if member_dao is not None and await member_dao.is_live_human_agent(task_manager.team_name, task.assignee or ""):
+        return None
+    return (
+        f"Task '{task.task_id}' was edited after you started it (r{observed} -> r{revision}). "
+        f"Read the latest requirements with view_task(action='get', task_id='{task.task_id}'), "
+        "adjust your work if needed, then submit again."
+    )
+
+
+# How update_task reports the way a new revision reaches the assignee (F_129).
+_REVISION_DELIVERY_LINES = {
+    "pushed": "The new revision is sent to {assignee} with the latest content.",
+    "notified": "{assignee} is told to re-read the task before continuing.",
+    "review_requested": (
+        "{assignee} is asked to review this task's subtasks against the new revision before it resumes."
+    ),
+    "on_start": "{assignee} has not started it yet and will start from the latest content.",
+}
 
 
 # Appended to member_complete_task results under scheduled dispatch (F_119).
@@ -970,6 +1071,306 @@ class ScheduledTaskCreateTool(TeamTool):
         return "\n".join(lines)
 
 
+# Arguments only the leader's scheduled ``create_task`` takes, plus the two
+# subtask columns the tool fills itself (F_128). Named so a stray one from an
+# MCP client is rejected rather than dropped.
+_SUBTASK_FORBIDDEN_FIELDS = (
+    "member",
+    "reviewer",
+    "max_review_rounds",
+    "depended_by",
+    "parent_task_id",
+    "created_by",
+)
+
+# Appended to a successful split (F_128): the parent is parked, so anything
+# the member does on it before resuming is wasted.
+_SUBTASK_SUSPEND_NOTICE = (
+    "Your task {parent} is suspended until these subtasks finish. End this turn now; the scheduler "
+    "resumes {parent} with the subtask results once all of them are done."
+)
+
+
+def _subtask_node_schema(t: Translator) -> dict:
+    """Build the member subtask node schema: base fields, required owner, no in-place edges."""
+    properties = _base_task_node_properties(t)
+    properties.pop("depended_by")
+    properties["assignee"] = {"type": "string", "description": t("create_task_subtask", "task.assignee")}
+    return _task_node_schema(properties, extra_required=["assignee"])
+
+
+class MemberSubtaskCreateTool(TeamTool):
+    """Split the caller's executing task into subtasks (scheduled members, F_128).
+
+    The parent is always the caller's own ``IN_PROGRESS`` task — derived
+    here, never a model argument. One ``add_graph`` call creates the
+    subtasks, makes the parent depend on each of them and parks it at
+    ``BLOCKED``, which frees the caller's active slot: a subtask may go to the
+    caller itself, and no two members can wait on each other's slot. The
+    dependency refresh returns the parent to ``PENDING`` once every subtask is
+    terminal, and the scheduler resumes it with their summaries.
+
+    Narrower than the leader's scheduled form: every subtask names an
+    existing member (no inline ``member``, no reviewers), and there is no
+    ``depended_by`` — a member wires only its own subtasks.
+    """
+
+    def __init__(self, agent_team: TeamBackend, t: Translator):
+        super().__init__(
+            ToolCard(
+                id="team.create_task",
+                name="create_task",
+                description=t("create_task_subtask"),
+            )
+        )
+        self.agent_team = agent_team
+        self.task_manager = agent_team.task_manager
+        self.card.input_params = {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": _subtask_node_schema(t),
+                    "description": t("create_task", "tasks"),
+                },
+            },
+            "required": ["tasks"],
+        }
+
+    async def _validate_owners(self, tasks: list[dict]) -> str | None:
+        """Existing non-leader owners, and no live human — the leader cannot cancel their tasks.
+
+        Three reads for the whole batch (leader name, roster, live humans)
+        instead of two per subtask; the roster projection leaves out the
+        caller, who is a valid owner of its own subtasks.
+        """
+        leader_member_name = await self.agent_team.resolve_leader_member_name()
+        roster = {entry.member_name for entry in await self.agent_team.list_member_roster()}
+        roster.add(self.agent_team.member_name)
+        humans = await self.agent_team.live_human_agent_names()
+        for spec in tasks:
+            assignee = (spec.get("assignee") or "").strip()
+            if not assignee:
+                return (
+                    f"Task {_spec_label(spec)!r} missing required 'assignee' — "
+                    f"assigned tasks must name a non-leader team member"
+                )
+            if leader_member_name and assignee == leader_member_name:
+                return (
+                    f"Task {_spec_label(spec)!r}: assignee {assignee!r} is the team leader; "
+                    f"assign the task to a non-leader member"
+                )
+            if assignee not in roster:
+                return f"Task {_spec_label(spec)!r}: member {assignee!r} not found in the team"
+            if assignee in humans:
+                return (
+                    f"Task {_spec_label(spec)!r}: {assignee!r} is a human member; subtasks go to "
+                    f"agent members only — ask the leader to involve a human"
+                )
+        return None
+
+    async def invoke(self, inputs: dict[str, Any], **kwargs) -> ToolOutput:
+        tasks = inputs.get("tasks", [])
+        if not tasks:
+            return ToolOutput(success=False, error="'tasks' is required")
+
+        error = _validate_task_batch(tasks)
+        if error:
+            return ToolOutput(success=False, error=error)
+        for spec in tasks:
+            # Presence, not truthiness: an empty ``member: {}`` is still an
+            # argument this form does not take. Only an explicit null counts
+            # as absent.
+            stray = [name for name in _SUBTASK_FORBIDDEN_FIELDS if spec.get(name) is not None]
+            if stray:
+                return ToolOutput(
+                    success=False,
+                    error=(
+                        f"Task {_spec_label(spec)!r}: {stray} are not accepted when splitting your task — "
+                        "subtasks name an existing member as 'assignee' and only use 'depends_on'"
+                    ),
+                )
+
+        member_name = self.agent_team.member_name
+        executing = await self.task_manager.get_tasks_by_assignee(member_name, TaskStatus.IN_PROGRESS.value)
+        if not executing:
+            return ToolOutput(
+                success=False,
+                error=(
+                    "create_task splits the task you are executing, but you have no in-progress task; "
+                    "ask the leader if new work is needed"
+                ),
+            )
+        parent = executing[0]
+        limit = self.agent_team.subtask_depth_limit()
+        depth = await self.task_manager.task_depth(parent)
+        if depth + 1 > limit:
+            return ToolOutput(
+                success=False,
+                error=(
+                    f"Task {parent.task_id} is already a subtask at depth {depth}; this team allows "
+                    f"subtasks {limit} level(s) deep. Finish it yourself, or tell the leader it needs splitting"
+                ),
+            )
+        error = await self._validate_owners(tasks)
+        if error:
+            return ToolOutput(success=False, error=error)
+
+        result = await self.task_manager.add_graph(
+            [
+                TaskGraphSpec(
+                    title=spec["title"],
+                    content=spec["content"],
+                    task_id=spec.get("task_id"),
+                    depends_on=tuple(spec.get("depends_on") or ()),
+                    assignee=spec["assignee"].strip(),
+                    parent_task_id=parent.task_id,
+                    created_by=member_name,
+                    parent_revision=parent.revision or 0,
+                )
+                for spec in tasks
+            ],
+            suspend_parent=parent.task_id,
+        )
+        if not result.ok:
+            return ToolOutput(success=False, error=result.reason)
+
+        briefs = [{**task.brief(), "assignee": task.assignee} for task in result.tasks]
+        return ToolOutput(
+            success=True,
+            data={"parent_task_id": parent.task_id, "tasks": briefs, "count": len(briefs)},
+        )
+
+    def render_for_llm(self, output: ToolOutput) -> str:
+        if not output.success:
+            return output.error or "Operation failed"
+        d = output.data
+        lines = [f"task_id={task['task_id']} title={task['title']} {_owner_phrase(task)}" for task in d["tasks"]]
+        lines.append(f"Created {d['count']} subtask(s) of {d['parent_task_id']}")
+        lines.append(_SUBTASK_SUSPEND_NOTICE.format(parent=d["parent_task_id"]))
+        return "\n".join(lines)
+
+
+# Arguments of the leader's update_task a subtask owner does not get (F_129).
+_SUBTASK_UPDATE_FORBIDDEN_FIELDS = ("assignee", "reviewer", "max_review_rounds", "add_blocked_by")
+
+
+class MemberSubtaskUpdateTool(TeamTool):
+    """Edit, confirm or cancel the subtasks of your own task (scheduled members, F_129).
+
+    The review step of member subtasks: when the parent is edited, its
+    subtasks were split off an older revision and are stale. The parent's
+    current owner — not the subtask's creator, ownership follows the parent —
+    goes through them: edits one (a revision bump the scheduler pushes to its
+    executor), confirms one still holds (re-aligns its ``parent_revision``
+    without touching it), or cancels one (with its own subtasks). Reassigning,
+    reviewers and dependencies stay the leader's.
+    """
+
+    def __init__(self, agent_team: TeamBackend, t: Translator):
+        super().__init__(
+            ToolCard(
+                id="team.update_task",
+                name="update_task",
+                description=t("update_task_subtask"),
+            )
+        )
+        self.agent_team = agent_team
+        self.task_manager = agent_team.task_manager
+        self.card.input_params = {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": t("update_task_subtask", "task_id")},
+                "title": {"type": "string", "description": t("update_task", "title")},
+                "content": {"type": "string", "description": t("update_task", "content")},
+                "change_note": {"type": "string", "description": t("update_task", "change_note")},
+                "confirm": {"type": "boolean", "description": t("update_task_subtask", "confirm")},
+                "status": {
+                    "type": "string",
+                    "enum": ["cancelled"],
+                    "description": t("update_task_subtask", "status"),
+                },
+            },
+            "required": ["task_id"],
+        }
+
+    async def invoke(self, inputs: dict[str, Any], **kwargs) -> ToolOutput:
+        task_id = (inputs.get("task_id") or "").strip()
+        if not task_id:
+            return ToolOutput(success=False, error="'task_id' is required")
+        stray = [name for name in _SUBTASK_UPDATE_FORBIDDEN_FIELDS if inputs.get(name) is not None]
+        if stray:
+            return ToolOutput(
+                success=False,
+                error=f"{stray} are not accepted on subtasks — ask the leader to reassign or rewire a task",
+            )
+        title = inputs.get("title")
+        content = inputs.get("content")
+        change_note = (inputs.get("change_note") or "").strip() or None
+        confirm = inputs.get("confirm") is True
+        cancel = inputs.get("status") == "cancelled"
+        if inputs.get("status") is not None and not cancel:
+            return ToolOutput(success=False, error="'status' only takes 'cancelled'")
+        if change_note and not (title or content):
+            return ToolOutput(success=False, error="'change_note' describes an edit; pass it with title / content")
+        if not (title or content or confirm or cancel):
+            return ToolOutput(success=False, error="Pass title / content to edit, confirm=true, or status='cancelled'")
+
+        task = await self.task_manager.get(task_id)
+        if task is None:
+            return ToolOutput(success=False, error=f"Task '{task_id}' not found")
+        parent = await self.task_manager.get(task.parent_task_id) if task.parent_task_id else None
+        if parent is None or parent.assignee != self.agent_team.member_name:
+            return ToolOutput(
+                success=False,
+                error=(
+                    f"Task '{task_id}' is not a subtask of a task you hold; you can only manage the "
+                    "subtasks of your own tasks — ask the leader for anything else"
+                ),
+            )
+        if task.status in (TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value):
+            return ToolOutput(success=False, error=f"Task '{task_id}' is already {task.status}")
+
+        if cancel:
+            cancelled = await self.task_manager.cancel(task_id)
+            if cancelled is None:
+                return ToolOutput(success=False, error=f"Failed to cancel task '{task_id}'")
+            return ToolOutput(success=True, data={"task_id": task_id, "action": "cancelled"})
+
+        result = await self.task_manager.update_task(
+            task_id,
+            title=title,
+            content=content,
+            change_note=change_note,
+            parent_revision=parent.revision or 0,
+        )
+        if not result.ok:
+            return ToolOutput(success=False, error=result.reason)
+        revised = bool((result.data or {}).get("revised"))
+        return ToolOutput(
+            success=True,
+            data={
+                "task_id": task_id,
+                "action": "revised" if revised else "confirmed",
+                "revision": (result.data or {}).get("revision"),
+                "assignee": task.assignee,
+            },
+        )
+
+    def render_for_llm(self, output: ToolOutput) -> str:
+        if not output.success:
+            return output.error or "Operation failed"
+        d = output.data
+        if d["action"] == "cancelled":
+            return f"Subtask #{d['task_id']} cancelled, with any subtasks of its own."
+        if d["action"] == "revised":
+            return (
+                f"Subtask #{d['task_id']} revised (now r{d['revision']}); "
+                f"the latest content is sent to {d.get('assignee') or 'its executor'}."
+            )
+        return f"Subtask #{d['task_id']} confirmed as still valid against its parent."
+
+
 class ViewTaskToolV2(TeamTool):
     """Unified task viewing tool (V2).
 
@@ -1011,6 +1412,9 @@ class ViewTaskToolV2(TeamTool):
                 return ToolOutput(success=False, error="task_id required for get action")
             detail = await self.task_manager.get_task_detail(task_id=task_id)
             if detail:
+                # The assignee reading its own task has now seen this revision (F_129).
+                if detail.assignee and detail.assignee == self.task_manager.member_name:
+                    await self.task_manager.observe_revision(task_id, detail.revision)
                 data = detail.model_dump(exclude_none=True)
                 # Direct upstream deliveries as one summary line each (F_120).
                 upstream, _downstream = await task_links(self.task_manager.db, task_id)
@@ -1089,6 +1493,14 @@ class ViewTaskToolV2(TeamTool):
                 lines.append(f"Blocked by: {', '.join(f'#{tid}' for tid in d['blocked_by'])}")
             if d.get("blocks"):
                 lines.append(f"Blocks: {', '.join(f'#{tid}' for tid in d['blocks'])}")
+            if d.get("parent_task_id"):
+                lines.append(f"Subtask of: #{d['parent_task_id']}")
+            if d.get("revision"):
+                lines.append(f"Revision: r{d['revision']}")
+            if d.get("subtasks"):
+                stale = set(d.get("stale_subtasks") or ())
+                marked = [f"#{tid} [stale]" if tid in stale else f"#{tid}" for tid in d["subtasks"]]
+                lines.append(f"Subtasks: {', '.join(marked)}")
             if d.get("upstream"):
                 lines.append("Upstream deliveries:")
                 lines.extend(d["upstream"])
@@ -1106,6 +1518,11 @@ class ViewTaskToolV2(TeamTool):
                 parts.append(f"({format_time_context(task['updated_at'], now_ms)})")
             if task.get("blocked_by"):
                 parts.append(f"[blocked by {', '.join(f'#{tid}' for tid in task['blocked_by'])}]")
+            if task.get("parent_task_id"):
+                parts.append(f"[subtask of #{task['parent_task_id']}]")
+            if task.get("stale_against"):
+                parent_revision, based_on = task["stale_against"]
+                parts.append(f"[stale: parent r{parent_revision} / based on r{based_on}]")
             lines.append(" ".join(parts))
         return "\n".join(lines)
 
@@ -1174,6 +1591,7 @@ class UpdateTaskTool(TeamTool):
             },
             "title": {"type": "string", "description": t("update_task", "title")},
             "content": {"type": "string", "description": t("update_task", "content")},
+            "change_note": {"type": "string", "description": t("update_task", "change_note")},
             "assignee": {"type": "string", "description": t("update_task", "assignee")},
             "add_blocked_by": {
                 "type": "array",
@@ -1262,6 +1680,9 @@ class UpdateTaskTool(TeamTool):
         status = inputs.get("status")
         title = inputs.get("title")
         content = inputs.get("content")
+        change_note = (inputs.get("change_note") or "").strip() or None
+        if change_note and not (title or content):
+            return ToolOutput(success=False, error="'change_note' describes an edit; pass it with title / content")
         assignee = inputs.get("assignee")
         reviewer = inputs.get("reviewer")
         max_review_rounds = inputs.get("max_review_rounds")
@@ -1282,6 +1703,17 @@ class UpdateTaskTool(TeamTool):
         task = await self.task_manager.get(task_id)
         if not task:
             return ToolOutput(success=False, error="Task not found")
+        # Before any edit lands: a rejected reassignment must not leave a
+        # half-applied update behind. Only a real hand-over is checked — a
+        # cancel, or naming the current owner again, hands nothing to anyone.
+        if assignee and assignee != task.assignee and status != "cancelled":
+            error = _retired_assignee_error(
+                task_id,
+                assignee,
+                await self.agent_team.get_member_status(assignee),
+            )
+            if error:
+                return ToolOutput(success=False, error=error)
 
         if status == "completed":
             return ToolOutput(
@@ -1336,13 +1768,23 @@ class UpdateTaskTool(TeamTool):
                     success=False,
                     error=self.t("update_task", "error_human_agent_locked_edit", task_id=task_id),
                 )
-            result = await self.task_manager.update_task(task_id, title=title, content=content)
+            result = await self.task_manager.update_task(task_id, title=title, content=content, change_note=change_note)
             if not result.ok:
                 return ToolOutput(success=False, error=result.reason)
+            if change_note and not (result.data or {}).get("revised"):
+                return ToolOutput(
+                    success=False,
+                    error=(
+                        f"Task #{task_id}: the title and content are unchanged, so no new revision was made "
+                        "and the change_note was not recorded. To tell the assignee something without "
+                        "editing the task, use send_message."
+                    ),
+                )
             if title:
                 updated.append("title")
             if content:
                 updated.append("content")
+            revision_info = await self._revision_info(task, result.data or {})
 
         # Assign task to member. When the task is already owned by a
         # different member, treat this as a leader-driven reassignment: the
@@ -1452,8 +1894,42 @@ class UpdateTaskTool(TeamTool):
                 "task_id": task_id,
                 "status": "updated",
                 "updated_fields": updated,
+                **(revision_info if title or content else {}),
             },
         )
+
+    async def _revision_info(self, task: Any, result: dict) -> dict:
+        """What the leader should know after an edit (F_129): the new revision,
+        how its assignee gets it, and the subtasks it leaves stale."""
+        if not result.get("revised"):
+            return {}
+        info: dict[str, Any] = {"revision": result.get("revision")}
+        delivery = self._revision_delivery(task)
+        if delivery:
+            info["assignee"] = task.assignee
+            info["delivery"] = delivery
+        stale = await self.task_manager.open_subtask_ids(task.task_id)
+        if stale:
+            info["stale_subtasks"] = stale
+            info["subtask_owner"] = task.assignee
+        return info
+
+    def _revision_delivery(self, task: Any) -> str | None:
+        """How the assignee learns of a new revision, from the task's status at edit time.
+
+        Mirrors the paths that actually carry it: under scheduled dispatch the
+        scheduler pushes an executing task's revision and asks a suspended
+        parent's owner to review its subtasks; an autonomous executor is
+        steered (or told on its next input). A task not started yet gets
+        nothing now — the content it is started with is the latest.
+        """
+        if not task.assignee or task.status in TASK_TERMINAL_STATUSES or task.status == TaskStatus.IN_REVIEW.value:
+            return None
+        if task.status in TASK_WORKING_STATUSES:
+            return "pushed" if self._review_enabled else "notified"
+        if self._review_enabled and task.status == TaskStatus.BLOCKED.value and task.resume_pending:
+            return "review_requested"
+        return "on_start"
 
     def render_for_llm(self, output: ToolOutput) -> str:
         if not output.success:
@@ -1461,7 +1937,19 @@ class UpdateTaskTool(TeamTool):
         d = output.data
         if "cancelled_count" in d:
             return f"Cancelled {d['cancelled_count']} tasks"
-        return f"Task #{d['task_id']} {d['status']}"
+        lines = [f"Task #{d['task_id']} {d['status']}"]
+        if d.get("revision") is not None:
+            lines[0] += f" (now r{d['revision']})"
+        delivery_line = _REVISION_DELIVERY_LINES.get(d.get("delivery") or "")
+        if delivery_line:
+            lines.append(delivery_line.format(assignee=d.get("assignee")))
+        if d.get("stale_subtasks"):
+            subtasks = ", ".join(f"#{tid}" for tid in d["stale_subtasks"])
+            lines.append(
+                f"Its open subtasks {subtasks} are now stale against it; {d.get('subtask_owner') or 'its owner'} "
+                "is asked to review them. You may also edit or cancel them directly."
+            )
+        return "\n".join(lines)
 
 
 class SubmitPlanTool(TeamTool):
@@ -1583,6 +2071,9 @@ class ClaimTaskTool(TeamTool):
                 extra["fields_ignored"] = True
 
         elif status == "completed":
+            error = await _unseen_revision_error(self.task_manager, task)
+            if error:
+                return ToolOutput(success=False, error=error)
             complete_result = await self.task_manager.complete(task_id=task_id, summary=summary, note=note)
             if not complete_result.ok:
                 return ToolOutput(success=False, error=complete_result.reason)
@@ -1697,6 +2188,10 @@ class MemberCompleteTaskTool(TeamTool):
                     "you can only complete tasks assigned to yourself"
                 ),
             )
+
+        error = await _unseen_revision_error(self.task_manager, task)
+        if error:
+            return ToolOutput(success=False, error=error)
 
         summary = (inputs.get("summary") or "").strip() or None
         note = (inputs.get("note") or "").strip() or None

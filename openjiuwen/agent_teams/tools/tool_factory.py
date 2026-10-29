@@ -38,6 +38,8 @@ from openjiuwen.agent_teams.tools.tool_permissions import (
 from openjiuwen.agent_teams.tools.tool_task import (
     ClaimTaskTool,
     MemberCompleteTaskTool,
+    MemberSubtaskCreateTool,
+    MemberSubtaskUpdateTool,
     ScheduledTaskCreateTool,
     SubmitPlanTool,
     TaskCreateTool,
@@ -65,9 +67,25 @@ if TYPE_CHECKING:
 # These are closed sets, so they are literal tables rather than a registry:
 # a missing combination raises KeyError instead of silently falling back.
 
-_CREATE_TASK_CLASS: dict[str, type] = {
-    "autonomous": TaskCreateTool,
-    "scheduled": ScheduledTaskCreateTool,
+# Keyed by (dispatch_mode, "leader" | "member"). Scheduled members split
+# their own task into subtasks (F_128); the autonomous member cell exists only
+# so every role can be assembled — autonomous members are never granted
+# ``create_task`` by the permission sets.
+_CREATE_TASK_CLASS: dict[tuple[str, str], type] = {
+    ("autonomous", "leader"): TaskCreateTool,
+    ("autonomous", "member"): TaskCreateTool,
+    ("scheduled", "leader"): ScheduledTaskCreateTool,
+    ("scheduled", "member"): MemberSubtaskCreateTool,
+}
+
+# Keyed by (dispatch_mode, "leader" | "member"), like ``_CREATE_TASK_CLASS``:
+# a scheduled member edits, confirms or cancels the subtasks of its own task
+# (F_129). The autonomous member cell exists only for assembly.
+_UPDATE_TASK_CLASS: dict[tuple[str, str], type] = {
+    ("autonomous", "leader"): UpdateTaskTool,
+    ("autonomous", "member"): UpdateTaskTool,
+    ("scheduled", "leader"): UpdateTaskTool,
+    ("scheduled", "member"): MemberSubtaskUpdateTool,
 }
 
 # Keyed by (dispatch_mode, "leader" | "member" | "member_peers"). Under
@@ -124,18 +142,18 @@ _VIEW_TASK_DESC_KEY: dict[str, str] = {
 # Construction-time keyword arguments per ``create_task`` variant. The
 # scheduled form can declare a task's owner inline (F_118): that needs the
 # model allocator ``spawn_teammate`` uses and the predefined-roster gate.
-# The autonomous form takes nothing extra; the table keeps the call site
-# branch-free.
+# The autonomous and member-subtask forms take nothing extra; the table keeps
+# the call site branch-free.
 
 
 def _create_task_kwargs(
-    dispatch_mode: str,
+    create_task_cls: type,
     *,
     team_mode: str,
     model_config_allocator: Any,
     expert_resolver: Any = None,
 ) -> dict[str, Any]:
-    if dispatch_mode == "scheduled":
+    if create_task_cls is ScheduledTaskCreateTool:
         return {
             "inline_member_enabled": team_mode != "predefined",
             "model_config_allocator": model_config_allocator,
@@ -268,7 +286,9 @@ def create_team_tools(
     msg_mgr = agent_team.message_manager
     # Variant selection is a construction-time table lookup: every tool below
     # still has a flat schema and a branch-free ``invoke``.
-    create_task_cls = _CREATE_TASK_CLASS[dispatch_mode]
+    role_column = "leader" if role == "leader" else "member"
+    create_task_cls = _CREATE_TASK_CLASS[(dispatch_mode, role_column)]
+    update_task_cls = _UPDATE_TASK_CLASS[(dispatch_mode, role_column)]
     expert_resolver = _expert_resolver(expert_catalog, expert_binding, language=lang)
     send_message_cls = _SEND_MESSAGE_CLASS[(dispatch_mode, _send_message_reach(role, dispatch_mode, agent_team))]
 
@@ -309,13 +329,17 @@ def create_team_tools(
             agent_team,
             t,
             **_create_task_kwargs(
-                dispatch_mode,
+                create_task_cls,
                 team_mode=team_mode,
                 model_config_allocator=model_config_allocator,
                 expert_resolver=expert_resolver,
             ),
         ),
-        "update_task": UpdateTaskTool(agent_team, t, dispatch_mode=dispatch_mode),
+        "update_task": (
+            UpdateTaskTool(agent_team, t, dispatch_mode=dispatch_mode)
+            if update_task_cls is UpdateTaskTool
+            else update_task_cls(agent_team, t)
+        ),
         "view_task": ViewTaskToolV2(task_mgr, t, desc_key=_VIEW_TASK_DESC_KEY[dispatch_mode]),
         "claim_task": ClaimTaskTool(task_mgr, t),
         "submit_plan": SubmitPlanTool(task_mgr, t),
@@ -354,6 +378,7 @@ def create_team_tools(
                 catalog=expert_catalog,
                 binding=expert_binding,
                 language=lang,
+                dispatch_mode=dispatch_mode,
                 model_config_allocator=model_config_allocator,
                 resolver=expert_resolver,
             )
@@ -433,6 +458,11 @@ def create_team_tools(
     # list.
     if not agent_team.fork_enabled():
         allowed = allowed - {"checkpoint", "list_checkpoints"}
+    # Member subtasks (F_128 / F_129): a scheduled member's ``create_task`` and
+    # ``update_task`` exist only when the team allows splitting. The leader's
+    # are never gated by it.
+    if role != "leader" and agent_team.member_subtasks_enabled() is not True:
+        allowed = allowed - {"create_task", "update_task"}
     # Swarmflow is wired only when the host supplied a worker-model resolver
     # (leader + enable_swarmflow). Same idempotent-subtraction gate as the
     # spawn tools.
@@ -465,6 +495,7 @@ def _expert_tools(
     catalog: "ExpertCatalog",
     binding: "ExpertBinding | None",
     language: str,
+    dispatch_mode: str,
     model_config_allocator: Any,
     resolver: Any,
 ) -> dict[str, Tool]:
@@ -473,7 +504,14 @@ def _expert_tools(
 
     bound_group = binding.bound_group if binding is not None else None
     return {
-        "view_experts": ViewExpertsTool(catalog, t, language=language),
+        "view_experts": ViewExpertsTool(
+            catalog,
+            t,
+            language=language,
+            bound_group=bound_group,
+            dispatch_mode=dispatch_mode,
+            declared_cli_kinds=agent_team.external_cli_kinds(),
+        ),
         "view_expert_groups": ViewExpertGroupsTool(
             catalog,
             t,

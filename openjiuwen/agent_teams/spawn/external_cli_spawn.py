@@ -176,6 +176,7 @@ async def _build_member_system_prompt(
         team_mode=_resolve_team_mode(spec),
         dispatch_mode=spec.dispatch_mode,
         member_messaging=spec.enable_member_messaging,
+        member_subtasks=spec.max_subtask_depth > 0,
         language=language,
         hitt_enabled=hitt_enabled,
         expose_human_agents_to_teammates=spec.expose_human_agents_to_teammates,
@@ -607,12 +608,11 @@ async def external_cli_spawn(
             team_name,
         ),
     )
-    if spec.dispatch_mode == "scheduled" and teammate_backend is not None:
-        from openjiuwen.agent_teams.team_context import TaskOutcomeTracker
+    from openjiuwen.agent_teams.team_context import build_task_event_tracker
 
-        runtime.bind_task_outcome_tracker(
-            TaskOutcomeTracker(team_backend=teammate_backend, member_name=member_name),
-        )
+    runtime.bind_task_outcome_tracker(
+        build_task_event_tracker(spec.dispatch_mode, team_backend=teammate_backend, member_name=member_name),
+    )
     from openjiuwen.agent_teams.external.member_runtime import ExternalHarnessMemberRuntime
 
     if isinstance(runtime, ExternalHarnessMemberRuntime):

@@ -18,8 +18,8 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/spawn/`、`openjiuwen/agent_teams/agent/spawn_manager.py`、`openjiuwen/agent_teams/agent/stream_controller.py`、`openjiuwen/agent_teams/agent/payload.py`、`openjiuwen/agent_teams/agent/agent_configurator.py`、`openjiuwen/agent_teams/worktree/`、`openjiuwen/agent_teams/context.py` |
-| 最近一次修订日期 | 2026-10-22 |
-| 关联 feature | F_38_team-teammate-worktree-isolation-agenttool.md、F_28_native-harness-team-adoption.md、F_60_native-harness-pause-abort-resume.md、F_69_cwd-workspace-project-root-separation.md、F_74_leader-member-activity-and-team-idle.md、F_77_team-idle-requires-a-settled-task-board.md、F_79_team-scoped-skill-library-and-visibility.md、F_80_fork-identity-conversion.md、F_84_task-creation-starts-members.md、F_125_team-expert-catalog-and-spawn.md |
+| 最近一次修订日期 | 2026-10-28 |
+| 关联 feature | F_38_team-teammate-worktree-isolation-agenttool.md、F_28_native-harness-team-adoption.md、F_60_native-harness-pause-abort-resume.md、F_69_cwd-workspace-project-root-separation.md、F_74_leader-member-activity-and-team-idle.md、F_77_team-idle-requires-a-settled-task-board.md、F_79_team-scoped-skill-library-and-visibility.md、F_80_fork-identity-conversion.md、F_84_task-creation-starts-members.md、F_125_team-expert-catalog-and-spawn.md；bugfix B_10_task-assigned-to-retired-member-stalls.md |
 
 ## 范围 / 边界
 
@@ -31,7 +31,7 @@ author_email: chengshuo5@huawei.com
 **管：**
 
 - 成员拉起的**单一漏斗**（`auto_start_member` / `auto_start_all` →
-  `startup_member` / `startup` → CAS → `_on_teammate_created` →
+  `startup_member` / `startup` → CAS → `_start_teammate_runtime` → `_on_teammate_created` →
   `SpawnManager.spawn_teammate`）与它的五个触发点；两种 spawn 模式
   （`process` / `inprocess`）的入口、handle 形态、清理顺序。
 - 子进程 spawn 的 wire 契约（`SpawnPayloadBuilder` 输出 ↔
@@ -85,7 +85,7 @@ author_email: chengshuo5@huawei.com
 
    **唤醒**（F_118）是拉起之外的第二条重建链，入口同为 `TeamAgent.auto_start_member`
    （`startup_member` 未命中时回落 `TeamBackend.recover_member`）与 leader `send_message`
-   单播 / 多播的 `_recover_members`：`recover_member` 的接受集是 `{ERROR, DORMANT}`，
+   单播 / 多播的 `_wake_recipients`（经 `wake_member`，B_10）：`recover_member` 的接受集是 `{ERROR, DORMANT}`，
    CAS `<源态>→RESTARTING` 后经 `restart_teammate`（先 `cleanup_teammate` 替换死 handle，
    再以 `initial_message=None` + 同一 child AgentSession 重建；外部 harness 续 provider
    checkpoint），失败回滚到被认领时的源态。**撒网不唤醒**：`autostart_unstarted()`、
@@ -95,8 +95,17 @@ author_email: chengshuo5@huawei.com
    成功，其余并发路径查到 `STARTING`/`READY` 直接返回 False。spawn 失败回滚
    `STARTING→UNSTARTED` 保证可重试。
 
-   漏斗有**五个触发点**，全都是"活要交给一个还没起来的成员"——前四个是交付那一刻
-   的即时拉起，第五个是兜底对账：
+   best-effort 启动失败不能只留日志：Leader 交给漏斗的 spawn 回调
+   （`TeamAgent._start_teammate_runtime`）与重启回调（`_restart_teammate_runtime`，
+   经 `restart_teammate(on_failed=)` 拿到重试耗尽后的最后一个异常）在失败处把真实异常
+   连同**具体成员名**通知 Leader，因此六个触发点与 ERROR/DORMANT 恢复都覆盖，明确
+   成员尚未成功启动、看板进行中不代表实际执行。去重按**失败周期**而非错误文本：同一
+   成员从首次失败到下次启动成功之间只通知一次（通知会唤醒 Leader、其 round-idle 对账
+   又会重试，按文本去重会被带时间戳 / 路径的错误拖进循环）；Leader runtime 不存在时
+   不计为已通知。不伪造任务失败、不重复投递已落盘的启动消息。
+
+   漏斗有**六个触发点**，全都是"活要交给一个还没起来的成员"——前五个是交付那一刻
+   的即时拉起，第六个是兜底对账：
 
    | 触发点 | 代码位置 |
    |---|---|
@@ -104,13 +113,24 @@ author_email: chengshuo5@huawei.com
    | leader `create_task` 落库后拉起（**仅 autonomous**，F_84）| `tools/tool_task.py::TaskCreateTool._auto_start_members` |
    | interact dispatch（`@member` / `@all` / operator 消息）| `runtime/manager.py::_dispatch_payload` |
    | 调度器投递交接消息（F_62）| `agent/scheduling/scheduler.py` |
+   | 成员间消息：leader 观察到非 leader 发出的 MESSAGE / BROADCAST 后代为拉起收件人（F_126）| `agent/coordination/handlers/message.py::MessageHandler._wake_peer_recipients` |
    | leader round-idle 对账（看板有非终态任务时，F_84）| `agent/team_agent.py::_reconcile_member_startup` |
 
    **前四个共用一个入口**：`TeamBackend.autostart_unstarted()`——它持有构造期注入的
-   `on_member_started` 回调（= `TeamAgent._on_teammate_created`），把角色门与回调门
+   `on_member_started` 回调（= `TeamAgent._start_teammate_runtime`，失败上报后转调 `_on_teammate_created`），把角色门与回调门
    收在一处，调用方只表达"确保名册起来了"的意图，不各自捎带一份 spawn 回调。
+   **撒网拉起跳过没活的任务级成员**（B_10）：它底下的 `startup()` 对 `options.lifetime` 非空、
+   名下没有未结束任务的 UNSTARTED 成员不拉起——它只为自己的任务存在，没活时拉起只会空跑一轮再被
+   调度器的退场扫描回收（`lifetime=shutdown` 即永久回收）。它留在 UNSTARTED，仍可被指派，
+   有活时由调度器交接或点名消息经 `startup_member` 拉起。广播是例外：它也发给这类成员，所以三条广播路径
+   （leader `send_message(to="*")`、成员广播的代为拉起、interact `@all` 的 `auto_start_all`）传
+   `include_idle_task_scoped=True`，照常拉起它们读广播。
+   第五个按收件人粒度走它的单人版 `TeamBackend.wake_member(name)`（同一角色门；
+   UNSTARTED 启动、ERROR / DORMANT 经 `recover_member` 唤醒、其余状态一次读后返回；回调门按分支：
+   启动要 spawn 回调，恢复要重启回调），广播仍走 `autostart_unstarted()`。leader 自己
+   `send_message` 的单播 / 多播收件人同样经 `wake_member`，所以被撒网跳过的成员仍能被点名拉起。
 
-   第五个是**边缘触发的兜底**，挂在 leader 自己 round 结束的那条边上
+   第六个是**边缘触发的兜底**，挂在 leader 自己 round 结束的那条边上
    （`StreamController._on_idle_settled`）：这一轮的意图已经完整表达，此时名册还有
    UNSTARTED 而看板上有活，就是代码该补的缺口。它**必须排在同一条边上的
    `_request_completion_poll` 之前**——拉起成员会让团队重新动起来，先做完成判定会

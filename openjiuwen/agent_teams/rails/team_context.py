@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.models.allocator import ModelAllocator
     from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
     from openjiuwen.agent_teams.reliability.factory import ReliabilityComponents
+    from openjiuwen.agent_teams.team_context import TaskOutcomeTracker, TaskRevisionTracker
     from openjiuwen.agent_teams.team_workspace.manager import TeamWorkspaceManager
     from openjiuwen.agent_teams.tools.team import TeamBackend
     from openjiuwen.harness.tools.worktree import WorktreeManager
@@ -77,6 +78,7 @@ class TeamHandleKey:
     SWARMFLOW_EXPERT_SPECS = "team.swarmflow_expert_specs"
     EXPERT_CATALOG = "team.expert_catalog"
     EXPERT_BINDING = "team.expert_binding"
+    TASK_EVENT_TRACKER = "team.task_event_tracker"
 
 
 def inject_team_handles(
@@ -98,6 +100,7 @@ def inject_team_handles(
     swarmflow_expert_specs: Optional[dict[str, Any]] = None,
     expert_catalog: Optional["ExpertCatalog"] = None,
     expert_binding: Optional["ExpertBinding"] = None,
+    task_event_tracker: "TaskOutcomeTracker | TaskRevisionTracker | None" = None,
 ) -> None:
     """Write the team live handles into ``extras`` (configurator-side).
 
@@ -138,6 +141,10 @@ def inject_team_handles(
             unregistered.
         expert_binding: What ``spawn_expert`` needs from the team spec (bound
             AgentGroup, persona workspace). Set together with ``expert_catalog``.
+        task_event_tracker: The member's next-input task notice tracker
+            (F_119 / F_129), owned by its TeamAgent. Each rebuilt policy rail
+            borrows it, so its in-memory baseline outlives rebuilds and is the
+            same one the coordination handler claims through.
     """
     extras[TeamHandleKey.TEAM_BACKEND] = team_backend
     extras[TeamHandleKey.WORKSPACE_MANAGER] = workspace_manager
@@ -155,6 +162,7 @@ def inject_team_handles(
     extras[TeamHandleKey.SWARMFLOW_EXPERT_SPECS] = dict(swarmflow_expert_specs or {})
     extras[TeamHandleKey.EXPERT_CATALOG] = expert_catalog
     extras[TeamHandleKey.EXPERT_BINDING] = expert_binding
+    extras[TeamHandleKey.TASK_EVENT_TRACKER] = task_event_tracker
 
 
 def _get(context: Any, key: str) -> Any:
@@ -237,6 +245,11 @@ def get_reliability_components(context: Any) -> Optional["ReliabilityComponents"
     return _get(context, TeamHandleKey.RELIABILITY_COMPONENTS)
 
 
+def get_task_event_tracker(context: Any) -> "TaskOutcomeTracker | TaskRevisionTracker | None":
+    """Return the member's shared task notice tracker, or None (leader / no configurator)."""
+    return _get(context, TeamHandleKey.TASK_EVENT_TRACKER)
+
+
 def get_permissions_override(context: Any) -> Optional[dict[str, str]]:
     """Return the per-member permissions override, or None.
 
@@ -267,6 +280,7 @@ __all__ = [
     "get_swarmflow_concurrency_governor",
     "get_swarmflow_budget",
     "get_reliability_components",
+    "get_task_event_tracker",
     "get_worktree_manager",
     "get_swarmflow_external_cli_agents",
     "get_swarmflow_expert_specs",

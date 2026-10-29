@@ -272,16 +272,24 @@ STRINGS: dict[str, str] = {
     # view_experts._desc lives in descs/en/expert/view_experts.md
     "view_experts.action": "list (default) lists the installed single experts; get shows one expert in full",
     "view_experts.query": (
-        "list only: case-insensitive substring filter over package name, display name and description"
+        "list only: relevance search, most relevant first; an exact package-name match comes first"
     ),
-    "view_experts.name": "Required for get: the expert's package name (name in the list, not the display name)",
+    "view_experts.group": (
+        "Optional: search / show within this expert group (list returns its spawnable members, get takes a "
+        "member name); \"*\" shows only the single experts that belong to no group"
+    ),
+    "view_experts.name": (
+        "Required for get: the expert's package name (name in the list, not the display name); "
+        "the member name when viewing within an expert group"
+    ),
     # ===== view_expert_groups ==================================================
     # view_expert_groups._desc lives in descs/en/expert/view_expert_groups.md
     "view_expert_groups.action": (
         "list (default) lists the installed expert groups; get shows one group and its members"
     ),
     "view_expert_groups.query": (
-        "list only: case-insensitive substring filter over group name, display name and description"
+        "list only: relevance search including the members, most relevant first; "
+        "an exact group-name match comes first"
     ),
     "view_expert_groups.capabilities": "list only: keep only groups that have all listed capability tags",
     "view_expert_groups.name": "Required for get: the expert group name",
@@ -408,6 +416,10 @@ STRINGS: dict[str, str] = {
         "Member name that carries this task (optional); the member must already exist (spawn_teammate first) "
         "and must not be the leader. Omit it to put the task on the shared claim pool for members to claim"
     ),
+    "create_task_subtask.task.assignee": (
+        "Member name that carries this subtask (required); must be an existing agent member — it may be you, "
+        "never the leader or a human member"
+    ),
     "create_task_scheduled.task.assignee": (
         "Member name that carries this task (one of assignee / member); the member must already exist (it may "
         "also be a member declared inline via 'member' by another task of the same call) and must not be the "
@@ -415,7 +427,8 @@ STRINGS: dict[str, str] = {
     ),
     "create_task_scheduled.task.member": (
         "Owner created together with the task (one of assignee / member): same fields as spawn_teammate "
-        "(member_name / display_name / desc / prompt / model_name) plus a required lifetime; when the team declares "
+        "(member_name / display_name / desc / prompt / model_name / isolation) plus a required lifetime; when the "
+        "team declares "
         "external CLI kinds, cli_agent runs it on an external CLI instead. The member becomes the "
         "task's assignee and is started by the scheduling framework; once every task on its board is terminal it "
         "retires per lifetime"
@@ -443,6 +456,11 @@ STRINGS: dict[str, str] = {
     "create_task_scheduled.task.member.group": (
         "Optional, requires expert. The expert group name, making expert a member name of that group; when "
         "this team was assembled from that group, the new member matches its predefined member of that name"
+    ),
+    "create_task_scheduled.task.member.isolation": (
+        "Optional isolation mode, as in spawn_teammate: set 'worktree' only when the user asks for it or the member "
+        "must modify repository files in an isolated checkout; omit it for read-only, discussion or research tasks. "
+        "Not supported for external CLI members (cli_agent, or an external-runtime expert)"
     ),
     "create_task_scheduled.task.member.lifetime": (
         "Retirement policy: shutdown = shut down automatically once its tasks are all done (terminal, the name "
@@ -496,6 +514,16 @@ STRINGS: dict[str, str] = {
     "update_task.status": "Set to 'cancelled' to cancel the task",
     "update_task.title": "New task title",
     "update_task.content": "New task content",
+    "update_task.change_note": (
+        "Optional: one or two sentences on what changed and why, pushed to the executor with the edit; "
+        "only together with title / content"
+    ),
+    "update_task_subtask.task_id": "ID of the subtask to handle (must be a subtask of a task you hold)",
+    "update_task_subtask.confirm": (
+        "true confirms, after review, that the subtask still holds under its parent's new revision — "
+        "no content change, its executor is not disturbed"
+    ),
+    "update_task_subtask.status": "Pass cancelled to cancel the subtask; its own subtasks are cancelled with it",
     "update_task.assignee": (
         "member_name to assign or reassign this task to; the target must already exist and must not be the leader. "
         "A notification is sent to the assignee"

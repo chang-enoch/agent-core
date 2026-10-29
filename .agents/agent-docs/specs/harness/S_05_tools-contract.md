@@ -274,6 +274,15 @@ class WorktreeLifecyclePolicy(str, Enum): ...
 - `get_or_create_plan_slug` 缺 workspace_root → 抛；plan 文件路径经 `resolve_plan_file_path`
   固定解析（`<workspace_root>/<slug>/plan.md` 形态，实际以 `agent_mode_tools.py` 为准）。
 - `WorktreeManager` 操作失败抛 `GitError` / `WorktreeLockTimeout`（`tools/worktree/`）。
+  `GitBackend` 基线解析默认**本地优先**、不读 `origin/HEAD`、不 fetch：当前检出的本地
+  分支 → 本地 `main/master/develop` → 已存在的 `origin/main/master/develop` → 游离 HEAD
+  → 空仓库建空初始提交；每一步都按全限定引用（`refs/heads/…` / `refs/remotes/origin/…`）
+  验证可解析。成员因此能看到用户未推送的本地提交。`GitBackend(remote_base=True)` 是
+  远程 worktree 节点专用的**远端优先**解析（`WorktreeRemoteHandler` 构造时置位）：节点
+  上框架自己的克隆从不推进本地分支，故沿用 `get_default_branch`（验证 `origin/HEAD`，回退
+  依次识别 `main/master/develop`、最后才是当前分支）→ 缺失时 fetch → fetch 成功也须再次
+  解析 `origin/<branch>`，失败回退本地 HEAD，不用不受控的 `FETCH_HEAD`。两种解析都以已
+  解析的固定 SHA 创建工作树，展示元数据保留基线引用名，不切换或修改用户分支。
 
 ## 数据结构
 

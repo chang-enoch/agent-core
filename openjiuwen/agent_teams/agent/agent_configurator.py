@@ -918,6 +918,16 @@ class AgentConfigurator:
             if expert_catalog is not None:
                 expert_binding = _derive_expert_binding(spec)
 
+        # One task notice tracker per member, owned here: every rebuilt policy
+        # rail borrows it through extras and the TeamHarness is handed it, so
+        # the rail and the event-driven announcement share one baseline (F_129).
+        if ctx.role != TeamRole.LEADER and self._resources.task_event_tracker is None:
+            from openjiuwen.agent_teams.team_context import build_task_event_tracker
+
+            self._resources.task_event_tracker = build_task_event_tracker(
+                spec.dispatch_mode, team_backend=self.team_backend, member_name=member_name
+            )
+
         inject_team_handles(
             member_build_context.extras,
             team_backend=self.team_backend,
@@ -936,6 +946,7 @@ class AgentConfigurator:
             worktree_manager=self.worktree_manager,
             expert_catalog=expert_catalog,
             expert_binding=expert_binding,
+            task_event_tracker=self._resources.task_event_tracker,
         )
 
         # Fold the team rails into the spec rails (after the user rails, to keep
@@ -995,6 +1006,7 @@ class AgentConfigurator:
             member_name=member_name,
             initial_plan_mode=is_team_plan_leader,
             build_context=member_build_context,
+            task_event_tracker=self._resources.task_event_tracker,
         )
 
         # Leader's own model calls (decision / tool use / script generation) bill
@@ -1214,6 +1226,7 @@ class AgentConfigurator:
             dispatch_mode=spec.dispatch_mode,
             enable_task_verification=spec.enable_task_verification,
             enable_member_messaging=spec.enable_member_messaging,
+            max_subtask_depth=spec.max_subtask_depth,
             enable_fork=spec.enable_fork,
             evolution_enabled=spec.evolution_enabled,
             member_workspace_prefix=spec.member_workspace_prefix,

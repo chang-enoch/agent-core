@@ -37,8 +37,8 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/tools/` |
-| 最近一次修订日期 | 2026-10-22 |
-| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md |
+| 最近一次修订日期 | 2026-10-28 |
+| 关联 feature | F_10_temporary-leader-clean-team-stream-end.md、F_13_human-agent-send-message.md、F_24_agent-time-awareness.md、F_38_team-teammate-worktree-isolation-agenttool.md、F_55_create-task-atomic-graph-and-depended-by-contract.md、F_57_tool-variants-and-templated-descriptions.md、F_59_condition-named-task-state-machine-with-verify-gate.md、F_62_scheduled-dispatch-runtime-and-review-voting.md、F_64_message-channel-policy-and-content-size-guard.md、F_75_fork-context-inheritance.md、F_76_leader-progressive-policy-disclosure.md、F_82_reassign-before-a-task-starts.md、F_109_send-message-recipient-parameter-split.md、F_113_external-harness-builtin-model-selection.md、F_118_task-scoped-member-lifetime.md、F_119_scheduled-completion-handoff-via-note.md、F_120_autonomous-completion-summary-and-note.md、F_123_team-tools-direct-under-progressive-exposure.md、F_125_team-expert-catalog-and-spawn.md、F_20261022_2319_inline-member-worktree-isolation.md、F_128_scheduled-member-subtasks.md、F_129_task-revision-and-staleness.md |
 
 ## 范围 / 边界
 
@@ -114,7 +114,8 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
       工具*名字*不随 dispatch mode 变，`create_task` 只是换了形态）
     - teammate = `MEMBER_TOOLS_BY_DISPATCH[dispatch_mode]`，即
       `autonomous → MEMBER_ONLY_TOOLS ∪ SHARED_TOOLS`、
-      `scheduled → MEMBER_ONLY_TOOLS_SCHEDULED ∪ SHARED_TOOLS`。未知 dispatch
+      `scheduled → MEMBER_ONLY_TOOLS_SCHEDULED ∪ SHARED_TOOLS`（其中 `create_task` / `update_task` 只在
+      `member_subtasks_enabled()` 时保留，见不变量 30 / 31）。未知 dispatch
       值直接 `KeyError`（下标而非 `.get`）——静默回退会把自主认领路径交给一个
       调度模式的成员。
     - human_agent = 显式枚举的 `HUMAN_AGENT_TOOLS`，**不沿用** `SHARED_TOOLS`。
@@ -179,10 +180,18 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     绑定专家团的 Team 不会单独多出 `spawn_expert`。同一信号还门控调度模式 `create_task` 内联 `member` 的
     `expert` / `group` 属性：内联成员按专家模板创建时与 `spawn_expert` 共用 `ExpertTemplateResolver`
     （模板来源、人设、显示名去重、`options.agent_template`），外部运行时专家同样可以内联。查看工具只读 core 卡片（`read_agent_template_card` /
-    `read_agent_group_card`），读不出的包跳过并记 warning；只有 `spawn_expert` 调用完整加载器。三个
+    `read_agent_group_card`），读不出的包跳过并记 warning；只有 `spawn_expert` 调用完整加载器。两个查看工具
+    `list` 的 `query` 是相关度检索而不是过滤：按 BM25（core `BM25Index`）对加权字段打分，名字与 `query`
+    完全一致（不区分大小写）的排第一，其后按分数降序，只以子串命中的排在最后，同分保持目录顺序；
+    `view_expert_groups` 先按 `capabilities` 过滤再排序。`view_experts` 有可选 `group`：给了团名就在该专家团内
+    检索 / 查看（`list` 列出 `leader` 以外的成员并带 `spawnable` / `predefined`，`get` 的 `name` 是成员名），
+    `"*"` 表示只看单个专家；**不传 `group` 时的默认范围在 `dispatch_mode == "scheduled"` 且团队绑定了专家团时是
+    绑定团**，其余情况是单个专家。描述里讲默认范围的 capability 槽 `view_experts_bound_scope` 与之同一门控，
+    leader 系统提示词的 `team_bound_group` section 也是（见 S_09 1b）。三个
     工具不在事件循环线程上做文件 IO：包读取经 `asyncio.to_thread` 在工作线程里执行。
     `spawn_expert` 是又一个 `_SpawnToolBase` 子类：模板来源由 `group` 决定（等于
-    `TeamAgentSpec.agent_group_name` 时取本 Team spec 里组装好的成员，不调目录、不读磁盘；否则经目录
+    `TeamAgentSpec.agent_group_name` 且宿主把该成员组装进了本 Team spec（预定义成员）时取 spec，不调目录、不读磁盘；
+    spec 里没有的绑定团成员（调度模式团队从空名册起步）与其它来源一样经目录
     定位 + core 加载器），`desc` / `prompt` **只追加不覆盖**模板描述与人设，成员行写
     `options.agent_template`。外部运行时模板与 `spawn_teammate` 的外部 CLI 分支**共用**声明检查
     （`check_external_cli_declared`）与模型 / 认证回退 / 内置模型规则（`ExternalCliModelRules`），只对
@@ -221,7 +230,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     因此**任务保持原状态、不经 PENDING**。可改派状态集是 `TASK_REASSIGNABLE_STATUSES`
     = {`PENDING`, `BLOCKED`, `IN_PROGRESS`}（`schema/status.py`）：前两个是"有主但没开工"
     （调度模式的常驻态、以及创建时预指派的自主任务），交接不丢任何在途工作，是**最安全**
-    的改派时机；`IN_PROGRESS` 代价是原 owner 的在途推理，由 `TASK_REVOKED` 让它停手。
+    的改派时机（例外：有未终态子任务的 `BLOCKED` 父任务已做了一半，`reassign` 拒绝，见不变量 30）；`IN_PROGRESS` 代价是原 owner 的在途推理，由 `TASK_REVOKED` 让它停手。
     两个 gate（`PLANNING` / `IN_REVIEW`）被排除——各自有一份绑在**当前** owner 身上的产物
     （已提交的计划 / 正在被评判的成果），换人会让产物归属到没做过它的人头上。
     改派发 `TASK_REVOKED` 通知原 owner、`TASK_CLAIMED` 通知新 owner，
@@ -231,7 +240,8 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     标题 / 内容，都**不再** `cancel_member`。cancel 发 `TASK_CANCELLED`（带 `member_name`）
     让该成员经 `on_task_cancelled` 停手；编辑**保持任务 IN_PROGRESS**（DAO 放开 PLANNING /
     IN_PROGRESS 可编辑，仅 IN_REVIEW 锁——验证期内容冻结），发 `TASK_UPDATED`（带 `member_name`
-    与写事务内读回的 `status`，见 B_03）让该成员经 `on_task_updated` 重看后继续。**仍在团队中的**人类成员持有的任务对 cancel /
+    与写事务内读回的 `status`，见 B_03）。自主模式下该成员经 `on_task_updated` 收到任务修改告知（由其 `TaskRevisionTracker`
+    产出、带修改说明，提示重看后继续，任务仍归它，F_129）；调度模式由调度器推送最新内容（`S_22` 不变量 19）。**仍在团队中的**人类成员持有的任务对 cancel /
     reassign / **改标题·内容**三者都 leader-immutable（HITT 锁，key 在
     `TeamBackend.is_live_human_agent` / `live_human_agent_names`，**不是**裸 role——见
     `S_07` 运行约束 3），故这些信号的 `member_name` 永不指向一个**在队**的 human avatar。
@@ -244,7 +254,7 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     （`_CREATE_TASK_CLASS` / `_SEND_MESSAGE_CLASS` / `_MEMBER_COMPLETE_DESC_KEY`）
     查表——形态是闭集，缺失组合抛 `KeyError`，不做注册表、不静默回退。
     形态间怎么共享代码**取决于共享的是数据还是行为**，用最轻的手段：`create_task`
-    的两个形态各自独立，只共享模块级纯函数（`_task_node_schema` / `_validate_task_batch`），
+    的三个形态（autonomous / scheduled leader / scheduled 成员子任务，F_128）各自独立，只共享模块级纯函数（`_task_node_schema` / `_validate_task_batch`），
     `invoke` / `render_for_llm` 各写一遍；`send_message` 的两个形态共享 `_SendMessageBase`，
     因为共享的是真实投递行为（`_send` / `_multicast` / `_broadcast`），子类只有自己的
     收件参数 schema 与一条直线 `_dispatch`。**不为「形态就该有基类」的对称感去造 `_XxxBase`**。
@@ -399,9 +409,18 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     `on_member_started` 回调并自带 leader 门与回调门，**调用方不再各自捎带 spawn 回调**；
     幂等由下层 `startup_member` 的 CAS 保证。
     单播/多播的具体收件人若是 `ERROR` 或 `DORMANT`（F_118），这次定向投递本身构成显式恢复 /
-    唤醒请求：写库前经 `recover_member` 的 `{ERROR, DORMANT}→RESTARTING` CAS 重建 runtime
-    （失败回滚到被认领时的原状态）；广播不批量恢复，避免一条泛化消息触发全队 restart storm，
-    也**永远不唤醒休眠成员**。ERROR / DORMANT runtime 已经退出时，`shutdown_member` 则直接
+    唤醒请求：写库前经 `wake_member` → `recover_member` 的 `{ERROR, DORMANT}→RESTARTING` CAS 重建 runtime
+    （失败回滚到被认领时的原状态）；收件人若是被撒网拉起跳过的 UNSTARTED 任务级成员（B_10，见 `S_05`
+    不变量 1），同一个 `wake_member` 经 `startup_member` 拉起它。反方向的闸也在这里：把任务交给一个
+    `SHUTDOWN` 成员等于交给没人——`create_task` 的 `_validate_assignees` 与 `update_task` 改派在写库前
+    拒绝 `MEMBER_DEPARTED_STATUSES` 里的负责人（共用 `_retired_assignee_error`）：`SHUTDOWN` 提示新建成员或
+    改派；`SHUTDOWN_REQUESTED` 不论 lifetime 一律拒绝（leader force 关停休眠类成员也落 `SHUTDOWN`），提示退向
+    休眠的等落定后再指派、否则改派；`DORMANT` 仍可指派。`update_task` 只在真的换人时检查（取消、或重复写当前负责人不算），
+    检查早于任何编辑落库，被拒时整次调用不留半截修改（B_10）；广播不批量恢复，避免一条泛化消息触发全队 restart storm，
+    也**永远不唤醒休眠成员**。成员发出的消息（autonomous 成员与开启成员间通信的 scheduled 成员）
+    工具侧拉不起人——成员 backend 没有 spawn 回调——由 leader 的 `MessageHandler._wake_peer_recipients`
+    观察事件后按同一规则代为拉起（`TeamBackend.wake_member` / `autostart_unstarted`，F_126 后续修复），
+    工具本身保持不变。ERROR / DORMANT runtime 已经退出时，`shutdown_member` 则直接
     CAS 到 `SHUTDOWN` 并清理 stale handle，不发送一个永远不会被消费的 shutdown event
     （DORMANT 仍发布 `MemberShutdownEvent` 供名册刷新，`target_status="shut_down"`）。
     走 `SHUTDOWN_REQUESTED` 正常路径时，事件的 `target_status` 取 `retire_target(lifetime, force)`，
@@ -425,7 +444,9 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
 25. **任务内联成员只属调度形态；退场策略是成员属性，退场由调度器请求、成员自落**（F_118）。
     `ScheduledTaskCreateTool` 的任务节点可带 `member` 对象（`member_name` / `display_name` /
     `desc` / `prompt` / `model_name` 与 `spawn_teammate` 逐字相同 + 必填 `lifetime ∈
-    {shutdown, dormant}`），与 `assignee` 二选一（同名 `assignee` 宽容放行 + 结果附提醒，见不变量 19）。
+    {shutdown, dormant}` + 可选 `isolation`（取值同 `spawn_teammate`，只能是 `"worktree"`，经
+    `register_teammate` 透传、走同一个 `validate_worktree_isolation` 闸；外部 CLI 内联成员——`cli_agent`
+    或外部运行时专家——带 `isolation` 在任何写库前拒绝，同 `spawn_expert`，F_20261022_2319_inline-member-worktree-isolation），与 `assignee` 二选一（同名 `assignee` 宽容放行 + 结果附提醒，见不变量 19）。
     `invoke` 顺序：批内纯校验（承担者冲突、命名模式、
     批内不重名、非 leader、lifetime 合法）→ 把 `member_name` 绑为 spec 的 `assignee` → 既有
     review / reviewer / assignee 校验 → `spawn_member(..., lifetime=)` 落 `UNSTARTED` 行 →
@@ -475,6 +496,41 @@ mutate the session directly; checkpoint lifecycle writes stay behind the
     协作工具是成员的主接口，成员基 spec 带 `ProgressiveToolSpec(enabled=True)` 时只有长尾工具进
     `tool_search`。名单不进 harness 的 `_DEFAULT_DIRECT_TOOL_NAMES`（按 dispatch / role / capability
     变化的集合不硬编码）。外部 CLI / MCP 成员不经 `AbilityManager`，不受此约束。
+30. **scheduled 成员可以把正在执行的任务拆成子任务，父任务挂起让出名额**（F_128）。门控是静态 spec
+    `TeamAgentSpec.max_subtask_depth`（0 = 关闭，默认），信号只有 `TeamBackend.member_subtasks_enabled()`：
+    工厂对非 leader 角色在它不为真时减掉 `create_task`，`TeamPolicyRail` 与 `build_team` 准则披露用同一信号填
+    `{{member_subtasks}}` 槽。成员形态 `MemberSubtaskCreateTool`（`_CREATE_TASK_CLASS[("scheduled", "member")]`）：
+    - **父任务由工具推出，不是参数**：调用者必须恰好持有一个 `IN_PROGRESS` 任务（`PLANNING` / `IN_REVIEW` 不能拆），
+      它就是父任务；`depth(父) + 1 <= subtask_depth_limit()`，否则拒绝。
+    - schema 每项 `title` / `content` / `task_id?` / `depends_on?` / `assignee`（必填）。`assignee` 必须是已存在的非
+      leader 成员，可以是调用者自己，**不能是在队人类成员**（leader 取消不了人类的任务，与取消级联冲突）。**不提供**
+      `member`、`reviewer`、`max_review_rounds`、`depended_by`、`parent_task_id`、`created_by`；偷传任一（按键是否给了值判断，
+      只有显式 `null` 视为没传，`{}` / `False` 同样拒绝）在写库前报错拒绝。承担者校验整批三次读取（leader 名、名册投影、
+      `live_human_agent_names`），不逐个子任务查库。
+    - 一次 `add_graph(..., suspend_parent=父)` = 一次 `mutate_dependency_graph`：子任务落库（`parent_task_id` /
+      `created_by` 由工具写）、父任务 `depends_on` 每个子任务、父任务 CAS `IN_PROGRESS → BLOCKED` 并置 `resume_pending`；
+      任何一步失败整批回滚。
+      挂起的父任务不占活跃名额（不变量 16 的活跃集不含 `BLOCKED`），所以自锁与成员间的名额等待环都不存在；依赖环由
+      DAO 环检测拒绝。结果尾附"本轮立即结束"的提示。
+    - 子任务全部终态后由调度器恢复父任务（见 `S_22` 不变量 4 / 6 / 7）。leader 侧：`TeamTaskManager.cancel` 取消一个
+      任务后**先父后子**依次取消其未终态子任务（整个级联结束后只检查一次任务板是否清空，`TASK_LIST_DRAINED` 至多一次）；`TeamTaskManager.reassign` 拒绝改派有未终态子任务的 `BLOCKED` 父任务
+      （不变量 16 里"`BLOCKED` = 有主没开工"的前提对它不成立）。成员改 / 确认 / 取消子任务走不变量 31 的成员版 `update_task`。
+    - `view_task` 的 list 行带 `[subtask of #父]`，get 带 `Subtask of:` / `Subtasks:`。
+31. **任务版本：修改一定被执行者看到，完成前必须看过最新版本**（F_129，两种调度模式）。
+    - leader `update_task` 新增可选 `change_note`（只能与 `title` / `content` 同传，单独传报错），随版本加一落进
+      `change_notes`；结果回带新版本号、执行者与送达方式 `delivery`（`pushed` / `notified` / `review_requested` /
+      `on_start`，按编辑时的状态），以及会因此过期的未完成子任务。传了 `change_note` 但标题与内容都没变时报错，提示改用
+      `send_message`。
+    - **完成闸**：`member_complete_task` 与 `claim_task(status=completed)` 在任务 `revision > observed_revision` 时拒绝并给出
+      版本差（`r{observed} -> r{revision}`），提示先 `view_task(action=get)`；执行者自己 `view_task(get)` 即推进
+      `observed_revision`。别人的 `view_task` 不推进。在队人类成员不受完成闸约束。
+    - **成员版 `update_task`**（`MemberSubtaskUpdateTool`，`_UPDATE_TASK_CLASS[("scheduled", "member")]`，与成员 `create_task`
+      同一门控 `member_subtasks_enabled()`）：`task_id` + `title?` / `content?` / `change_note?` / `confirm?` / `status?`（仅
+      `"cancelled"`）。只能处理**父任务当前执行者是调用者**的未结束子任务（不看 `created_by`、不要求调用者有活跃任务）；
+      修改顺带把 `parent_revision` 对齐父任务，`confirm=true` 只对齐不改内容，取消走 `TeamTaskManager.cancel` 的级联。
+      `assignee` / `reviewer` / `max_review_rounds` / `add_blocked_by` 按"给了值即拒绝"处理。
+    - `view_task`：list 行对相对父任务过期的子任务带 `[stale: parent r{父} / based on r{子}]`；get 带 `Revision:`，
+      `Subtasks:` 里过期的标 `[stale]`。
 
 ## 接口契约
 
@@ -499,7 +555,7 @@ def create_team_tools(
 | 参数 | 取值 | 行为 |
 |---|---|---|
 | `role` | `"leader"` / `"teammate"` / `"human_agent"` | 决定基础工具集——分别为 `LEADER_TOOLS` / `MEMBER_TOOLS_BY_DISPATCH[dispatch_mode]` / `HUMAN_AGENT_TOOLS`。其它字符串当作 teammate 走（落入 else 分支）。新增角色必须显式补一个集合常量，不要靠 fall-through。**`passive_human` 故意不在这里**：被动人类成员没有 harness、没有 LLM 工具表，其许可面 `PASSIVE_HUMAN_TOOLS`（`HUMAN_AGENT_TOOLS \| {"claim_task"}`，scheduled 下减 claim_task）由 `interaction/passive_tool_executor.py` 直接消费——透传执行器按 sender 名构造绑定身份的 manager 与工具实例（先例：scheduler 的 `reviewer_tm`、F_26 external client）。见 F_111。 |
-| `dispatch_mode` | `"autonomous"` / `"scheduled"` | 任务如何到达成员。选择 `create_task` / `send_message` 的形态、`member_complete_task` 的 desc_key，以及成员工具集。未知值抛 `KeyError`。见不变量 18。 |
+| `dispatch_mode` | `"autonomous"` / `"scheduled"` | 任务如何到达成员。选择 `create_task`（与 role 一起：`(dispatch_mode, leader|member)`，F_128）/ `send_message` 的形态、`member_complete_task` 的 desc_key，以及成员工具集。未知值抛 `KeyError`。见不变量 18。 |
 | `agent_team` | `TeamBackend` | 后端句柄，所有写操作（`build_team` / `spawn_*` / 任务 / 消息）通过它走，不绕过去直接打数据库或 messager。 |
 | `teammate_mode` | `"build_mode"` / `"plan_mode"` | plan_mode 门禁。非 plan_mode 时从 allowed 集合里减掉 `approve_plan` / `submit_plan`，且未启用 team permissions 时也减掉 `approve_tool`。 |
 | `model_config_allocator` | `Callable[[str \| None], Allocation \| None]` | leader 的 `spawn_teammate` 调它选 model；不传则 spawn 出来的 teammate 无 allocation，由后端兜底。teammate 不消费。 |
@@ -585,8 +641,8 @@ openjiuwen/agent_teams/tools/locales/
 |---|---|
 | `LEADER_ONLY_TOOLS` | `build_team`, `clean_team`, `spawn_teammate`, `spawn_human_agent`, `spawn_passive_human`, `spawn_bridge_agent`, `set_member_model`（gate `builtin_models_enabled()`）, `spawn_expert` / `view_experts` / `view_expert_groups`（`EXPERT_TOOLS`，gate 宿主注入的 `ExpertCatalog`）, `shutdown_member`, `approve_plan`, `approve_tool`, `list_checkpoints`（gate `fork_enabled()`，同 `checkpoint`）, `create_task`, `update_task`, `swarmflow`, `async_tasks_list`, `async_task_output`, `async_task_cancel`，以及组织工具 `org_*`（gate 组织运行时，见 S_29） |
 | `EXPERT_TOOLS` | `view_experts`, `view_expert_groups`, `spawn_expert`——`LEADER_ONLY_TOOLS` 的子集，未注入目录时整体减掉 |
-| `MEMBER_ONLY_TOOLS` | `claim_task`, `submit_plan` |
-| `MEMBER_ONLY_TOOLS_SCHEDULED` | `member_complete_task`, `submit_plan` |
+| `MEMBER_ONLY_TOOLS` | `claim_task`, `submit_plan`, `verify_task` |
+| `MEMBER_ONLY_TOOLS_SCHEDULED` | `member_complete_task`, `submit_plan`, `verify_task`, `create_task` / `update_task`（gate `member_subtasks_enabled()`，F_128 / F_129） |
 | `SHARED_TOOLS` | `view_task`, `send_message`, `checkpoint`（gate `fork_enabled()`），`workspace_meta`（后者是死条目——不在 `all_tools`，由 `TeamToolRail.init` 单独 append） |
 | `HUMAN_AGENT_TOOLS` | `view_task`, `member_complete_task`, `send_message` |
 | `LEADER_TOOLS` | `LEADER_ONLY_TOOLS ∪ SHARED_TOOLS`（dispatch-invariant） |

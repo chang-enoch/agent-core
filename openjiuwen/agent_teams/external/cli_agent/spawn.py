@@ -130,6 +130,7 @@ def descriptor_from_context(ctx: TeamRuntimeContext) -> TeamJoinDescriptor:
         # prompt describing tools it does not have.
         dispatch_mode=dispatch_mode,
         enable_member_messaging=team_spec.enable_member_messaging,
+        max_subtask_depth=team_spec.max_subtask_depth,
         teammate_mode=teammate_mode,
         db_config=ctx.db_config,
         transport_config=transport,

@@ -94,6 +94,9 @@ Pass `COMMITS=N` to check recent commits instead.
 - `.agents/skills/jw-review/SKILL.md`：代码检视入口；按 agent-core 技术定位、模块 AGENTS/spec 审视工作区、提交或分支差异，核对跨层影响、兼容与回归证据并交接复查，不限定 PR 场景。
 - `.agents/skills/jw-testing/SKILL.md`：独立撰写与维护转测文档，输出暂存本地被忽略的 designs/testing/，不进入设计生命周期或索引。
 
+**编码开发必须使用 jw-coding-flow**：凡是实现特性、修复缺陷、重构或补写测试等改动代码的任务，动手前先读取
+`.agents/skills/jw-coding-flow/SKILL.md`，按其阶段路由与强制要求选择 jw-design / jw-dev 等阶段 skill，不得跳过直接改代码。
+
 实际资产位于 `.agents/agent-docs/` 的 `designs/`、`specs/`、`features/`、`bugfix/`。
 新 design 使用 `D-YYYYMMDD-HHMM-<slug>`；feature / bugfix 使用 `F_` / `B_` 加 `YYYYMMDD_HHMM` 和主题。时间均采用 Asia/Singapore，
 精确到分钟；历史编号不调整，spec 沿用原命名规则。具体位置与交接规则见对应 skill。

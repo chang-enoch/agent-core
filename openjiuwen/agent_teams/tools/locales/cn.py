@@ -211,12 +211,16 @@ STRINGS: dict[str, str] = {
     # ===== view_experts ========================================================
     # view_experts._desc lives in descs/cn/expert/view_experts.md
     "view_experts.action": "list（默认）列出已安装的单个专家；get 查看一个专家的完整信息",
-    "view_experts.query": "仅 list 使用：按包名、显示名、描述做子串过滤（不区分大小写）",
-    "view_experts.name": "get 必填：专家的包名（list 结果中的 name，不是显示名）",
+    "view_experts.query": "仅 list 使用：按相关度检索，结果最相关的排前面；包名完全一致的排第一",
+    "view_experts.group": (
+        "可选：在这个专家团内检索 / 查看（list 列出团内可拉起的成员，get 的 name 是成员名）；"
+        "填 \"*\" 表示只看不属于任何专家团的单个专家"
+    ),
+    "view_experts.name": "get 必填：专家的包名（list 结果中的 name，不是显示名）；在专家团内查看时是成员名",
     # ===== view_expert_groups ==================================================
     # view_expert_groups._desc lives in descs/cn/expert/view_expert_groups.md
     "view_expert_groups.action": "list（默认）列出已安装的专家团；get 查看一个专家团及其成员表",
-    "view_expert_groups.query": "仅 list 使用：按团名、显示名、描述做子串过滤（不区分大小写）",
+    "view_expert_groups.query": "仅 list 使用：按相关度检索（含团内成员），结果最相关的排前面；团名完全一致的排第一",
     "view_expert_groups.capabilities": "仅 list 使用：只列出同时具备全部所列能力标签的专家团",
     "view_expert_groups.name": "get 必填：专家团名",
     "view_expert_groups.member": "仅 get 使用，可选：只展开该专家团内这一个成员的详情",
@@ -303,13 +307,16 @@ STRINGS: dict[str, str] = {
         "承担该任务的成员名称（可选）；该成员必须已存在（先 spawn_teammate）且不能是 leader。"
         "未填写则进入公共认领池，等待成员自主认领"
     ),
+    "create_task_subtask.task.assignee": (
+        "承担该子任务的成员名称（必填）；必须是已存在的智能体成员，可以是你自己，不能是 leader 或人类成员"
+    ),
     "create_task_scheduled.task.assignee": (
         "承担该任务的成员名称（与 member 二选一）；该成员必须已存在（也可以是本次调用中其他任务用 member "
         "内联声明的成员）且不能是 leader。调度模式必填承担者，成员不会自主认领"
     ),
     "create_task_scheduled.task.member": (
         "随任务一起创建的承担者（与 assignee 二选一）：字段同 spawn_teammate"
-        "（member_name / display_name / desc / prompt / model_name），外加必填的 lifetime；"
+        "（member_name / display_name / desc / prompt / model_name / isolation），外加必填的 lifetime；"
         "团队声明了外部 CLI 类型时也可以用 cli_agent 让它以外部 CLI 运行。"
         "成员落为该任务的 assignee，由调度框架拉起；名下任务全部终态后按 lifetime 退场"
     ),
@@ -334,6 +341,10 @@ STRINGS: dict[str, str] = {
     "create_task_scheduled.task.member.group": (
         "可选，需同时给 expert。专家团名，表示 expert 是该团内的成员名；本团队由该专家团组建时，"
         "新成员与团里预定义的同名成员同源"
+    ),
+    "create_task_scheduled.task.member.isolation": (
+        "可选隔离模式，同 spawn_teammate：仅当用户明确要求或该成员需要在隔离检出中修改仓库文件时设为 "
+        "'worktree'；只读、讨论、调研类任务省略。外部 CLI 成员（cli_agent 或外部运行时专家）不支持"
     ),
     "create_task_scheduled.task.member.lifetime": (
         "退场策略：shutdown = 名下任务全部完成后自动关闭（终态，名字不可复用）；"
@@ -372,6 +383,12 @@ STRINGS: dict[str, str] = {
     "update_task.status": "设为 'cancelled' 取消任务",
     "update_task.title": "新任务标题",
     "update_task.content": "新任务内容",
+    "update_task.change_note": (
+        "可选：一两句话说明改了什么、为什么改，随修改一并推送给执行者；只能和 title / content 一起使用"
+    ),
+    "update_task_subtask.task_id": "要处理的子任务 ID（必须是你名下任务的子任务）",
+    "update_task_subtask.confirm": "true 表示复核后确认该子任务在父任务新版本下仍然有效，不修改内容、不打扰其执行者",
+    "update_task_subtask.status": "传 cancelled 取消该子任务，它下面的子任务会一起取消",
     "update_task.assignee": "指派任务的目标 member_name（仅当任务当前无 assignee 时生效）。系统会向被指派成员发送通知",
     "update_task.reviewer": (
         "设置该任务的验证者列表（传空列表清除验证），每一项为包含 type/instruction "

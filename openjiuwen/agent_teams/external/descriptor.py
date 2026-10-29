@@ -83,6 +83,9 @@ class TeamJoinDescriptor(BaseModel):
             F_126). A ``"member"``-scope connection picks its ``send_message``
             variant from this together with ``dispatch_mode``, matching the
             system prompt the member was spawned with.
+        max_subtask_depth: How deep a scheduled-dispatch member may split its
+            task into subtasks (``TeamAgentSpec.max_subtask_depth``, F_128);
+            ``0`` keeps ``create_task`` out of a ``"member"``-scope tool set.
         teammate_mode: How teammates execute tasks — ``"build_mode"`` or
             ``"plan_mode"``. A ``"member"``-scope connection resolves its tool
             set against this so plan-mode members get ``submit_plan`` when the
@@ -108,6 +111,7 @@ class TeamJoinDescriptor(BaseModel):
     language: str = "cn"
     dispatch_mode: Literal["autonomous", "scheduled"] = "autonomous"
     enable_member_messaging: bool = False
+    max_subtask_depth: int = 0
     teammate_mode: Literal["build_mode", "plan_mode"] = "build_mode"
     db_config: DatabaseConfig = Field(default_factory=DatabaseConfig)
     transport_config: MessagerTransportConfig = Field(default_factory=MessagerTransportConfig)

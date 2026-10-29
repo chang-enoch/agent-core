@@ -26,6 +26,7 @@ from openjiuwen.agent_teams.experts import (
     bound_agent_group,
     compose_template_member,
     load_agent_group_package,
+    template_snapshot,
 )
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template, merge_external_cli_config
 from openjiuwen.agent_teams.messager import Messager
@@ -43,6 +44,7 @@ from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType, 
 from openjiuwen.agent_teams.tools.locales import make_translator
 from openjiuwen.agent_teams.tools.member_options import get_member_agent_template, get_member_options
 from openjiuwen.agent_teams.tools.team import TeamBackend
+from openjiuwen.agent_teams.tools.tool_expert import _rank_by_query
 from openjiuwen.agent_teams.tools.tool_factory import create_team_tools
 from openjiuwen.agent_teams.tools.tool_member import SpawnTeammateTool
 from openjiuwen.agent_teams.tools.tool_permissions import EXPERT_TOOLS
@@ -188,11 +190,13 @@ def _tools(
     *,
     binding: ExpertBinding | None = None,
     lang: str = "cn",
+    dispatch_mode: str = "autonomous",
 ) -> dict[str, Any]:
     tools = create_team_tools(
         role="leader",
         agent_team=backend,
         lang=lang,
+        dispatch_mode=dispatch_mode,
         expert_catalog=catalog,
         expert_binding=binding or ExpertBinding(persona_workspace="/ws/teammate"),
     )
@@ -307,6 +311,128 @@ async def test_view_expert_groups_expands_one_member(db: TeamDatabase, catalog: 
     assert "spawnable: true" in tool.render_for_llm(one)
     unknown = await tool.invoke({"action": "get", "name": "designer", "member": "ghost"})
     assert unknown.error == "Member 'ghost' is not in expert group 'designer' (members: leader, clip, cli-member)"
+
+
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_view_experts_list_query_ranks_by_relevance(db: TeamDatabase, tmp_path: Path) -> None:
+    root = tmp_path / "ranked"
+    experts = {
+        "weather": _expert_package(root / "weather", "weather", display_name={"zh": "天气助手"}),
+        "notes": _expert_package(
+            root / "notes", "notes", display_name={"zh": "笔记助手"}, description="偶尔整理理财记录"
+        ),
+        "finance": _expert_package(
+            root / "finance", "finance", display_name={"zh": "个人理财专家"}, tags=[{"zh": "理财"}]
+        ),
+    }
+    tool = _tools(_backend(db), FakeCatalog(experts, {}))["view_experts"]
+
+    by_words = await tool.invoke({"query": "理财专家"})
+    by_name = await tool.invoke({"query": "Notes"})
+    by_prefix = await tool.invoke({"query": "fin"})
+
+    assert [item["name"] for item in by_words.data["experts"]] == ["finance", "notes"], (
+        "display name and tags outweigh a description mention; the unrelated expert is dropped"
+    )
+    assert [item["name"] for item in by_name.data["experts"]][0] == "notes"
+    assert [item["name"] for item in by_prefix.data["experts"]] == ["finance"], "prefix queries still match"
+
+
+@pytest.mark.level1
+@pytest.mark.asyncio
+async def test_view_expert_groups_list_query_searches_member_texts(db: TeamDatabase, catalog: FakeCatalog) -> None:
+    tool = _tools(_backend(db), catalog)["view_expert_groups"]
+
+    by_member = await tool.invoke({"query": "镜头"})
+    filtered_out = await tool.invoke({"query": "镜头", "capabilities": ["audio"]})
+    unrelated = await tool.invoke({"query": "weather"})
+
+    assert [item["name"] for item in by_member.data["groups"]] == ["designer"]
+    assert filtered_out.data["groups"] == []
+    assert unrelated.data["groups"] == []
+
+
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_view_experts_scopes_to_the_bound_group_under_scheduled_dispatch(
+    db: TeamDatabase, catalog: FakeCatalog, packages: dict[str, Path]
+) -> None:
+    binding = ExpertBinding(bound_group=bound_agent_group(_bound_spec(packages)))
+    tool = _tools(_backend(db), catalog, binding=binding, dispatch_mode="scheduled")["view_experts"]
+
+    listed = await tool.invoke({})
+    searched = await tool.invoke({"query": "镜头"})
+    member = await tool.invoke({"action": "get", "name": "clip"})
+    outside = await tool.invoke({"action": "get", "name": "finance"})
+    standalone = await tool.invoke({"group": "*"})
+
+    assert (listed.data["group"], listed.data["bound"]) == ("designer", True)
+    assert [item["name"] for item in listed.data["experts"]] == ["clip", "cli-member"], "leader is never listed"
+    assert all(item["predefined"] for item in listed.data["experts"])
+    text = tool.render_for_llm(listed)
+    assert "spawn_expert(expert=<name>, group='designer')" in text
+    assert "name=cli-member" in text and "spawnable=false" in text, "no claude CLI is declared for this team"
+    assert [item["name"] for item in searched.data["experts"]] == ["clip"]
+    assert (member.data["member"]["group"], member.data["member"]["display_name"]) == ("designer", "视频镜头师")
+    assert "is not in expert group 'designer'" in outside.error and "group='*'" in outside.error
+    assert [item["name"] for item in standalone.data["experts"]] == ["finance", "claude-expert", "dsh-expert"]
+    assert "默认范围" in tool.card.description
+
+
+@pytest.mark.level1
+@pytest.mark.asyncio
+async def test_view_experts_keeps_the_single_experts_by_default_outside_scheduled_dispatch(
+    db: TeamDatabase, catalog: FakeCatalog, packages: dict[str, Path]
+) -> None:
+    binding = ExpertBinding(bound_group=bound_agent_group(_bound_spec(packages)))
+    tool = _tools(_backend(db), catalog, binding=binding)["view_experts"]
+
+    listed = await tool.invoke({})
+
+    assert listed.data["group"] is None
+    assert [item["name"] for item in listed.data["experts"]] == ["finance", "claude-expert", "dsh-expert"]
+    assert "默认范围" not in tool.card.description
+    assert "{{" not in tool.card.description
+
+
+@pytest.mark.level1
+@pytest.mark.asyncio
+async def test_view_experts_group_argument_browses_any_installed_group(db: TeamDatabase, catalog: FakeCatalog) -> None:
+    tool = _tools(_backend(db), catalog, lang="en")["view_experts"]
+
+    listed = await tool.invoke({"group": "designer"})
+    member = await tool.invoke({"action": "get", "group": "designer", "name": "clip"})
+    missing = await tool.invoke({"group": "nobody"})
+    unknown_member = await tool.invoke({"action": "get", "group": "designer", "name": "ghost"})
+
+    assert (listed.data["group"], listed.data["bound"]) == ("designer", False)
+    assert not any(item["predefined"] for item in listed.data["experts"])
+    assert member.data["member"]["display_name"] == "Shot Artist"
+    assert "spawnable: true" in tool.render_for_llm(member)
+    assert missing.error == "Expert group 'nobody' is not installed (installed: designer)"
+    assert unknown_member.error == "Member 'ghost' is not in expert group 'designer' (members: leader, clip, cli-member)"
+
+
+@pytest.mark.level1
+def test_rank_by_query_pins_exact_names_then_scores_then_substring_hits() -> None:
+    names = ["finance-pro", "finance", "refinance"]
+    documents = [
+        "finance-pro finance finance finance finance",
+        "finance 理财",
+        "refinance",
+    ]
+
+    assert _rank_by_query("finance", names, documents) == [1, 0, 2], (
+        "exact name first although finance-pro scores higher; refinance matches only as a substring"
+    )
+    assert _rank_by_query(None, names, documents) == [0, 1, 2]
+    assert _rank_by_query("weather", names, documents) == []
+
+
+@pytest.mark.level1
+def test_rank_by_query_keeps_catalog_order_on_ties() -> None:
+    assert _rank_by_query("分析", ["b", "a"], ["数据分析", "数据分析"]) == [0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +684,29 @@ async def test_bound_group_member_spawns_from_the_team_spec_not_the_disk(
     assert get_member_agent_template(row).snapshot == spec.agents["clip"].agent_template_spec
 
 
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_bound_group_left_out_of_the_spec_spawns_members_on_demand(
+    db: TeamDatabase, catalog: FakeCatalog, packages: dict[str, Path]
+) -> None:
+    spec = TeamAgentSpec(agents={"leader": DeepAgentSpec(), "teammate": _teammate_base()}, agent_group_name="designer")
+    backend = _backend(db)
+    binding = ExpertBinding(bound_group=bound_agent_group(spec), persona_workspace="/ws/teammate")
+    tools = _tools(backend, catalog, binding=binding, dispatch_mode="scheduled")
+
+    listed = await tools["view_experts"].invoke({})
+    spawned = await tools["spawn_expert"].invoke({"expert": "clip", "group": "designer", "member_name": "clip"})
+
+    assert [item["name"] for item in listed.data["experts"]] == ["clip", "cli-member"]
+    assert not any(item["predefined"] for item in listed.data["experts"]), "an empty roster has no predefined member"
+    assert spawned.success, spawned.error
+    assert catalog.calls > 0, "a bound member missing from the spec is loaded through the catalog"
+    row = await backend.get_member("clip")
+    assert row.display_name == "视频镜头师"
+    template = load_agent_group_package(packages["designer"])["clip"]
+    assert get_member_agent_template(row).snapshot == template_snapshot(template)
+
+
 @pytest.mark.level1
 @pytest.mark.asyncio
 async def test_bound_group_rejects_non_members_and_the_leader(
@@ -566,9 +715,7 @@ async def test_bound_group_rejects_non_members_and_the_leader(
     spec = _bound_spec(packages)
     tool = _tools(_backend(db), catalog, binding=ExpertBinding(bound_group=bound_agent_group(spec)))["spawn_expert"]
     not_member = await tool.invoke({"expert": "brief", "group": "designer", "member_name": "brief-1"})
-    assert not_member.error == (
-        "'brief' is not a spawnable member of the bound expert group 'designer' (members: clip, cli-member)"
-    )
+    assert not_member.error == "'brief' is not a member of expert group 'designer' (members: clip, cli-member)"
     leader = await tool.invoke({"expert": "leader", "group": "designer", "member_name": "leader-2"})
     assert "cannot be spawned as a teammate" in leader.error
 
@@ -1051,6 +1198,7 @@ async def test_inline_cli_member_model_rules_match_spawn_teammate(
         ({"cli_agent": "codex"}, "cli_agent 'codex' is not declared"),
         ({"cli_agent": None, "external_cli": {"fallback_model_name": "m"}}, "applies only to an external CLI member"),
         ({"external_cli": "claude"}, "member.external_cli must be an object"),
+        ({"isolation": "worktree"}, "member.isolation cannot be set for an external CLI member"),
     ],
 )
 async def test_inline_cli_member_rejections_write_nothing(
@@ -1060,6 +1208,20 @@ async def test_inline_cli_member_rejections_write_nothing(
     result = await _scheduled_create_task(backend, catalog).invoke({"tasks": [_cli_task("t1", "rev-1", **member)]})
     assert not result.success
     assert error in result.error
+    assert await _member_count(db) == 0
+
+
+@pytest.mark.level1
+@pytest.mark.asyncio
+async def test_inline_external_expert_rejects_isolation_like_spawn_expert(
+    db: TeamDatabase, catalog: FakeCatalog
+) -> None:
+    backend = _backend(db, ExternalCliAgentSpec(cli_agent="claude"))
+    task = _expert_task("t1", "cli-2", expert="claude-expert", isolation="worktree")
+    result = await _scheduled_create_task(backend, catalog).invoke({"tasks": [task]})
+    assert not result.success
+    assert "member.isolation cannot be set for expert" in result.error
+    assert "external CLI runtime" in result.error
     assert await _member_count(db) == 0
 
 

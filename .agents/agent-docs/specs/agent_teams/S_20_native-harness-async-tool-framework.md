@@ -18,7 +18,7 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `harness/async_tools.py`、`harness/native_harness.py`、`id_generator.py`、`tools/tool_async.py`、`tools/tool_factory.py`、`tools/tool_permissions.py`、`paths.py`、`rails/team_tool_rail.py`、`workflow/tool_swarmflow.py`、`workflow/observer.py` |
-| 最近一次修订日期 | 2026-09-16 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联 feature | `F_35_native-harness-async-tool-framework.md`、`F_41_async-tool-control-and-spill.md`、`F_47_swarmflow-concurrency-governor.md`、`F_48_swarmflow-inline-script-execution.md` |
 
 ## 范围 / 边界
@@ -87,8 +87,9 @@ openjiuwen 工具循环与 Anthropic API 一样**强配对**：每个 `tool_call
 - `launch(task_id, coro_factory, *, tool_name, description, format_completed=None,
   format_failed=None)`：建 `running` 记录（含 format 回调）+ per-task event →
   `asyncio.create_task` 入 `_tasks[task_id]`（防 GC）+ done callback `pop(task_id)` → `_run`。
-- `_run`：`await coro_factory()`；成功 → 记录 `completed` + 注入文本 =
-  `format_completed(result)` 若存在，否则 `_maybe_spill` + `async_tool.completed`；异常 →
+- `_run`：`await coro_factory()`；成功 → 先 `_maybe_spill`，溢写落定后才记录 `completed`
+  （读到终态的人一定能读到 `output_file`，不会看到"已完成但溢写路径还没写"的中间态）→ `_signal`
+  → 注入文本 = `format_completed(result)` 若存在，否则 `async_tool.completed`；异常 →
   记录 `error` + `team_logger.error` → `format_failed(str(exc))` 若存在，否则
   `async_tool.failed`；`CancelledError` → 记录 `error="cancelled"` → `_signal` → 重抛（**不注入**）。
 - `_signal(task_id)`：set per-task event，唤醒阻塞的 `wait`。

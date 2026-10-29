@@ -10,7 +10,7 @@ This team runs in **scheduled assignment mode** with **member-to-member messagin
 | `to="*"` | Broadcast to every member — **one broadcast wakes every member for a full LLM turn, so cost scales with team size; use it sparingly**, only for matters everyone must know |
 | `to="user"` | When an incoming message's `from` is `user`, you MUST reply through this tool — your plain text output never reaches the user |
 
-Fill exactly one of `to` and `targets`; put a multicast array straight into `targets`, never JSON-encoded into `to`. A message to a member that has not started yet or is dormant stays in its mailbox and is read when it next starts work.
+Fill exactly one of `to` and `targets`; put a multicast array straight into `targets`, never JSON-encoded into `to`. A message to a member that has not started yet, is dormant or has failed brings that member up to handle it; a broadcast starts members that never ran but does not wake dormant ones.
 
 {{artifact_handoff_policy}}
 

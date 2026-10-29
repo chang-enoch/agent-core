@@ -10,6 +10,7 @@ import contextlib
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Optional,
 )
@@ -283,7 +284,18 @@ class SpawnManager:
         except Exception as e:
             team_logger.error("Error cleaning up teammate {}: {}", member_name, e)
 
-    async def restart_teammate(self, member_name: str, max_retries: int = 3) -> bool:
+    async def restart_teammate(
+        self,
+        member_name: str,
+        max_retries: int = 3,
+        *,
+        on_failed: Callable[[Exception], Awaitable[None]] | None = None,
+    ) -> bool:
+        """Re-spawn a teammate, retrying spawn failures.
+
+        ``on_failed`` receives the last spawn error once every attempt has
+        failed; the error itself is still swallowed and ``False`` returned.
+        """
         await self.cleanup_teammate(member_name)
 
         # After cleanup, the previous execution context is gone. Reset
@@ -317,6 +329,7 @@ class SpawnManager:
         initial_message = None
         spawn_config = SpawnConfig(health_check_timeout=30, health_check_interval=50)
 
+        last_error: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
                 team_logger.info("Restarting teammate {} (attempt {}/{})", member_name, attempt, max_retries)
@@ -331,6 +344,7 @@ class SpawnManager:
                 team_logger.info("Teammate {} restarted successfully", member_name)
                 return True
             except Exception as e:
+                last_error = e
                 team_logger.error("Restart attempt {} for {} failed: {}", attempt, member_name, e)
                 if attempt < max_retries:
                     await asyncio.sleep(2**attempt)
@@ -339,6 +353,8 @@ class SpawnManager:
             team_name = self._configurator.team_name
             if team_name:
                 await team_backend.db.member.update_member_status(member_name, team_name, MemberStatus.ERROR.value)
+        if on_failed is not None and last_error is not None:
+            await on_failed(last_error)
         return False
 
     async def on_teammate_unhealthy(self, member_name: str) -> None:

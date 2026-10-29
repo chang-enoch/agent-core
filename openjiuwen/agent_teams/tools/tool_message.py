@@ -153,7 +153,7 @@ class _SendMessageBase(TeamTool, ABC):
         )
 
     async def _broadcast(self, content: str, summary: str) -> ToolOutput:
-        await self._auto_start_members()
+        await self._auto_start_members(include_idle_task_scoped=True)
         msg_id = await self.message_manager.broadcast_message(content=content)
         if not msg_id:
             return ToolOutput(success=False, error="Failed to broadcast message")
@@ -176,7 +176,7 @@ class _SendMessageBase(TeamTool, ABC):
                 return ToolOutput(success=False, error=f"Member '{to}' not found")
         await self._auto_start_members()
         if to != USER_PSEUDO_MEMBER_NAME:
-            await self._recover_members([to])
+            await self._wake_recipients([to])
         msg_id = await self.message_manager.send_message(content=content, to_member_name=to)
         if not msg_id:
             return ToolOutput(success=False, error=f"Failed to send message to '{to}'")
@@ -252,7 +252,7 @@ class _SendMessageBase(TeamTool, ABC):
                     continue
             valid.append(name)
 
-        await self._recover_members(valid)
+        await self._wake_recipients(valid)
 
         delivered: list[str] = []
         if valid:
@@ -278,7 +278,7 @@ class _SendMessageBase(TeamTool, ABC):
             },
         )
 
-    async def _auto_start_members(self) -> None:
+    async def _auto_start_members(self, *, include_idle_task_scoped: bool = False) -> None:
         """Auto-start unstarted members before a message is written.
 
         Start-then-write: a member has to be subscribed to the event bus
@@ -286,21 +286,32 @@ class _SendMessageBase(TeamTool, ABC):
         to nobody. The role and callback gates live in
         ``autostart_unstarted`` — one funnel, shared with the task-creation
         path, so neither carries its own spawn callback.
+
+        Args:
+            include_idle_task_scoped: Set by the broadcast path — a broadcast
+                addresses task-scoped members with no open task too, so they
+                must be up to read it.
         """
         if self._team is None:
             return
-        started = await self._team.autostart_unstarted()
+        started = await self._team.autostart_unstarted(include_idle_task_scoped=include_idle_task_scoped)
         if started:
             team_logger.info(f"Auto-started members: {started}")
 
-    async def _recover_members(self, member_names: list[str]) -> None:
-        """Recover failed direct recipients before publishing their message."""
+    async def _wake_recipients(self, member_names: list[str]) -> None:
+        """Bring up direct recipients before publishing their message.
+
+        An UNSTARTED recipient that the roster-wide auto-start left alone (a
+        task-scoped member with no open task) is started, an ERROR / DORMANT
+        one is recovered — a message addressed to a member by name is work
+        for that member. Running recipients are left alone.
+        """
         if self._team is None:
             return
         for member_name in member_names:
-            restarted = await self._team.recover_member(member_name)
-            if restarted:
-                team_logger.info("Recovered failed message recipient: {}", member_name)
+            woken = await self._team.wake_member(member_name)
+            if woken:
+                team_logger.info("Woke message recipient: {}", member_name)
 
     def render_for_llm(self, output: ToolOutput) -> str:
         d = output.data

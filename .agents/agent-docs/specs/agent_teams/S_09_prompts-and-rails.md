@@ -18,7 +18,7 @@ author_email: chengshuo5@huawei.com
 |---|---|
 | 类型 | spec |
 | 关联模块 | `openjiuwen/agent_teams/prompts/`, `openjiuwen/agent_teams/rails/` |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-24 |
 | 关联 feature | `F_18_hide-human-agent-role-from-teammate.md`、`F_25_external-cli-hardening-and-gemini.md`、`F_50_hitt-contract-roster-split-and-finish-md-externalization.md`、`F_51_external-cli-inbound-xml-and-tag-notice-relocation.md`、`F_52_unify-member-roster-and-static-sections.md`、`F_68_member-identity-out-of-prompt-prefix.md`、`F_70_team-context-into-history.md`、`F_72_nested-team-note-inside-annotated-block.md`、`F_73_avatar-controller-channel-separation.md`、`F_76_leader-progressive-policy-disclosure.md`、`F_78_steering-batch-quota-hook.md`、`F_80_fork-identity-conversion.md`、`F_122_framework-bootstrapped-generic-team.md` |
 
 ## 范围 / 边界
@@ -48,6 +48,13 @@ author_email: chengshuo5@huawei.com
    - **只有 LEADER 走这条道**：其余角色的协同约定 spawn 时即固定，也没有 `build_team` 可挂载，一律走原来的全量静态集。分流在 `TeamPolicyRail._build_static_sections` 的一个 `role == LEADER` 分支，不下推到各 builder。
    - **披露内容会被压缩，须重注入**：`core.context_engine.processor.compressor.util.build_team_policy_reinjected_messages`（在 `FullCompactProcessor` 注册名 `team_policy`）在 full compact 后原样重注入那条 tool result，**不得截断**（返回 `list[UserMessage]` 绕开 `state_snapshot_max_chars`）。core 侧按工具名 `build_team` 匹配，**不 import `agent_teams`**——与既有 `TEAM_TOOL_CALL_NAMES` 同法，依赖方向不变。
 
+1b. **调度模式下绑定了专家团的 leader 多一个 `team_bound_group` section（P:12，[[F_125]] 决策 14）**：
+   `dispatch_mode == "scheduled"`、团队绑定了专家团（`TeamAgentSpec.agent_group_name`）且宿主注入了专家目录时，
+   `TeamPolicyRail._build_leader_sections` 在起手段之后追加 `build_leader_bound_group_section`（读
+   `leader_bound_group.md`，只填团名，不列成员——成员由 `view_experts` 查、按需拉起，提示词不读包）：要求先在本团内
+   找专家并用 `spawn_expert` / 内联 `member` 拉起，团外的专家要显式传 `view_experts(group=...)`。门控信号与 `view_experts` 的默认团内范围同源（dispatch_mode +
+   绑定团 + 专家目录，后者由 `elements._expert_scope_group` 判定）——提示词里讲的范围与工具实际的范围同生同灭。
+   内容只取 spec 已定的数据，前缀仍逐字节稳定；`bootstrap_mode="framework"` 同样追加。
 1c. **framework 建队的 leader：起手段换 `team_prebuilt`，准则经 tracker 的 policy 频道投递（[[F_122]]）**：
    `bootstrap_mode="framework"` 时 `TeamPolicyRail._build_leader_sections` 用 `build_leader_prebuilt_section`
    （P:11，读 `leader_prebuilt.md`，无 `{{collaboration_mechanism}}` 槽——"build_team 路径"这个词在本模式下不存在）
